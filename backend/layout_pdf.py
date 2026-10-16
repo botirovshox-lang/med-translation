@@ -81,6 +81,14 @@ except ImportError:                                  # pragma: no cover
 # есть на сервере ВСЕГДА, в них латиница, кириллица (с узбекской, казахской,
 # таджикской) и греческий, и они уже DejaVu — ближе к гарнитурам книг.
 _REPO_FONTS = str(Path(__file__).resolve().parent.parent / "frontend" / "vendor" / "fonts" / "sub")
+
+
+def _print_fonts():
+    try:
+        from backend import print_fonts as pf
+    except ImportError:
+        import print_fonts as pf
+    return pf
 FONT_CANDIDATES = {
     "": [os.environ.get("LAYOUT_FONT", ""),
          _REPO_FONTS + "/NotoSerif-Regular.ttf",
@@ -147,8 +155,10 @@ FAMILY_CANDIDATES = {
     # от руки печатался рубленым гротеском — перевод выглядел наклейкой.
     # Marck Script (OFL) знает латиницу и кириллицу; узбекских ў қ ғ ҳ ʻ в нём
     # нет — тогда `font_path(chars=)` берёт запасной DejaVu, а не квадраты.
+    # Список — общий с перерисовкой картинок (`print_fonts`, Ф1): разошёлся
+    # бы — та же страница картинкой печаталась бы гротеском.
     "hand": {
-        "": [os.environ.get("LAYOUT_FONT_HAND", ""), _REPO_FONTS + "/MarckScript-Regular.ttf"],
+        "": list(_print_fonts().HAND_FONTS),
     },
     "mono": {
         "": [os.environ.get("LAYOUT_FONT_MONO", ""),
@@ -3240,6 +3250,10 @@ def _unfrac(b: dict, mb) -> None:
     b["x0"], b["x1"] = x + b["x0"] * w, x + b["x1"] * w
     b["top"], b["bottom"] = y + (1.0 - b["top"]) * h, y + (1.0 - b["bottom"]) * h
     b["size"], b["lead"] = max(1.0, b["size"] * h), max(1.0, b["lead"] * h)
+    if b.get("lines"):
+        # Рамки строк — так же: (x0, верх, x1, низ) в точках страницы.
+        b["lines"] = [[x + l_[0] * w, y + (1.0 - l_[1]) * h, x + l_[2] * w,
+                       y + (1.0 - l_[3]) * h] for l_ in b["lines"]]
     b["frac"] = 0
 
 
@@ -3347,6 +3361,30 @@ def _paint_measure(sampler, b: dict) -> bool:
                    "areas": areas, "areaInk": area_ink,
                    "flat": m["flat"],
                    "len": (math.hypot(cx1 - cx0, cy1 - cy0) * 0.92) if m["angle"] else None}
+    # Абзац с рамками строк (Ф1): базы, шаг и отступ — тем же правилом, что
+    # у перерисовки картинки (`text_paint.line_geometry`), в пикселях вырезки,
+    # и обратно в точки страницы.
+    lns = b.get("lines") or []
+    if not m["angle"] and not m.get("arc") and rows >= 2 and len(lns) == rows:
+        loc = [[(l_[0] - cx0) * scale, (cy1 - l_[1]) * scale, (l_[2] - cx0) * scale,
+                (cy1 - l_[3]) * scale] for l_ in lns]
+        g = tp.line_geometry(loc, m["mask"], m["em"])
+        if g and g["regular"]:
+            iw = 0.0
+            H_, W_ = m["mask"].shape[:2]
+            for lb in loc:
+                a_, b_ = max(0, int(lb[1])), min(H_, int(math.ceil(lb[3])))
+                c_, d_ = max(0, int(lb[0])), min(W_, int(math.ceil(lb[2])))
+                if b_ > a_ and d_ > c_:
+                    cols = np.nonzero(m["mask"][a_:b_, c_:d_].any(axis=0))[0]
+                    if len(cols):
+                        iw += (cols[-1] - cols[0] + 1) / scale
+            b["_paint"]["geo"] = {"base0": cy1 - g["base0"] / scale, "pitch": g["pitch"] / scale,
+                                  "left": cx0 + g["left"] / scale, "right": cx0 + g["right"] / scale,
+                                  "indent": g["indent"] / scale, "rows": g["rows"]}
+            b["_paint"]["inkw"] = iw
+    if b.get("fam") == "hand":
+        b["_paint"]["stem"] = tp._stem(m["mask"]) / scale
     arc = m.get("arc")
     if arc:
         b["_paint"]["arc"] = {"cx": cx0 + arc["cx"] / scale, "cy": cy0 + arc["cy"] / scale,
@@ -3378,7 +3416,10 @@ def _page_em_even(boxes: list) -> int:
         ems = sorted(b["_paint"]["em"] for b in grp)
         med = ems[len(ems) // 2]
         band = [b for b in grp if abs(b["_paint"]["em"] - med) <= PAINT_EVEN_SPREAD * med]
-        if len(band) < PAINT_EVEN_MIN:
+        # Рукописная страница — от двух абзацев (Ф4): семейство решено на всю
+        # страницу, и конспект из двух абзацев — обычное дело.
+        need = min(PAINT_EVEN_MIN, 2) if (grp and grp[0].get("fam") == "hand") else PAINT_EVEN_MIN
+        if len(band) < need:
             continue
         for b in band:
             b["_paint"]["em"] = med
@@ -3392,14 +3433,54 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
     высоту её строк (с переносами), ужатие — только если не влезает.
     Ширина начертания — как у оригинала (ширина краски ÷ знаков)."""
     pt = b["_paint"]
-    font = _font_for(fonts, {"style": "b" if pt["bold"] else "", "fam": b.get("fam") or "sans"})
+    hand = b.get("fam") == "hand"
+    # У рукописи «жирный» — это толщина пера; её дописывает обводка (Ф7),
+    # а жирного рукописного файла нет — запасной DejaVu Bold сменил бы почерк
+    # на гротеск, и путь PDF разошёлся бы с картинкой.
+    font = _font_for(fonts, {"style": "b" if (pt["bold"] and not hand) else "",
+                             "fam": b.get("fam") or "sans"})
     em = max(2.0, pt["em"])
     src = " ".join((b.get("src") or "").split())
     h0 = 1.0
     if src and pt["inkw"] > 0 and not pt["angle"]:
         ours = sw(src, font, em)
         if ours > 0:
-            h0 = min(1.0, max(HSCALE_WIDTH_MIN, pt["inkw"] / ours))
+            # Почерк не сжимается: кегль — по ширине краски (Ф2, `calibrate`),
+            # если ширина взята по рамкам строк и шрифт знает буквы ИСХОДНИКА
+            # (иначе отношение — про пустые глифы).
+            by_w = hand and bool(pt.get("geo")) and _font_has(font, src)
+            em, h0 = _tp().calibrate(em, pt["inkw"], ours, hand=by_w, hmin=HSCALE_WIDTH_MIN)
+            if hand and not by_w:
+                h0 = 1.0
+    geo = pt.get("geo")
+    if geo and not pt.get("arc") and not pt["angle"]:
+        tp = _tp()
+
+        def mw_(t_, s_):
+            return sw(t_, font, s_) * h0
+        split_ = None
+        if hyph is not None:
+            def split_(w_, room, s_):
+                return _hyph_split(w_, hyph, room, lambda x_: mw_(x_, s_))
+        align = b.get("align") or "left"
+        indent = geo["indent"] if align in ("left", "justify") else 0.0
+
+        def relay(size_, fixed=True):
+            return tp.fit_rhythm(text, geo["right"] - geo["left"], size_, geo["pitch"],
+                                 geo["rows"], 0, mw_, split_, indent, fixed)
+        size, step, lines, over = relay(em, False)
+        if lines and not over:
+            stroke = 0.0
+            if pt.get("stem"):
+                stroke = tp.stroke_for(pt["stem"], tp.font_stem(_font_file(font)), size,
+                                       whole=False)
+            return {"b": b, "font": font, "size": size, "step": step, "lines": lines, "h0": h0,
+                "f": size / max(1e-6, em), "over": over, "align": align, "em": em,
+                    "parts": [{"bases": [geo["base0"] - i * step for i in range(len(lines))],
+                               "L": geo["left"], "R": geo["right"], "indent": indent,
+                               "lines": lines, "size": size, "step": step}],
+                    "stroke": stroke, "_relay": relay}
+        # Не влезло в строки оригинала — прежняя дорога ниже (рамка абзаца).
     if pt.get("arc"):
         a = pt["arc"]
         rb = max(1.0, a["r"] - a["up"] * 0.36 * em)
@@ -3522,6 +3603,53 @@ def _paint_arc(c, arc: dict, text: str, font: str, size: float, h0: float,
 # к полу. `LAYOUT_ARC_HARMONY=0` выключает.
 ARC_HARMONY = os.environ.get("LAYOUT_ARC_HARMONY", "1") != "0"
 ARC_HARMONY_KEEP = float(os.environ.get("LAYOUT_ARC_HARMONY_KEEP", "0.85"))
+
+
+def _font_file(name: str) -> str:
+    """Файл зарегистрированного шрифта (для замера толщины штриха, Ф7)."""
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        return pdfmetrics.getFont(name).face.filename or ""
+    except Exception:
+        return ""
+
+
+def _font_has(name: str, text: str) -> bool:
+    """Знает ли зарегистрированный шрифт все буквы текста."""
+    try:
+        from reportlab.pdfbase import pdfmetrics
+        cw = pdfmetrics.getFont(name).face.charWidths
+        return all(ord(c) in cw for c in text if not c.isspace())
+    except Exception:
+        return True
+
+
+def _harmonize_paint_rhythm(img_plan: list, stats: dict) -> None:
+    """Ф4: у абзацев-картинок одной страницы и семейства с близким кеглем —
+    один кегль (меньший из подогнанных), как у перерисовки картинки
+    (`text_paint.even_classes`). Абзац, ушедший ниже пола или за место,
+    класс не держит и остаётся при своём."""
+    tp = _tp()
+    by: dict = {}
+    for ent in img_plan:
+        if ent.get("_relay") and not ent.get("over"):
+            by.setdefault(int(ent["b"]["page"]), []).append(ent)
+    for ents in by.values():
+        info = [{"em": e["em"], "fam": e["b"].get("fam") or ""} for e in ents]
+        for cls in tp.even_classes(info):
+            mem = [ents[i] for i in cls if ents[i]["f"] >= tp.FIT_FLOOR - 1e-6]
+            if len(mem) < tp.EVEN_MIN:
+                continue
+            size_c = min(e["size"] for e in mem)
+            for e in mem:
+                size, step, lines, over = e["_relay"](size_c)
+                if over or not lines:
+                    continue
+                geo = e["b"]["_paint"]["geo"]
+                e.update(size=size, step=step, lines=lines, f=size / max(1e-6, e["em"]))
+                e["parts"][0].update(size=size, step=step, lines=lines,
+                                     bases=[geo["base0"] - i * step for i in range(len(lines))])
+                stats["paintEven"] = stats.get("paintEven", 0) + 1
 
 
 def _harmonize_arcs(img_plan: list, stats: dict) -> None:
@@ -3694,11 +3822,28 @@ def _paint_text(c, ent: dict, fonts: dict) -> None:
             y -= step
         c.restoreState()
         return
+    if ent.get("stroke"):
+        # Толщина пера рукописи (Ф7): обводка штриха цветом букв.
+        synth_b = True
+        c.setStrokeColorRGB(*pt["ink"])
     for part in ent.get("parts") or []:
         size, step = part["size"], part["step"]
         if synth_b:
-            c.setLineWidth(0.04 * size)
+            c.setLineWidth(2.0 * ent["stroke"] if ent.get("stroke") else 0.04 * size)
         p_lines = part["lines"]
+        if part.get("bases"):
+            # Строка — на своей базовой линии (Ф1), первая — с отступом.
+            for n_, ln in enumerate(p_lines):
+                w = _sw_of(ln, font, size) * h0
+                lft, rgt = part["L"], part["R"]
+                if ent["align"] == "center":
+                    x = (lft + rgt) / 2.0 - w / 2.0
+                elif ent["align"] == "right":
+                    x = rgt - w
+                else:
+                    x = lft + ((part.get("indent") or 0.0) if n_ == 0 else 0.0)
+                _paint_line(c, ln, x, part["bases"][n_], font, size, h0, synth_b)
+            continue
         block_h = (len(p_lines) - 1) * step + 0.72 * size
         avail = part["top"] - part["bot"]
         y = part["top"] - 0.72 * size - max(0.0, (avail - block_h) / 2.0)
@@ -5665,6 +5810,7 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
     _stories(slot_plan, slot_meta, stats, page_slots)
     _harmonize(slot_plan, slot_meta, stats)
     _harmonize_arcs(img_plan, stats)
+    _harmonize_paint_rhythm(img_plan, stats)
     _harmonize_layer_arcs(slot_plan, sw_vec, stats)
     _flow_groups(slot_plan, slot_meta, stats, sw_vec, page_slots)
     _resolve_collisions(slot_plan, slot_meta, jobs, reader, skip, stats, img_plan, plan)

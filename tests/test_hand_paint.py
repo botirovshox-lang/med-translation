@@ -1,0 +1,254 @@
+"""Раздел Ф: перевод, вписанный в фото рукописного конспекта (и любого
+абзаца на картинке), — как в оригинале.
+
+Сторожит (проект 89, конспект в клетку RU→EN, 16.10.2026):
+  Ф1. строки абзаца — по рамкам строк: база, шаг, отступ; начало строки —
+      по краске, а не по рамке (буквица, слово отдельной рамкой);
+  Ф2. почерк не сжимается по ширине: кегль по ширине краски;
+  Ф3. длинный перевод — в свободные строки ниже тем же шагом, потом мельче
+      буквами при том же шаге, и только потом теснее; вышло за место —
+      сказано (`over`);
+  Ф4. один кегль, шаг и цвет у абзацев одного класса на странице;
+  Ф5. плашка на неровном фоне — восстановленный фон, а не серый
+      прямоугольник;
+  Ф6. бумага с узором (клетка, линейка) стирается по модели, а не
+      размыванием; ложный узор экзамен не сдаёт;
+  Ф7. толщина пера рукописи;
+  Ф1/общий шрифт: рукописный список один на оба пути печати.
+Без сети и без вызовов модели.
+"""
+import io
+import os
+import re
+import sys
+
+sys.path.insert(0, "backend")
+import numpy as np                                            # noqa: E402
+from PIL import Image, ImageDraw, ImageFont                   # noqa: E402
+import text_paint as tp                                       # noqa: E402
+import image_text as it                                       # noqa: E402
+import print_fonts                                            # noqa: E402
+
+fail = []
+
+
+def check(ok, msg):
+    print(("  OK   " if ok else "  FAIL ") + msg)
+    if not ok:
+        fail.append(msg)
+
+
+print("\n── Ф1. геометрия абзаца по рамкам строк ──")
+lbs = [[175, 16, 782, 54], [112, 66, 790, 116], [121, 123, 776, 167],
+       [127, 179, 747, 220], [125, 239, 772, 274], [115, 292, 684, 330]]
+g = tp.line_geometry(lbs, None, 42.0)
+check(g is not None and g["regular"], "ровный ритм строк узнан")
+check(g and 48 <= g["pitch"] <= 60, "шаг строк ≈ 55: %s" % (g and round(g["pitch"], 1)))
+check(g and 50 <= g["indent"] <= 70, "красная строка ≈ 60: %s" % (g and g["indent"]))
+check(g and 110 <= g["left"] <= 125, "левый край — медиана остальных строк: %s" % (g and g["left"]))
+check(g and g["right"] < 790, "правый край — не самая длинная строка: %s" % (g and g["right"]))
+# Рамка первой строки начинается с третьего слова (слово за буквицей отдано
+# отдельно) — по рамке это отступ в девять кеглей; это не отступ.
+far = [[351, 209, 1208, 269]] + [[63, 267 + k * 53, 1206, 321 + k * 53] for k in range(8)]
+g2 = tp.line_geometry(far, None, 30.0)
+check(g2 and g2["indent"] == 0.0, "сдвиг больше INDENT_MAX кеглей — не отступ: %s" % (g2 and g2["indent"]))
+# Начало строки — по краске: маска знает буквы левее рамки.
+mask = np.zeros((800, 1250), bool)
+for k in range(9):
+    y = 230 + k * 53
+    x0 = 130 if k == 0 else 63
+    mask[y:y + 25, x0:1200] = True
+g3 = tp.line_geometry(far, mask, 30.0)
+check(g3 and 55 <= g3["indent"] <= 80, "начало первой строки — по краске: отступ %s" % (g3 and g3["indent"]))
+check(tp.line_geometry(lbs[:1], None, 40) is None, "одна строка — ритма нет")
+irr = [[100, 0, 700, 30], [100, 40, 700, 70], [100, 200, 700, 230], [100, 240, 700, 270]]
+gi = tp.line_geometry(irr, None, 25)
+check(gi is not None and not gi["regular"], "неровный шаг (форма, таблица) — ритм не признан")
+
+print("\n── Ф2. почерк не сжимается ──")
+em, h0 = tp.calibrate(43.0, 500.0, 800.0, hand=True)
+check(h0 == 1.0 and abs(em - 43.0 * 500 / 800) < 1e-6, "рукопись: кегль по ширине, сжатия нет")
+em2, h02 = tp.calibrate(43.0, 500.0, 800.0, hand=False, hmin=0.74)
+check(em2 == 43.0 and abs(h02 - 0.74) < 1e-9, "печать — как прежде (кегль по высоте, h0 ≥ пола)")
+em3, h03 = tp.calibrate(43.0, 900.0, 800.0, hand=True)
+check(em3 == 43.0 and h03 == 1.0, "почерк шире шрифта — кегль не растёт выше измеренного")
+
+print("\n── Ф3. раскладка с ритмом ──")
+mw = lambda t, s: len(t) * s * 0.5                            # noqa: E731
+text = " ".join(["word"] * 40)
+size, step, lines, over = tp.fit_rhythm(text, 400, 20.0, 50.0, 4, 0, mw)
+check(not over and step == 50.0 and size < 20.0 and size >= 20.0 * tp.FIT_FLOOR,
+      "мельче буквами, шаг тот же: кегль %.1f шаг %.1f" % (size, step))
+size, step, lines, over = tp.fit_rhythm(text, 400, 20.0, 50.0, 4, 2, mw)
+check(size == 20.0 and step == 50.0 and len(lines) <= 6 and not over,
+      "свободные строки ниже берутся раньше уменьшения: %d строк" % len(lines))
+size, step, lines, over = tp.fit_rhythm(" ".join(["word"] * 400), 400, 20.0, 50.0, 3, 0, mw)
+check(over and size == 20.0 * tp.FIT_HARD, "не влезло и на полу — сказано (over)")
+size, step, lines, over = tp.fit_rhythm("one two three", 400, 20.0, 50.0, 3, 0, mw, first_indent=380)
+check(len(lines) >= 2 and lines[0] == "one", "первая строка короче на отступ: %s" % lines)
+size, step, lines, over = tp.fit_rhythm(text, 400, 16.0, 50.0, 6, 0, mw, fixed=True)
+check(size == 16.0 and step == 50.0, "кегль страницы — без ужатия")
+
+print("\n── Ф4. классы страницы ──")
+cls = tp.even_classes([{"em": 27, "fam": "hand"}, {"em": 29, "fam": "hand"}, {"em": 60, "fam": "hand"},
+                       {"em": 28, "fam": ""}])
+check(cls == [[0, 1]], "два абзаца близкого кегля одного семейства — класс: %s" % cls)
+check(tp.even_step([55, 54, 56]) == 55 and tp.even_step([30, 55]) is None, "общий шаг — только у близких")
+
+print("\n── Ф6. бумага в клетку стирается по модели ──")
+H, W, P = 240, 420, 24
+yy, xx = np.mgrid[0:H, 0:W]
+light = 150 + 60 * (yy / H)                                  # перепад света фото
+grid = ((xx % P) < 2) | ((yy % P) < 2)
+clean = np.dstack([np.where(grid, light - 35, light)] * 3).clip(0, 255).astype(np.uint8)
+hole = np.zeros((H, W), bool)
+for r in range(3):
+    hole[30 + r * 70:58 + r * 70, 40:380] = True               # полосы стёртых строк
+dirty = clean.copy()
+dirty[hole] = 20                                              # «чернила»
+per = tp._paper_periodic(dirty, hole, 56.0, 40.0)
+check(per is not None, "период клетки найден, модель сдала экзамен")
+if per is not None:
+    err = np.abs(per[hole].astype(int) - clean[hole].astype(int)).mean()
+    import cv2
+    tel = cv2.inpaint(dirty, hole.astype(np.uint8) * 255, 3, cv2.INPAINT_TELEA)
+    err_t = np.abs(tel[hole].astype(int) - clean[hole].astype(int)).mean()
+    check(err < 6 and err < 0.5 * err_t, "клетка восстановлена: ошибка %.1f против %.1f у размытия" % (err, err_t))
+flatimg = np.dstack([light] * 3).astype(np.uint8)
+check(tp._paper_periodic(flatimg, hole, 56.0, 40.0) is None, "без узора — модели нет, прежнее стирание")
+rng = np.random.RandomState(3)
+noise = (np.dstack([light] * 3) + rng.randint(-25, 25, (H, W, 1))).clip(0, 255).astype(np.uint8)
+check(tp._paper_periodic(noise, hole, 56.0, 40.0) is None, "шум (ложный узор) экзамен не сдаёт")
+
+print("\n── Ф3. свободная строка: клетка — не буквы ──")
+strip = clean[100:140, 40:380].copy()
+check(not tp.has_letters(strip, 30.0), "в клетке без надписей букв нет")
+im_ = Image.fromarray(strip.copy())
+ImageDraw.Draw(im_).text((10, 2), "Hello world", font=ImageFont.truetype(it.font_path(), 30), fill=(10, 10, 10))
+check(tp.has_letters(np.asarray(im_), 30.0), "строка с надписью — занята")
+
+print("\n── Ф1. рукописный шрифт — один список на оба пути ──")
+hf = print_fonts.hand_font_files()
+check(hf and hf[0].endswith("MarckScript-Regular.ttf"), "рукописный файл есть: %s" % hf)
+check(it._paint_font(False, "Bacterial cell", "hand") == hf[0], "картинка: рукопись — рукописным шрифтом")
+check(it._paint_font(False, "Bacterial cell", "") != hf[0], "печать — рубленым")
+uz = it._paint_font(False, "qoʻshimcha ўқ ғҳ", "hand")
+check(uz and not uz.endswith("MarckScript-Regular.ttf"), "узбекских букв нет — запасной шрифт: %s" % uz)
+lp = open("backend/layout_pdf.py", encoding="utf-8").read()
+check('_print_fonts().HAND_FONTS' in lp, "путь PDF берёт тот же список")
+src = open("backend/main.py", encoding="utf-8").read()
+m_ = re.search(r"def _export_images\(.*?\n(?=def )", src, re.S)
+body = m_.group(0) if m_ else ""
+check('"lineBoxes": b.get("lineBoxes")' in body and '"fam": im_fam' in body and "_hand_image(im)" in body,
+      "выгрузка картинки несёт рамки строк и семейство страницы")
+check("obstacles=obstacles" in body, "и рамки всех надписей — для свободных строк")
+check("Transcribe, do not edit" in src, "чтение картинки: переписывать, не править (Ф8)")
+
+print("\n── сквозной: конспект в клетку из двух абзацев ──")
+fpath = hf[0]
+Wd, Hd, Pt = 900, 820, 27
+yy, xx = np.mgrid[0:Hd, 0:Wd]
+light = 160 + 50 * (yy / Hd)
+grid = ((xx % Pt) < 2) | ((yy % Pt) < 2)
+base_img = np.dstack([np.where(grid, light - 30, light)] * 3).clip(0, 255).astype(np.uint8)
+page = Image.fromarray(base_img.copy())
+dr = ImageDraw.Draw(page)
+fnt = ImageFont.truetype(fpath, 40)
+blocks, srcs = [], []
+y = 40
+for pi, n in enumerate((5, 7)):
+    lbx = []
+    for k in range(n):
+        x0 = 140 if k == 0 else 80
+        line = "Бактериальная клетка устроена проще" if k < n - 1 else "организмов."
+        dr.text((x0, y), line, font=fnt, fill=(15, 15, 20), stroke_width=2, stroke_fill=(15, 15, 20))
+        bb = dr.textbbox((x0, y), line, font=fnt, stroke_width=2)
+        lbx.append(list(bb))
+        y += 2 * Pt
+    blocks.append(lbx)
+    y += 2 * Pt
+buf = io.BytesIO()
+page.save(buf, "PNG")
+items = []
+en = ("The bacterial cell is usually much more simply structured than the cells of other "
+      "living organisms, and it is often surrounded by a protective capsule.")
+for lbx in blocks:
+    box = [min(b[0] for b in lbx), min(b[1] for b in lbx), max(b[2] for b in lbx), max(b[3] for b in lbx)]
+    items.append({"box": box, "text": en, "rows": len(lbx), "lineH": 40, "lineBoxes": lbx,
+                  "src": "Бактериальная клетка устроена проще " * len(lbx), "fam": "hand", "align": "left"})
+out, rep = it.render_target(buf.getvalue(), items, obstacles=[i_["box"] for i_ in items])
+check(out is not None and all(r.get("ok") and r.get("paint") for r in rep),
+      "оба абзаца вписаны по маске букв, плашки нет: %s" % rep)
+check(len({r.get("size") for r in rep}) == 1 and all(r.get("even") for r in rep),
+      "один кегль у обоих абзацев")
+check(all(r.get("erase") == "periodic" for r in rep), "клетка стёрта по модели")
+if out is not None:
+    res = np.asarray(Image.open(io.BytesIO(out)).convert("L")).astype(int)
+    # Строка между строками первого абзаца (бывшая пустая клетка) — бумага.
+    gap_y = blocks[0][0][3] + 4
+    stripe = res[gap_y:gap_y + 3, 300:700]
+    check(stripe.min() > 60, "между строками перевода — бумага, а не краска")
+    # Перевод стоит на базах оригинала: краска есть в полосе первой строки.
+    b0 = blocks[0][0]
+    check((res[b0[1]:b0[3], b0[0]:b0[2]] < 60).mean() > 0.01, "перевод на месте первой строки")
+
+print("\n── ревью: края раскладки ──")
+size, step, lines, over = tp.fit_rhythm("see https://example.org/very/long/path/without/breaks here",
+                                        200, 20.0, 30.0, 3, 0, mw)
+check(lines and over, "слово шире строки — строкой с выходом, а не пусто: %s" % lines)
+size, step, lines, over = tp.fit_rhythm("https://example.org/very/long/path/without/breaks",
+                                        200, 20.0, 30.0, 3, 0, mw, fixed=True)
+check(lines and over, "и при кегле страницы")
+check(tp._paper_periodic(np.zeros((2000, 1500, 3), np.uint8), np.ones((2000, 1500), bool), 40, 30) is None,
+      "большая вырезка — прежнее стирание (память воркера)")
+check(it._cjk_units("可是突然“。作者") == ["可", "是", "突", "然“。", "作", "者"],
+      "закрывающая кавычка перед «。» строку не начинает: %s" % it._cjk_units("可是突然“。作者"))
+check(it._cjk_units("“作者") == ["“作", "者"] or it._cjk_units("“作者")[0].startswith("“"),
+      "открывающая кавычка остаётся с началом")
+# Абзац с рамками строк, перевод не влезает и тесно, внизу соседний абзац:
+# прежняя дорога (в рамке абзаца или плашка), а не строки поверх соседа.
+page2 = Image.fromarray(base_img.copy())
+d2 = ImageDraw.Draw(page2)
+lb2 = []
+for k_ in range(3):
+    d2.text((80, 60 + k_ * 54), "Бактериальная клетка устроена", font=fnt, fill=(15, 15, 20),
+            stroke_width=2, stroke_fill=(15, 15, 20))
+    lb2.append(list(d2.textbbox((80, 60 + k_ * 54), "Бактериальная клетка устроена", font=fnt, stroke_width=2)))
+d2.text((80, 60 + 3 * 54 + 10), "Next paragraph right below", font=fnt, fill=(15, 15, 20))
+nb = list(d2.textbbox((80, 60 + 3 * 54 + 10), "Next paragraph right below", font=fnt))
+b2 = io.BytesIO()
+page2.save(b2, "PNG")
+box2 = [min(b[0] for b in lb2), min(b[1] for b in lb2), max(b[2] for b in lb2), max(b[3] for b in lb2)]
+long_en = " ".join(["bacterial membrane composition"] * 40)
+out2, rep2 = it.render_target(b2.getvalue(), [{"box": box2, "text": long_en, "rows": 3, "lineH": 40,
+                                                "lineBoxes": lb2, "src": "Бактериальная клетка " * 3,
+                                                "fam": "hand", "align": "left"}], obstacles=[nb])
+if out2 is not None:
+    res2 = np.asarray(Image.open(io.BytesIO(out2)).convert("RGB")).astype(int)
+    orig2 = np.asarray(page2.convert("RGB")).astype(int)
+    below = np.abs(res2[nb[1]:nb[3], nb[0]:nb[2]] - orig2[nb[1]:nb[3], nb[0]:nb[2]]).max()
+    check(below < 40, "соседний абзац ниже не тронут (разница %d)" % below)
+check(all(not r.get("over") for r in rep2 if r.get("ok")), "не влезшее не печатается с выходом: %s" % rep2)
+url_items = [dict(items[0], text="https://example.org/" + "x" * 200)]
+try:
+    out3, rep3 = it.render_target(buf.getvalue(), url_items, obstacles=[items[0]["box"]])
+    check(True, "абзац из одного неразрывного слова не роняет выгрузку: %s" % rep3)
+except Exception as e:
+    check(False, "абзац из одного неразрывного слова роняет выгрузку: %r" % e)
+
+print("\n── ревью: путь PDF ──")
+import layout_pdf                                             # noqa: E402
+fonts = layout_pdf._register_fonts("Bacterial cell")
+hn = layout_pdf._font_for(fonts, {"style": "", "fam": "hand"})
+check(layout_pdf._font_file(hn).endswith("MarckScript-Regular.ttf"),
+      "толщина пера мерится по файлу шрифта: %s" % layout_pdf._font_file(hn))
+check(tp.font_stem(layout_pdf._font_file(hn)) > 0, "штрих рукописного шрифта измерен")
+check(not layout_pdf._font_has(hn, "ўқ漢"), "покрытие исходника проверяется")
+lps = open("backend/layout_pdf.py", encoding="utf-8").read()
+check('"b" if (pt["bold"] and not hand)' in lps, "рукопись с толстым пером — не жирный гротеск")
+
+print()
+if fail:
+    print("ПРОВАЛЕНО: %d" % len(fail))
+    sys.exit(1)
+print("ВСЁ ПРОШЛО")

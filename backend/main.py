@@ -16549,7 +16549,14 @@ def _image_read_system(dom: dict, src_lang: str) -> str:
     в рамках лежат фамилии пациентов, даты исследования и настройки томографа
     («KARIMOV SH.», «DEPTH:14cm», «kV 120.0»). Переводить их незачем, а тащить
     в сегменты, память переводов и очередь терминов нельзя тем более —
-    это персональные данные, и попав в TM они разъедутся по чужим проектам."""
+    это персональные данные, и попав в TM они разъедутся по чужим проектам.
+
+    «Переписывай, не правь» (Ф8, проект 89): рукопись модель читала
+    правдоподобными заменами — «наиболее просто» → «гораздо проще»,
+    «системы секреции» → «специальные секреции», «в двух других доменах» →
+    «в других живых организмах» — и теряла последнюю точку абзаца. Перевод
+    повторял подмену смысла. Уже прочитанное не перечитывается (кэш по sha):
+    правило действует на новые разборы."""
     src_lang = _lang_prompt(src_lang)
     return (
         "You read text that is printed INSIDE an illustration of a "
@@ -16561,6 +16568,10 @@ def _image_read_system(dom: dict, src_lang: str) -> str:
         "original language. Keep numbers, units and capitalisation. If the "
         "block is split into several lines, join them into one string; if a "
         "word is hyphenated at a line break, join it back into one word. "
+        "Transcribe, do not edit: never correct, complete, normalise or "
+        "replace a word with a more plausible one, even in handwriting — "
+        "copy what is written letter by letter, and keep every punctuation "
+        "mark, including the final full stop. "
         "If you cannot read it, return an empty string — never guess.\n"
         '  "overlay" — true if this is NOT text of the document but a label '
         "burnt in by equipment or software: patient name, examination date, "
@@ -31871,6 +31882,14 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
         if str(name or "").startswith(PDF_PAGE_PART):
             continue                    # надписи кривыми — только в PDF «как в оригинале»
         items = []
+        # Рукопись — свойство страницы (`_hand_image`), и решает его ОДНА
+        # функция на оба пути печати (Ф1): прежде признак доезжал только до
+        # PDF, и та же страница картинкой печаталась гротеском.
+        im_fam = "hand" if _hand_image(im) else ""
+        # Рамки ВСЕХ надписей картинки, и непереведённых: длинный перевод
+        # уходит в свободные строки ниже только мимо них (Ф3).
+        obstacles = [list(b["box"]) for b in (im.get("blocks") or [])
+                     if b.get("box") and (b.get("text") or "").strip()]
         for i, b in enumerate(im.get("blocks") or []):
             if b.get("skip"):
                 continue
@@ -31895,6 +31914,8 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                           # Высота строки и число строк: по ним считаются поля
                           # рамки и решается, нужно ли увеличивать картинку.
                           "lineH": b.get("lineH"), "rows": b.get("rows"),
+                          # Рамки строк: базы, шаг и отступ абзаца (Ф1).
+                          "lineBoxes": b.get("lineBoxes"), "fam": im_fam,
                           # Исходный текст: по нему меряется кегль букв
                           # (заглавные или строчные, `text_paint.measure`).
                           "src": (seg.get("source") or "").strip()})
@@ -31912,11 +31933,17 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
             stats["img_stale"] += len(items)
             continue
         stats["img_parts"] += 1
-        new_bytes, report = image_text.render_target(part.blob, items)
+        new_bytes, report = image_text.render_target(part.blob, items, obstacles=obstacles)
         captions = []
         for r in report:
             if r.get("ok"):
                 stats["img_repainted"] += 1
+                if r.get("over"):
+                    # Строк перевода больше, чем места под ними: напечатано,
+                    # но с выходом за строки оригинала — сказано числом.
+                    stats["img_overflow"] = stats.get("img_overflow", 0) + 1
+                if r.get("handFallback"):
+                    stats["img_hand_fallback"] = stats.get("img_hand_fallback", 0) + 1
                 continue
             why = r.get("why") or ""
             if why == "flat":
@@ -32056,6 +32083,9 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
              "img_untranslated": 0, "img_flat": 0, "img_font": 0,
              "img_vertical": 0,
              "img_failed": 0, "img_lost": 0, "img_stale": 0, "img_noseg": 0,
+             # Ф3: напечатано с выходом за строки оригинала; Ф1: рукопись
+             # напечатана обычным шрифтом (рукописного с этими буквами нет).
+             "img_overflow": 0, "img_hand_fallback": 0,
              # Полей, помеченных к пересчёту: по ним Word пересоберёт
              # оглавление и номера страниц уже под перевод.
              "fields_refreshed": 0}
@@ -33089,6 +33119,11 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                 "align": _blk_align(b),
                 "x0": fx0 + x0 * sx_, "x1": fx0 + x1 * sx_,
                 "top": fy0 + y0 * sy_, "bottom": fy0 + y1 * sy_,
+                # Рамки строк (доли листа): базы, шаг и отступ абзаца (Ф1) —
+                # тем же правилом, что у перерисовки картинки.
+                "lines": [[fx0 + lb[0] * sx_, fy0 + lb[1] * sy_, fx0 + lb[2] * sx_,
+                           fy0 + lb[3] * sy_] for lb in (b.get("lineBoxes") or [])
+                          if lb and len(lb) >= 4],
                 "size": line_h * sy_, "lead": ((y1 - y0) / rows) * sy_}]})
     out, nested = _drop_nested_labels(out)
     if nested:

@@ -990,6 +990,7 @@ function TabExport({ store, toast }) {
            + (st.img_repainted ? TR(" · надписей вписано в картинки: ") + st.img_repainted : "")
            + (st.img_captioned ? TR(" · подписями под картинками: ") + st.img_captioned : "")
            + (st.img_untranslated ? TR(" · надписей без перевода: ") + st.img_untranslated : "")
+           + (st.img_overflow ? TR(" · надписей шире места строк: ") + st.img_overflow : "")
            + (imgLost ? TR(" · надписей не попало в файл: ") + imgLost : ""))
         : (result.file + TR(" — загрузка началась.")));
       // Проверка готового файла: что на листах осталось на языке оригинала

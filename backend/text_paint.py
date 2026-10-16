@@ -833,8 +833,158 @@ def erase(rgb, m: dict):
         out[grow > 0] = np.array(m["bg"], dtype=np.uint8)
     else:
         out = cv2.inpaint(np.ascontiguousarray(rgb), grow, INPAINT_R, cv2.INPAINT_TELEA)
+        lh = float(m.get("pitch") or 0) or 1.25 * float(m.get("em") or 0)
+        per = _paper_periodic(rgb, grow > 0, lh, float(m.get("em") or 0))
+        if per is not None:
+            m["eraseHow"] = "periodic"
+            out = np.where((grow > 0)[..., None], per, out).astype(np.uint8)
     alpha = cv2.GaussianBlur(grow, (3, 3), 0)
     return out, alpha
+
+
+# Ф6. Бумага с повторяющимся узором — клетка, линейка, точечная сетка, бланк
+# с линиями — стирается ПО МОДЕЛИ, а не размыванием. Симптом (проект 89,
+# конспект в клетку): после `cv2.inpaint` по полосе букв линии клетки
+# пропадали (60 % горизонтальных внутри стёртого), на пересечениях оставались
+# серые пятна, а светлые и тёмные разводы повторяли контуры прежних слов.
+# Причина: Telea — диффузия от края дыры; тонкую линию, идущую ВДОЛЬ дыры
+# (линейка под строкой), он усредняет с бумагой, а тёмную точку края тянет
+# внутрь. Правило: бумага = освещение × узор. Освещение — серое «закрытие»
+# (снимает тонкие тёмные линии и буквы) и размытие по известным точкам;
+# узор — отношение снимка к освещению; период узора — пик автокорреляции
+# профиля по каждой оси. Точка дыры — медиана узора в ближайших точках с той
+# же фазой (x ± i·Px, y ± j·Py), умноженная на освещение. Модель принимается,
+# только если на кольце известных точек вокруг дыры она предсказывает бумагу
+# заметно лучше ровного тона (`PERIOD_GAIN`): ложный период (таблица, ткань)
+# этот экзамен не сдаёт, и стирание остаётся прежним.
+PERIOD_PEAK = float(os.environ.get("PAINT_PERIOD_PEAK", "0.25"))
+PERIOD_GAIN = float(os.environ.get("PAINT_PERIOD_GAIN", "0.75"))
+PERIOD_K = 6                     # сколько точек той же фазы берётся в медиану
+PERIOD_R = 4                     # дальше скольких периодов не ищем
+PERIOD_MISS = 0.05               # доля точек дыры без соседей той же фазы, ещё терпимая
+PERIODIC_ERASE = os.environ.get("PAINT_PERIODIC_ERASE", "1") != "0"
+# Вырезка больше стольких мегапикселей стирается прежним способом: модель
+# держит несколько копий вырезки в float32, а воркер один (инвариант 1).
+PERIODIC_MAX_MPX = float(os.environ.get("PAINT_PERIODIC_MAX_MPX", "2.5"))
+
+
+def _period_of(prof, lo: int, hi: int):
+    """Период профиля (`prof` — среднее «темноты» по строкам/столбцам):
+    пик автокорреляции в [lo, hi] не слабее `PERIOD_PEAK` нулевого сдвига."""
+    p = prof - prof.mean()
+    n = len(p)
+    hi = min(hi, n // 2)
+    if hi <= lo + 1:
+        return None
+    ac = np.correlate(p, p, "full")[n - 1:]
+    if ac[0] <= 1e-9:
+        return None
+    P = lo + int(np.argmax(ac[lo:hi]))
+    if ac[P] < PERIOD_PEAK * ac[0]:
+        return None
+    # Пик на краю окна — это не период, а медленный наклон профиля.
+    if P <= lo or P >= hi - 1:
+        return None
+    return P
+
+
+def _phase_median(q, known, ys, xs, Px, Py):
+    """Медиана узора в ближайших известных точках той же фазы для точек
+    (ys, xs). (значения H×3 | NaN, сколько точек нашлось)."""
+    H, W = known.shape
+    offs = [(dx, dy) for dy in range(-PERIOD_R, PERIOD_R + 1)
+            for dx in range(-PERIOD_R, PERIOD_R + 1)
+            if (dx, dy) != (0, 0) and (Px or dx == 0) and (Py or dy == 0)]
+    offs.sort(key=lambda t: (abs(t[0]) * (Px or 0) + abs(t[1]) * (Py or 0), t[1], t[0]))
+    n = len(ys)
+    vals = np.full((PERIOD_K, n, q.shape[2]), np.nan, dtype=np.float32)
+    cnt = np.zeros(n, dtype=np.int32)
+    for dx, dy in offs:
+        yy = ys + dy * (Py or 0)
+        xx = xs + dx * (Px or 0)
+        ok = (yy >= 0) & (yy < H) & (xx >= 0) & (xx < W) & (cnt < PERIOD_K)
+        idx = np.nonzero(ok)[0]
+        if not len(idx):
+            continue
+        idx = idx[known[yy[idx], xx[idx]]]
+        if not len(idx):
+            continue
+        vals[cnt[idx], idx] = q[yy[idx], xx[idx]]
+        cnt[idx] += 1
+        if (cnt >= PERIOD_K).all():
+            break
+    with np.errstate(all="ignore"):
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)
+            med = np.nanmedian(vals, axis=0)
+    return med, cnt
+
+
+def _paper_periodic(rgb, hole, lh: float, em: float):
+    """Стёртая вырезка по модели «освещение × узор» (Ф6) или None —
+    узора нет, модель не сдала экзамен, мерить нечем."""
+    if not PERIODIC_ERASE or np is None or cv2 is None or not hole.any():
+        return None
+    H, W = hole.shape
+    if H * W > PERIODIC_MAX_MPX * 1e6:
+        return None                     # память воркера: большое фото — прежнее стирание
+    lh = max(8.0, lh or 0.0)
+    em = em or 0.8 * lh
+    f = rgb.astype(np.float32)
+    known = ~hole
+    if known.sum() < 0.3 * H * W:
+        return None
+    kc = _odd(max(5.0, 0.16 * em), 5, 21)
+    clo = cv2.morphologyEx(f, cv2.MORPH_CLOSE, np.ones((kc, kc), np.uint8))
+    w = known.astype(np.float32)
+    kb = _odd(1.4 * lh, 15, 151)
+    clo *= w[..., None]
+    den = np.maximum(cv2.blur(w, (kb, kb)), 1e-3)[..., None]
+    ill = np.maximum(cv2.blur(clo, (kb, kb)) / den, 1.0)
+    del clo, den
+    q = f / ill
+    dark = (1.0 - q.mean(axis=2)) * w
+    lo, hi = max(5, int(0.25 * lh)), int(3.0 * lh) + 1
+    Px = _period_of(dark.sum(0) / np.maximum(w.sum(0), 1), lo, hi)
+    Py = _period_of(dark.sum(1) / np.maximum(w.sum(1), 1), lo, hi)
+    if not Px and not Py:
+        return None
+    # Экзамен: кольцо известных точек вокруг дыры предсказывается узором
+    # (без самой точки) и ровным тоном; узор обязан ошибаться заметно меньше.
+    kr = _odd(0.5 * lh, 3, 61)
+    ring = (cv2.dilate(hole.astype(np.uint8), np.ones((kr, kr), np.uint8)) > 0) & known
+    ry, rx = np.nonzero(ring)
+    if len(ry) < 50:
+        return None
+    step = max(1, len(ry) // 6000)
+    ry, rx = ry[::step], rx[::step]
+    pred, c = _phase_median(q, known, ry, rx, Px, Py)
+    okp = c > 0
+    if okp.sum() < 30:
+        return None
+    qg = q.mean(axis=2)
+    e_per = float(np.mean(np.abs(pred[okp].mean(axis=1) - qg[ry[okp], rx[okp]])))
+    flat = float(np.median(qg[known]))
+    e_flat = float(np.mean(np.abs(flat - qg[ry[okp], rx[okp]])))
+    if not (e_per < PERIOD_GAIN * e_flat):
+        return None
+    hy, hx = np.nonzero(hole)
+    med, cnt = _phase_median(q, known, hy, hx, Px, Py)
+    out = rgb.copy()
+    got = cnt > 0
+    val = np.clip(med[got] * ill[hy[got], hx[got]], 0, 255)
+    out[hy[got], hx[got]] = val.astype(np.uint8)
+    if not got.all():
+        # У края вырезки соседей той же фазы может не быть: такие точки
+        # добираются размытием по уже восстановленному окружению. Больше
+        # `PERIOD_MISS` — модель не годится (буквы остались бы пятнами).
+        if got.mean() < 1.0 - PERIOD_MISS:
+            return None
+        miss = np.zeros((H, W), np.uint8)
+        miss[hy[~got], hx[~got]] = 255
+        out = cv2.inpaint(out, miss, INPAINT_R, cv2.INPAINT_TELEA)
+    return out
 
 
 # Ниже этой доли кегля надпись не ужимается никогда.
@@ -939,3 +1089,321 @@ def fit_lines(text: str, width: float, height: float, em: float, pitch: float, m
         else:
             hi = mid
     return best
+
+
+# ── Ритм строк абзаца: базовые линии, шаг, отступ (раздел Ф) ─────────────
+#
+# Ф1–Ф4 (проект 89, конспект от руки в клетку, 16.10.2026). Строки абзаца
+# брались из полос маски, а у слитного почерка петли соседних строк сливают
+# полосы, а обрывки выносных дают лишние: 12 «строк» на 11 настоящих, и
+# раскладка, принятая `fit_lines`, отвергалась вызывающим — абзац уходил на
+# серую плашку. Рамки строк детектора (`lineBoxes`) у блока уже есть, и они
+# знают и число строк, и их место. Отсюда:
+#   * база строки — низ её «тела» (ряды с массой краски от половины пика);
+#   * шаг — медиана расстояний между базами; ритм ровный при разбросе не
+#     больше `RHYTHM_MAD` шага — только тогда шаг держится при раскладке;
+#   * левый край — медиана начал строк кроме первой, отступ первой строки —
+#     разница с ней, когда остальные строки выровнены (`INDENT_ALIGN` кегля)
+#     и сдвиг больше `INDENT_MIN` кегля.
+RHYTHM_MAD = float(os.environ.get("PAINT_RHYTHM_MAD", "0.2"))
+RHYTHM_MAX = float(os.environ.get("PAINT_RHYTHM_MAX", "0.45"))
+INDENT_MIN = float(os.environ.get("PAINT_INDENT_MIN", "0.5"))
+INDENT_ALIGN = float(os.environ.get("PAINT_INDENT_ALIGN", "0.4"))
+# Сдвиг первой строки больше стольких кеглей — не абзацный отступ, а
+# рамка, не захватившая начало строки (или буквица): отступа нет.
+INDENT_MAX = float(os.environ.get("PAINT_INDENT_MAX", "4"))
+# Ф3. Докуда ужимаются буквы при НЕИЗМЕННОМ шаге строк: ниже — шаг ужимается
+# вместе с ними (строки уходят с линовки, и это последнее средство).
+FIT_FLOOR = float(os.environ.get("PAINT_FIT_FLOOR", "0.7"))
+RIGHT_Q = float(os.environ.get("PAINT_RIGHT_Q", "80"))
+FIT_HARD = float(os.environ.get("PAINT_FIT_HARD", "0.45"))
+
+
+def line_geometry(line_boxes, mask=None, em: float = 0.0) -> "dict | None":
+    """Геометрия абзаца по рамкам строк (в координатах вырезки, y вниз).
+    None — строк меньше двух или рамки негодны."""
+    lbs = [tuple(float(v) for v in lb[:4]) for lb in (line_boxes or [])
+           if lb and len(lb) >= 4 and lb[2] > lb[0] and lb[3] > lb[1]]
+    if len(lbs) < 2:
+        return None
+    lbs.sort(key=lambda b: (b[1] + b[3]) / 2.0)
+    bases = []
+    # Начало строки — по КРАСКЕ её тела в пределах блока, а не по рамке
+    # детектора: слово за буквицей детектор отдаёт отдельно (С2), и рамка
+    # первой строки начиналась с третьего слова — «отступ» выходил в девять
+    # кеглей (страница Чехова, 16.10.2026).
+    bx0 = min(b[0] for b in lbs)
+    bx1 = max(b[2] for b in lbs)
+    starts = []
+    for x0, y0, x1, y1 in lbs:
+        base = y0 + 0.8 * (y1 - y0)
+        st_ = x0
+        if mask is not None:
+            H, W = mask.shape[:2]
+            a, b = max(0, int(y0)), min(H, int(math.ceil(y1)))
+            c, d = max(0, int(x0)), min(W, int(math.ceil(x1)))
+            if b - a >= 3 and d - c >= 3:
+                prof = mask[a:b, c:d].sum(axis=1).astype(float)
+                if prof.max() > 0:
+                    body = np.nonzero(prof >= 0.5 * prof.max())[0]
+                    base = a + float(body[-1]) + 1.0
+                    rows_ = mask[a + int(body[0]):a + int(body[-1]) + 1,
+                                 max(0, int(bx0)):min(W, int(math.ceil(bx1)))]
+                    cols = np.nonzero(rows_.any(axis=0))[0]
+                    if len(cols):
+                        st_ = min(x0, max(0, int(bx0)) + float(cols[0]))
+        bases.append(base)
+        starts.append(st_)
+    lbs = [(st_, b[1], b[2], b[3]) for st_, b in zip(starts, lbs)]
+    gaps = np.diff(bases)
+    if (gaps <= 0).any():
+        return None
+    pitch = float(np.median(gaps))
+    mad = float(np.median(np.abs(gaps - pitch)))
+    # Ровный — и по медиане разброса, и без выброса: строка вдвое дальше
+    # соседних — это разрыв (форма, таблица), а не тот же шаг.
+    regular = mad <= RHYTHM_MAD * pitch and float(np.max(np.abs(gaps - pitch))) <= RHYTHM_MAX * pitch
+    # База первой строки — по всем строкам сразу (наименьшие квадраты):
+    # отдельная база пляшет у почерка сильнее, чем линовка под ним.
+    idx = np.arange(len(bases), dtype=float)
+    base0 = float(np.mean(np.array(bases) - pitch * idx)) if regular else bases[0]
+    rest = [b[0] for b in lbs[1:]]
+    left = float(np.median(rest))
+    # Правый край — не самая длинная строка (у рукописи это строка
+    # с переносом, вылезшая к краю листа), а 80-й процентиль концов строк.
+    right = float(np.percentile([b[2] for b in lbs], RIGHT_Q))
+    spread = float(np.median(np.abs(np.array(rest) - left)))
+    em = em or 0.8 * pitch
+    indent = lbs[0][0] - left
+    if indent < INDENT_MIN * em or indent > INDENT_MAX * em or spread > INDENT_ALIGN * em:
+        # Отступа нет (или строки не выровнены): левый край — самый левый
+        # из начал строк, чтобы ни одна строка не вышла за поле оригинала.
+        indent = 0.0
+        left = min(left, lbs[0][0])
+    return {"bases": bases, "base0": base0, "pitch": pitch, "regular": bool(regular),
+            "left": left, "right": right, "indent": float(indent), "rows": len(lbs),
+            "top": min(b[1] for b in lbs), "bottom": max(b[3] for b in lbs)}
+
+
+# Ф2. Почерк не сжимается по ширине. Кегль надписи меряется по высоте
+# связных областей, а у слитного почерка область — это СЛОВО с петлями:
+# «буква» выходит от выносного до выносного, кегль — в 1.6 раза крупнее,
+# и прежнее правило прятало ошибку, сжимая буквы до `HSCALE_WIDTH_MIN`
+# (высокие сплющенные буквы шире краски оригинала). У рукописи высота —
+# мера ненадёжная, а ширина надёжная: кегль берётся такой, при котором
+# исходный текст тем же шрифтом занял бы ширину краски оригинала, и не
+# крупнее измеренного. У печати — как прежде: кегль по высоте, ширина
+# начертания по отношению краски (h0).
+CALIB_FLOOR = float(os.environ.get("PAINT_CALIB_FLOOR", "0.5"))
+
+
+def calibrate(em: float, inkw: float, ours: float, hand: bool = False,
+              hmin: float = 0.74) -> tuple:
+    """(кегль, сжатие по ширине)."""
+    if not (inkw > 0 and ours > 0 and em > 0):
+        return em, 1.0
+    r = inkw / ours
+    if hand:
+        return em * max(CALIB_FLOOR, min(1.0, r)), 1.0
+    return em, min(1.0, max(hmin, r))
+
+
+def _wrap_rhythm(words: list, width: float, size: float, measure_w, split_word,
+                 first_indent: float, force: bool = False) -> "list | None":
+    """Строки перевода при кегле `size`; первая строка короче на отступ.
+    Слово шире строки — None, а с `force` — своей строкой (выйдет за край,
+    и это назовёт `over`): пустой ответ на непустой текст стёр бы оригинал
+    и не написал ничего."""
+    lines, cur, ws = [], "", list(words)
+    while ws:
+        w = ws[0]
+        room_w = width - (first_indent if not lines and first_indent > 0 else 0.0)
+        if w == "\n":
+            ws.pop(0)
+            if cur:
+                lines.append(cur)
+                cur = ""
+            continue
+        probe = (cur + " " + w) if cur else w
+        if measure_w(probe, size) <= room_w:
+            cur = probe
+            ws.pop(0)
+            continue
+        if split_word is not None:
+            room = room_w - (measure_w(cur + " ", size) if cur else 0.0)
+            sp = split_word(w, room, size)
+            if sp:
+                lines.append((cur + " " + sp[0]) if cur else sp[0])
+                ws[0] = sp[1]
+                cur = ""
+                continue
+        if not cur:
+            if not force:
+                return None                 # слово шире строки
+            lines.append(w)
+            ws.pop(0)
+            continue
+        lines.append(cur)
+        cur = ""
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+def fit_rhythm(text: str, width: float, em: float, step: float, rows: int, extra: int,
+               measure_w, split_word=None, first_indent: float = 0.0,
+               fixed: bool = False) -> tuple:
+    """(кегль, шаг, строки, вышло ли за место) — раскладка абзаца с ритмом.
+
+    Порядок уступок (Ф3): полный кегль в строках оригинала; полный кегль
+    и свободные строки ниже (`extra`, тем же шагом); буквы мельче при том
+    же шаге до `FIT_FLOOR`; потом буквы и шаг вместе до `FIT_HARD`; не влезло
+    и так — строки сколько выйдет, и это называется (`over`). `fixed` —
+    кегль задан страницей (Ф4): не ужимать, только разложить."""
+    words = []
+    for k, part in enumerate((text or "").split("\n")):
+        if k and words and words[-1] != "\n":
+            words.append("\n")
+        words.extend(part.split())
+    while words and words[-1] == "\n":
+        words.pop()
+    if not words:
+        return em, step, [], False
+    rows = max(1, int(rows))
+    n_all = rows + max(0, int(extra))
+
+    def lay(size):
+        return _wrap_rhythm(words, width, size, measure_w, split_word, first_indent)
+    if fixed:
+        got = lay(em)
+        if got is None:
+            got = _wrap_rhythm(words, width, em, measure_w, split_word, first_indent, True)
+            return em, step, got, True
+        return em, step, got, len(got) > n_all
+    got = lay(em)
+    if got is not None and len(got) <= n_all:
+        return em, step, got, False
+    got = lay(em * FIT_FLOOR)
+    if got is not None and len(got) <= n_all:
+        lo, hi, best = FIT_FLOOR, 1.0, (em * FIT_FLOOR, got)
+        for _ in range(9):
+            mid = (lo + hi) / 2.0
+            g = lay(em * mid)
+            if g is not None and len(g) <= n_all:
+                lo, best = mid, (em * mid, g)
+            else:
+                hi = mid
+        return best[0], step, best[1], False
+    height = (n_all - 1) * step
+    f = FIT_FLOOR
+    while f > FIT_HARD:
+        f = max(FIT_HARD, f * 0.94)
+        st = step * f / FIT_FLOOR
+        cap = int(height / st + 1e-6) + 1
+        g = lay(em * f)
+        if g is not None and len(g) <= cap:
+            return em * f, st, g, False
+    st = step * FIT_HARD / FIT_FLOOR
+    g = _wrap_rhythm(words, width, em * FIT_HARD, measure_w, split_word, first_indent, True)
+    return em * FIT_HARD, st, g, True
+
+
+# Ф4. Один кегль и один шаг на страницу. Абзацы одного семейства с близким
+# кеглем (в пределах `EVEN_SPREAD`) — один класс: кегль класса — меньший из
+# подогнанных (иначе один абзац не влез бы), шаг — медиана, если шаги близки
+# (`EVEN_STEP_SPREAD`). Двух абзацев хватает (`EVEN_MIN`): подписи схемы
+# однострочные и в класс не входят вовсе.
+EVEN_SPREAD = float(os.environ.get("PAINT_EVEN_SPREAD", "0.25"))
+EVEN_STEP_SPREAD = float(os.environ.get("PAINT_EVEN_STEP_SPREAD", "0.15"))
+EVEN_MIN = int(os.environ.get("PAINT_EVEN_MIN", "2"))
+
+
+def even_classes(ents: list) -> list:
+    """Классы абзацев страницы. `ents` — [{"em", "fam"}]; ответ — списки
+    индексов (класс от `EVEN_MIN` абзацев)."""
+    by: dict = {}
+    for i, e in enumerate(ents):
+        if e.get("em"):
+            by.setdefault(e.get("fam") or "", []).append(i)
+    out = []
+    for idx in by.values():
+        ems = sorted(ents[i]["em"] for i in idx)
+        med = ems[len(ems) // 2]
+        cls = [i for i in idx if abs(ents[i]["em"] - med) <= EVEN_SPREAD * med]
+        if len(cls) >= EVEN_MIN:
+            out.append(cls)
+    return out
+
+
+def even_step(steps: list) -> "float | None":
+    """Общий шаг класса или None — шаги разные (разная линовка)."""
+    st = sorted(s for s in steps if s)
+    if not st:
+        return None
+    med = st[len(st) // 2]
+    if all(abs(s - med) <= EVEN_STEP_SPREAD * med for s in st):
+        return med
+    return None
+
+
+def has_letters(rgb, em: float) -> bool:
+    """Есть ли в полосе краска размером с букву (Ф3: свободная ли строка под
+    абзацем). Бумага — максимум окрестности (тонкие линии клетки и линейки
+    им снимаются), краска — темнее бумаги больше `INK_DIFF`; длинная тонкая
+    линия буквой не считается. Мерить нечем — «занято»: продолжать абзац
+    поверх непрочитанного хуже, чем ужать буквы."""
+    if np is None or cv2 is None or rgb is None or rgb.size == 0:
+        return True
+    g = rgb.astype(np.int16).mean(axis=2).astype(np.uint8) if rgb.ndim == 3 else rgb
+    em = max(4.0, float(em or 0))
+    kk = _odd(0.6 * em, 3, 61)
+    paper = cv2.dilate(g, np.ones((kk, kk), np.uint8))
+    dark = (paper.astype(np.int16) - g.astype(np.int16)) > INK_DIFF
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(dark.astype(np.uint8), 8)
+    thin = max(2.0, 0.06 * em)
+    hits = 0
+    for i in range(1, n):
+        w_, h_ = st[i, cv2.CC_STAT_WIDTH], st[i, cv2.CC_STAT_HEIGHT]
+        if h_ >= 0.25 * em and w_ >= 0.08 * em and min(w_, h_) > thin:
+            hits += 1
+            if hits >= 2:
+                return True
+    return False
+
+
+# Ф7. Толщина пера рукописи. Рукописный шрифт рисует тонкой линией, а
+# конспект пишут ручкой или маркером, и перевод выходил бледнее оригинала.
+# Толщина штриха оригинала (`_stem`) против толщины штриха шрифта при том же
+# кегле: недостающее добирается обводкой, не больше `STROKE_MAX` кегля.
+STROKE_MAX = float(os.environ.get("PAINT_STROKE_MAX", "0.04"))
+
+
+def stroke_for(stem_src: float, stem_font_per_px: float, size: float, whole: bool = True):
+    """Обводка с КАЖДОЙ стороны штриха до толщины пера оригинала (в единицах
+    снимка или точках страницы). `whole` — целым числом (растр)."""
+    if not (stem_src > 0 and stem_font_per_px > 0 and size > 0):
+        return 0
+    need = (stem_src - stem_font_per_px * size) / 2.0
+    v = max(0.0, min(need, STROKE_MAX * size))
+    return int(round(v)) if whole else v
+
+
+_STEM_CACHE: dict = {}
+
+
+def font_stem(path: str) -> float:
+    """Толщина вертикального штриха шрифта на единицу кегля (Ф7)."""
+    if not path:
+        return 0.0
+    if path not in _STEM_CACHE:
+        v = 0.0
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            f = ImageFont.truetype(path, 120)
+            im = Image.new("L", (900, 200), 0)
+            ImageDraw.Draw(im).text((10, 10), "nmuhl", font=f, fill=255)
+            v = _stem(np.asarray(im) > 127) / 120.0
+        except Exception:
+            v = 0.0
+        _STEM_CACHE[path] = v
+    return _STEM_CACHE[path]

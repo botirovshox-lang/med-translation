@@ -13,6 +13,7 @@
   " · картинки не читаются: ": " · o'qilmaydigan rasmlar: ",
   " · картинок не разобрано: ": " · tahlil qilinmagan rasmlar: ",
   " · надписей без перевода: ": " · tarjimasiz yozuvlar: ",
+  " · надписей шире места строк: ": " · asl satrlarga sig‘magan yozuvlar: ",
   " · надписей вписано в картинки: ": " · rasmga yozilgan yozuvlar: ",
   " · надписей всего: ": " · jami yozuvlar: ",
   " · надписей не попало в файл: ": " · faylga tushmagan yozuvlar: ",

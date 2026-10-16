@@ -13,6 +13,7 @@
   " · картинки не читаются: ": " · images not read: ",
   " · картинок не разобрано: ": " · pictures not analysed: ",
   " · надписей без перевода: ": " · untranslated labels: ",
+  " · надписей шире места строк: ": " · labels wider than the original lines: ",
   " · надписей вписано в картинки: ": " · labels written into images: ",
   " · надписей всего: ": " · labels in total: ",
   " · надписей не попало в файл: ": " · labels that did not make it into the file: ",

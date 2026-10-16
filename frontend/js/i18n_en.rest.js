@@ -113,6 +113,7 @@ window.I18N.register("en", {
  " · надписей вписано в картинки: ": " · labels written into images: ",
  " · надписей всего: ": " · labels in total: ",
  " · надписей не попало в файл: ": " · labels that did not make it into the file: ",
+ " · надписей шире места строк: ": " · labels wider than the original lines: ",
  " · нажмите, чтобы заменить": " · click to replace",
  " · не вернуть: ": " · cannot be restored: ",
  " · не переведено заново (предел организации): ": " · not re-translated (organization limit): ",

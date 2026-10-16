@@ -113,6 +113,7 @@ window.I18N.register("uz", {
  " · надписей вписано в картинки: ": " · rasmga yozilgan yozuvlar: ",
  " · надписей всего: ": " · jami yozuvlar: ",
  " · надписей не попало в файл: ": " · faylga tushmagan yozuvlar: ",
+ " · надписей шире места строк: ": " · asl satrlarga sig‘magan yozuvlar: ",
  " · нажмите, чтобы заменить": " · almashtirish uchun bosing",
  " · не вернуть: ": " · qaytarib bo'lmaydi: ",
  " · не переведено заново (предел организации): ": " · qayta tarjima qilinmadi (tashkilot chegarasi): ",

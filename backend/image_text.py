@@ -1597,7 +1597,11 @@ def _fill_and_ink(arr, box) -> tuple:
 # можно переносить между любыми двумя знаками — кроме знаков, которыми строка
 # не начинается (кинсоку: «。、」）» и т. п.).
 _CJK_RE = re.compile("[⺀-鿿豈-﫿가-힯　-〿＀-￯]")
-_NO_LINE_START = set("。、，．・：；？！）」』】〕〉》ー,.!?;:)%")
+_NO_LINE_START = set("。、，．・：；？！）」』】〕〉》ー,.!?;:)%”’")
+# Кавычка, за которой сразу стоит знак конца фразы, — закрывающая, какой бы
+# формы ни была («可是突然“。» — немецкие кавычки в китайском переводе):
+# строку она не начинает (16.10.2026, страница Чехова ZH).
+_QUOTES = set("“”„‟‘’‚‛«»\"'")
 
 
 def _cjk_units(word: str) -> list:
@@ -1605,8 +1609,10 @@ def _cjk_units(word: str) -> list:
     иероглиф — свой кусок, латиница и цифры внутри («2002年») — одним куском,
     знак, которым строка не начинается, приклеен к предыдущему."""
     out = []
-    for ch in word:
-        if out and (ch in _NO_LINE_START or not (_CJK_RE.match(ch) or _CJK_RE.match(out[-1][-1]))):
+    for n_, ch in enumerate(word):
+        closing = ch in _QUOTES and n_ + 1 < len(word) and word[n_ + 1] in _NO_LINE_START
+        if out and (ch in _NO_LINE_START or closing
+                    or not (_CJK_RE.match(ch) or _CJK_RE.match(out[-1][-1]))):
             out[-1] += ch
         else:
             out.append(ch)
@@ -1775,12 +1781,28 @@ _SCRIPT_FONTS = ("NotoSansSC-Regular.otf", "NotoSansJP-Regular.otf", "NotoSansKR
                  "NotoSansMyanmar", "NotoSansEthiopic")
 
 
-def _paint_font(bold: bool, text: str = "") -> Optional[str]:
-    """Рубленый шрифт перевода надписи — первый, что знает ВСЕ его буквы:
-    Noto Sans (как у выгрузки PDF), DejaVu, затем шрифты письменностей из
-    `frontend/vendor/fonts/sub`. 12.10.2026 китайский перевод таблички
-    рисовался DejaVu — квадратиками вместо каждого иероглифа, а отчёт
+def _pf():
+    try:
+        from backend import print_fonts as pf
+    except ImportError:
+        import print_fonts as pf
+    return pf
+
+
+def _paint_font(bold: bool, text: str = "", fam: str = "") -> Optional[str]:
+    """Шрифт перевода надписи — первый, что знает ВСЕ его буквы.
+
+    `fam == "hand"` (страница от руки, `main._hand_image`) — сперва
+    рукописные файлы общего списка (`print_fonts`, Ф1): прежде путь картинок
+    печатал конспект гротеском, хотя путь PDF уже брал рукописный шрифт.
+    Дальше — рубленый: Noto Sans (как у выгрузки PDF), DejaVu, затем шрифты
+    письменностей из `frontend/vendor/fonts/sub`. 12.10.2026 китайский перевод
+    таблички рисовался DejaVu — квадратиками вместо каждого иероглифа, а отчёт
     говорил «написано»."""
+    if fam == "hand":
+        for p in _pf().hand_font_files():
+            if _font_covers(p, text):
+                return p
     p = _SANS / ("NotoSans-Bold.ttf" if bold else "NotoSans-Regular.ttf")
     if p.exists() and _font_covers(str(p), text):
         return str(p)
@@ -1797,10 +1819,11 @@ def _paint_font(bold: bool, text: str = "") -> Optional[str]:
     return d
 
 
-def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
-    """Замер надписи по пикселям, стирание и раскладка перевода
-    (`text_paint`): цвет, кегль, жирность, угол и дуга — как у оригинала.
-    None — нечем или букв не нашлось (вызывающий идёт прежней дорогой)."""
+def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
+    """Замер надписи по пикселям и стирание (`text_paint`): цвет, кегль,
+    жирность, угол и дуга — как у оригинала; у абзаца с рамками строк —
+    базы, шаг и отступ (Ф1). None — нечем или букв не нашлось (вызывающий
+    идёт прежней дорогой)."""
     tp = _tp()
     if tp is None:
         return None
@@ -1818,35 +1841,79 @@ def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         return None
     if len(m["bands"]) > rows + 1:
         m["bands"] = []
-    fpath = _paint_font(m["bold"], it.get("text") or "")
+    fam = it.get("fam") or ""
+    text = it.get("text") or ""
+    fpath = _paint_font(m["bold"], text, fam)
     if not fpath:
         return None
     cache: dict = {}
 
-    def font_at(s):
+    def font_at(s, path=fpath):
         s = max(4, int(round(s)))
-        if s not in cache:
-            cache[s] = ImageFont.truetype(fpath, s)
-        return cache[s]
+        key = (path, s)
+        if key not in cache:
+            cache[key] = ImageFont.truetype(path, s)
+        return cache[key]
 
+    geo = None
+    lbs = it.get("lineBoxes") or []
+    if not m["angle"] and not m.get("arc") and rows >= 2 and len(lbs) == rows:
+        loc = [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs]
+        g = tp.line_geometry(loc, m["mask"], m["em"])
+        if g and g["regular"]:
+            geo = g
     em = m["em"] * k
     src = " ".join((it.get("src") or "").split())
     h0 = 1.0
-    if src and not m["angle"] and not m.get("arc") and m["bands"]:
+    if src and not m["angle"] and not m.get("arc") and (m["bands"] or geo):
         inkw = 0.0
-        for a, b in m["bands"]:
-            cols = _np.nonzero(m["mask"][a:b + 1].any(axis=0))[0]
-            if len(cols):
-                inkw += (cols[-1] - cols[0] + 1) * k
-        ours = draw.textlength(src, font=font_at(em))
-        if ours > 0 and inkw > 0:
-            h0 = min(1.0, max(0.74, inkw / ours))
+        if geo:
+            # Ширина краски — по рамкам строк: полосы маски у почерка слиты
+            # и раздроблены (Ф1), и ширина по ним теряла целые строки.
+            H_, W_ = m["mask"].shape[:2]
+            for lb in loc:
+                a, b = max(0, int(lb[1])), min(H_, int(math.ceil(lb[3])))
+                c, d = max(0, int(lb[0])), min(W_, int(math.ceil(lb[2])))
+                if b > a and d > c:
+                    cols = _np.nonzero(m["mask"][a:b, c:d].any(axis=0))[0]
+                    if len(cols):
+                        inkw += (cols[-1] - cols[0] + 1) * k
+        else:
+            for a, b in m["bands"]:
+                cols = _np.nonzero(m["mask"][a:b + 1].any(axis=0))[0]
+                if len(cols):
+                    inkw += (cols[-1] - cols[0] + 1) * k
+        # Исходный текст меряется шрифтом, который знает ЕГО буквы: иначе
+        # отношение ширины — про квадратики, а не про почерк.
+        mpath = fpath if _font_covers(fpath, src) else (_paint_font(m["bold"], src) or fpath)
+        ours = draw.textlength(src, font=font_at(em, mpath))
+        # Ширине краски верим только по рамкам строк: полосы маски у почерка
+        # слиты и раздроблены, и кегль по ним выходил вдвое мельче.
+        em, h0 = tp.calibrate(em, inkw, ours, hand=(fam == "hand" and geo is not None), hmin=0.74)
+    stem = tp._stem(m["mask"]) * k if fam == "hand" else 0.0
+    return {"m": m, "erased": erased, "alpha": alpha, "fpath": fpath, "font_at": font_at,
+            "em": em, "h0": h0, "geo": geo, "k": k, "pbox": pbox, "it": it, "fam": fam,
+            "ink": m["ink"], "stem": stem,
+            "handFallback": fam == "hand" and fpath not in _pf().hand_font_files()}
+
+
+def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[float] = None,
+                  extra: int = 0, fixed: bool = False) -> Optional[dict]:
+    """Раскладка перевода по замеру `pm`. None — не влезло (дуга, наклон,
+    блок без рамок строк): вызывающий идёт прежней дорогой."""
+    tp = _tp()
+    m, k, it = pm["m"], pm["k"], pm["it"]
+    x0, y0, x1, y1 = pm["pbox"]
+    font_at, h0 = pm["font_at"], pm["h0"]
+    em = em or pm["em"]
+    text = it.get("text") or ""
 
     def mw(t, s):
         return draw.textlength(t, font=font_at(s)) * h0
-    text = it.get("text") or ""
     w = (x1 - x0) * k
     parts = None
+    over = False
+    geo = pm.get("geo")
     if m.get("arc"):
         arc = m["arc"]
         rb = max(1.0, arc["r"] - arc["up"] * 0.36 * m["em"]) * k
@@ -1857,7 +1924,7 @@ def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
             size *= 0.96
         if mw(one, size) > width * 1.05:
             return None                 # длиннее дуги и на полу — плашкой, прежней дорогой
-        lines, step = [one], size
+        lines, step_ = [one], size
     elif m["angle"]:
         width = math.hypot(x1 - x0, y1 - y0) * k * 0.92
         one = " ".join(text.split())
@@ -1869,7 +1936,29 @@ def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         # китайском переводе длинного блока) — значит плашкой.
         if mw(one, size) > width * 1.05:
             return None
-        lines, step = [one], size
+        lines, step_ = [one], size
+    elif geo:
+        # Абзац с ровным ритмом строк (Ф1–Ф3): строки перевода стоят на
+        # базовых линиях оригинала тем же шагом, первая — с отступом
+        # оригинала; длинный перевод идёт в свободные строки ниже, потом
+        # мельче буквами при том же шаге, и только потом теснее.
+        align = _start_align(it.get("align"), text)
+        left, right = geo["left"] * k, geo["right"] * k
+        indent = geo["indent"] * k if align in ("left", "justify") else 0.0
+        st0 = (step or geo["pitch"]) * k
+        size, step_, lines, over = tp.fit_rhythm(
+            text, right - left, em, st0, geo["rows"], extra, mw,
+            lambda wd, room, sz: _split_cjk(lambda t: mw(t, sz), wd, room), indent, fixed)
+        if not lines or (over and fixed):
+            return None
+        if over:
+            # Не влезло и тесно — прежняя дорога (строки в рамке абзаца или
+            # плашка), а не строки поверх соседнего абзаца.
+            return _paint_layout(dict(pm, geo=None), draw)
+        base0 = geo["base0"] * k
+        parts = [{"bases": [base0 + i * step_ for i in range(len(lines))], "x0": left,
+                  "x1": right, "indent": indent, "lines": lines, "size": size,
+                  "step": step_, "font": font_at(size)}]
     else:
         bands = m["bands"]
         areas = m.get("areas") or []
@@ -1884,22 +1973,132 @@ def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         parts = []
         for (top, bot, rows_k), chunk in zip(spans, chunks):
             height = max(bot - top, em)
-            size, step, lines = tp.fit_lines(chunk, w, height + 0.3 * em, em,
-                                             max(m["pitch"] * k, em * 1.05), mw,
-                                             lambda wd, room, sz: _split_cjk(lambda t: mw(t, sz), wd, room),
-                                             0.45, rows_k)
-            if lines and (len(lines) - 1) * step + 0.95 * size > height + 0.6 * em:
+            pitch = max(m["pitch"] * k, em * 1.05)
+            # Строк не больше, чем вместит место ПО ТОЙ ЖЕ мерке, которой
+            # раскладку проверяют ниже (Ф1): лишние полосы маски (обрывки
+            # выносных) разрешали `fit_lines` раскладку, которую проверка
+            # тут же отвергала, и блок уходил на плашку.
+            cap = int((height + 0.6 * em - 0.95 * em) // max(pitch, 1e-6)) + 1
+            rows_k = max(1, min(rows_k, cap))
+            size, step_, lines = tp.fit_lines(chunk, w, height + 0.3 * em, em, pitch, mw,
+                                              lambda wd, room, sz: _split_cjk(lambda t: mw(t, sz), wd, room),
+                                              0.45, rows_k)
+            if lines and (len(lines) - 1) * step_ + 0.95 * size > height + 0.6 * em:
                 return None             # не влезло и мельче — плашкой, прежней дорогой
-            parts.append({"top": top, "bot": bot, "lines": lines, "size": size, "step": step,
+            parts.append({"top": top, "bot": bot, "lines": lines, "size": size, "step": step_,
                           "font": font_at(size)})
         size = min(p_["size"] for p_ in parts)
-        step = parts[0]["step"]
+        step_ = parts[0]["step"]
         lines = [ln for p_ in parts for ln in p_["lines"]]
     if size < IMG_FONT_MIN_PX * k * 0.6:
         return None
-    return {"pbox": pbox, "erased": erased, "alpha": alpha, "m": m, "lines": lines,
-            "size": size, "step": step, "h0": h0, "font": font_at(size), "k": k,
-            "align": _start_align(it.get("align"), it.get("text")), "parts": parts}
+    stroke = 0
+    if pm.get("stem") and not m.get("arc") and not m["angle"]:
+        stroke = tp.stroke_for(pm["stem"], tp.font_stem(pm["fpath"]), size)
+    return {"pbox": pm["pbox"], "stroke": stroke, "erased": pm["erased"],
+            "alpha": pm["alpha"], "m": m, "lines": lines, "size": size, "step": step_, "h0": h0, "font": font_at(size),
+            "k": k, "align": _start_align(it.get("align"), text), "parts": parts,
+            "ink": pm.get("ink") or m["ink"], "over": bool(over)}
+
+
+def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
+    """Замер и раскладка одним вызовом (блок сам по себе, без страницы)."""
+    pm = _paint_measure(arr, pbox, it, k, draw)
+    return None if pm is None else _paint_layout(pm, draw)
+
+
+# Ф3. Сколько свободных строк ниже абзаца можно взять под длинный перевод:
+# той же линовкой, пока строка не задевает чужой блок (с прежним зазором:
+# была пустая строка между абзацами — она остаётся), не выходит за низ
+# картинки и не ложится на краску, которой разбор не прочёл (рисунок,
+# непрочитанный текст). Не больше `IMG_EXTRA_ROWS` и не больше строк самого
+# абзаца.
+IMG_EXTRA_ROWS = int(os.environ.get("IMG_EXTRA_ROWS", "6"))
+
+
+def _free_rows(pm: dict, others: list, arr, w: int, h: int, step: Optional[float] = None) -> int:
+    """`step` — шаг, которым строки будут НАПЕЧАТАНЫ (общий шаг класса):
+    проверять место надо там, куда они лягут."""
+    geo = pm.get("geo")
+    if not geo or IMG_EXTRA_ROWS <= 0:
+        return 0
+    tp = _tp()
+    k = pm["k"]
+    x0, y0 = pm["pbox"][0], pm["pbox"][1]
+    em = pm["em"] / k
+    p = step or geo["pitch"]
+    last = y0 + geo["base0"] + (geo["rows"] - 1) * p
+    L, R = x0 + geo["left"], x0 + geo["right"]
+    top, bottom = y0 + geo["top"], y0 + geo["bottom"]
+    n = 0
+    for j in range(1, min(IMG_EXTRA_ROWS, geo["rows"]) + 1):
+        b = last + j * p
+        t_, b_ = b - 0.85 * em, b + 0.35 * em
+        if b_ > h - 0.25 * p:
+            break
+        blocked = False
+        for o in others:
+            if o[2] <= L or o[0] >= R or o[3] <= top:
+                continue
+            keep = p if (o[1] - bottom) >= p else 0.25 * p
+            if b_ + keep > o[1]:
+                blocked = True
+                break
+        if blocked:
+            break
+        reg = arr[max(0, int(t_)):min(h, int(math.ceil(b_))), max(0, int(L)):min(w, int(math.ceil(R)))]
+        if tp is None or tp.has_letters(_np.ascontiguousarray(_visible(reg)[..., :3].astype(_np.uint8)), em):
+            break
+        n += 1
+    return n
+
+
+def _page_even(pms: list, draw, arr, w: int, h: int, others_of) -> dict:
+    """Ф4: один кегль, шаг и цвет на класс абзацев страницы. {номер: план}."""
+    tp = _tp()
+    idx = [i for i, pm in enumerate(pms) if pm is not None and pm.get("geo")]
+    out: dict = {}
+    if tp is None or len(idx) < 2:
+        return out
+    ents = [{"em": pms[i]["em"], "fam": pms[i]["fam"]} for i in idx]
+    for cls in tp.even_classes(ents):
+        mem = [idx[c] for c in cls]
+        em_c = sorted(pms[i]["em"] for i in mem)[len(mem) // 2]
+        st_c = tp.even_step([pms[i]["geo"]["pitch"] for i in mem])
+        h0s = sorted(pms[i]["h0"] for i in mem)
+        h0_c = h0s[len(h0s) // 2]
+        stems = sorted(pms[i].get("stem") or 0.0 for i in mem)
+        stem_c = stems[len(stems) // 2]
+        fits = {}
+        own = {i: (pms[i]["h0"], pms[i].get("stem")) for i in mem}
+
+        def back(ids):
+            for j_ in ids:
+                pms[j_]["h0"], pms[j_]["stem"] = own[j_]
+        for i in mem:
+            pms[i]["h0"] = h0_c
+            if stem_c:
+                pms[i]["stem"] = stem_c
+            pms[i]["_extra"] = _free_rows(pms[i], others_of(i), arr, w, h, step=st_c)
+            pl = _paint_layout(pms[i], draw, em=em_c, step=st_c, extra=pms[i]["_extra"])
+            if pl is None or pl["over"] or not pl.get("parts") or not pl["parts"][0].get("bases") \
+                    or pl["size"] < tp.FIT_FLOOR * em_c - 1e-6:
+                back([i])                   # не держит класс — раскладывается сам, своим
+                continue
+            fits[i] = pl["size"]
+        if len(fits) < tp.EVEN_MIN:
+            back(fits)
+            continue
+        size_c = min(fits.values())
+        inks = [pms[i]["ink"] for i in fits]
+        ink_c = tuple(int(sorted(c[j] for c in inks)[len(inks) // 2]) for j in range(3))
+        for i in fits:
+            pms[i]["ink"] = ink_c
+            pl = _paint_layout(pms[i], draw, em=size_c, step=st_c, extra=pms[i]["_extra"],
+                               fixed=True)
+            if pl is not None:
+                out[i] = pl
+    return out
 
 
 def _rtl(text: str) -> bool:
@@ -1944,15 +2143,20 @@ def _paint_put(big, p: dict) -> None:
     m, k = p["m"], p["k"]
     x0, y0, x1, y1 = p["pbox"]
     font, size, step, h0 = p["font"], p["size"], p["step"], p["h0"]
-    ink = tuple(int(v) for v in m["ink"]) + (255,)
+    ink = tuple(int(v) for v in (p.get("ink") or m["ink"])) + (255,)
+    sw = int(p.get("stroke") or 0)
 
     def layer(txt, f_=None, s_=None):
         f_ = f_ or font
         s_ = s_ or size
-        bb = f_.getbbox(txt)
-        wl, hl = max(1, bb[2] - min(0, bb[0]) + 2), max(1, int(s_ * 1.4))
+        bb = f_.getbbox(txt, stroke_width=sw)
+        wl, hl = max(1, bb[2] - min(0, bb[0]) + 2 + sw), max(1, int(s_ * 1.4) + 2 * sw)
         im = Image.new("RGBA", (wl, hl), (0, 0, 0, 0))
-        ImageDraw.Draw(im).text((1, 0), txt, font=f_, fill=ink)
+        if sw:
+            ImageDraw.Draw(im).text((1 + sw, sw), txt, font=f_, fill=ink, stroke_width=sw,
+                                    stroke_fill=ink)
+        else:
+            ImageDraw.Draw(im).text((1, 0), txt, font=f_, fill=ink)
         if h0 < 0.999:
             im = im.resize((max(1, int(wl * h0)), hl), Image.LANCZOS)
         return im
@@ -1993,6 +2197,18 @@ def _paint_put(big, p: dict) -> None:
     for part in parts:
         font, size, step = part["font"], part["size"], part["step"]
         asc = font.getmetrics()[0]
+        if "bases" in part:
+            # Строка — на своей базовой линии (Ф1), первая — с отступом.
+            for n_, ln in enumerate(part["lines"]):
+                g = layer(ln, font, size)
+                if p["align"] == "center":
+                    x = x0 * k + (part["x0"] + part["x1"]) / 2.0 - g.size[0] / 2.0
+                elif p["align"] == "right":
+                    x = x0 * k + part["x1"] - g.size[0]
+                else:
+                    x = x0 * k + part["x0"] + (part["indent"] if n_ == 0 else 0.0)
+                _put(big, g, (x - sw, y0 * k + part["bases"][n_] - asc - sw))
+            continue
         top, bot = y0 * k + part["top"], y0 * k + part["bot"]
         block_h = (len(part["lines"]) - 1) * step + size * 0.95
         y = top + max(0.0, ((bot - top) - block_h) / 2.0) - (asc - 0.74 * size)
@@ -2004,7 +2220,7 @@ def _paint_put(big, p: dict) -> None:
                 x = x1 * k - g.size[0]
             else:
                 x = x0 * k
-            _put(big, g, (x, y))
+            _put(big, g, (x - sw, y - sw))
             y += step
 
 
@@ -2012,12 +2228,49 @@ def _refuse(items: list, why: str) -> tuple:
     return None, [{"i": i, "ok": False, "why": why} for i in range(len(items))]
 
 
-def render_target(img_bytes: bytes, items: list) -> tuple:
+# Ф5. Плашка (буквы по пикселям не выделились) на НЕРОВНОМ фоне — не
+# сплошной прямоугольник. Симптом (проект 89): абзац конспекта лёг под серый
+# прямоугольник 680×590 — темнее бумаги, без клетки и без светового
+# перепада фото; цвет — мода по всей рамке вместе с линиями и сглаживанием
+# букв. Правило: на неровном фоне плашка — фон, восстановленный медианой
+# с окном шире буквы по уменьшенной копии (снимает буквы и тонкие линии,
+# оставляет перепад света); ровный фон — как прежде, сплошным цветом.
+# Рамка плашки — по рамкам строк с полем `IMG_PLATE_PAD` строки, а не по
+# раздутой рамке блока.
+IMG_PLATE_PAD = float(os.environ.get("IMG_PLATE_PAD", "0.3"))
+
+
+def _plate_bg(arr, box, lh: float, k: int):
+    """Восстановленный фон под плашку (картинка Pillow размера box × k)
+    или None — нечем."""
+    tp = _tp()
+    if tp is None:
+        return None
+    import cv2
+    x0, y0, x1, y1 = box
+    reg = _np.ascontiguousarray(_visible(arr[y0:y1, x0:x1])[..., :3].astype(_np.uint8))
+    if reg.size == 0:
+        return None
+    s = max(1.0, (lh or 20.0) / 12.0)
+    small = cv2.resize(reg, (max(1, int(reg.shape[1] / s)), max(1, int(reg.shape[0] / s))),
+                       interpolation=cv2.INTER_AREA)
+    kk = tp._odd(1.6 * (lh or 20.0) / s, 3, 99)
+    bg = cv2.medianBlur(small, kk) if min(small.shape[:2]) > kk else small
+    bg = cv2.resize(bg, ((x1 - x0) * k, (y1 - y0) * k), interpolation=cv2.INTER_LINEAR)
+    return Image.fromarray(bg)
+
+
+def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = None) -> tuple:
     """Стереть исходные надписи и написать перевод. (новые байты | None, отчёт).
 
     Отчёт по каждому блоку обязателен: перерисовать удаётся не всё, а молча
     пропущенный блок остаётся на языке оригинала — человек узнает об этом,
-    только открыв готовый файл."""
+    только открыв готовый файл.
+
+    Три прохода: замер всех блоков; страница (Ф4 — один кегль, шаг и цвет
+    у абзацев одного класса); раскладка и печать. `obstacles` — рамки ВСЕХ
+    надписей картинки (и непереведённых): длинный перевод уходит в свободные
+    строки ниже только мимо них (Ф3)."""
     if Image is None or _np is None:
         return _refuse(items, "no_pillow")
     if not items:
@@ -2049,12 +2302,17 @@ def render_target(img_bytes: bytes, items: list) -> tuple:
     k = _scale_for(im, items)
     big = im.resize((w * k, h * k), Image.LANCZOS) if k > 1 else im.copy()
     draw = ImageDraw.Draw(big)
-    report, plan, paint = [], [], []
+    n = len(items)
+    report: list = [None] * n
+    plan, paint = [], []
+    # ── Проход 1: проверки рамки и замер по пикселям ──
+    pre: list = [None] * n
+    pms: list = [None] * n
     for i, it in enumerate(items):
         text = (it.get("text") or "").strip()
         box = it.get("box") or [0, 0, 0, 0]
         if not text:
-            report.append({"i": i, "ok": False, "why": "empty"})
+            report[i] = {"i": i, "ok": False, "why": "empty"}
             continue
         bw0, bh0 = box[2] - box[0], box[3] - box[1]
         vertical = bw0 > 0 and (it.get("rows") or 1) <= 1 and bh0 >= bw0 * IMG_VERT_RATIO
@@ -2066,57 +2324,107 @@ def render_target(img_bytes: bytes, items: list) -> tuple:
         if (pbox[2] - pbox[0]) * (pbox[3] - pbox[1]) < IMG_BOX_KEEP * want_area:
             # Рамка не помещается в картинку: координаты посчитаны не для неё.
             # `_clip` прижал бы их к краю, и перевод встал бы в угол.
-            report.append({"i": i, "ok": False, "why": "outside"})
+            report[i] = {"i": i, "ok": False, "why": "outside"}
             continue
         if pbox[2] - pbox[0] < 4 or pbox[3] - pbox[1] < 4:
-            report.append({"i": i, "ok": False, "why": "tiny_box"})
+            report[i] = {"i": i, "ok": False, "why": "tiny_box"}
             continue
         if vertical and _tp() is None:
             # Надпись оригинала шла сверху вниз (`IMG_VERT_RATIO`), а мерить
             # её угол нечем — подпись.
-            report.append({"i": i, "ok": False, "why": "vertical"})
+            report[i] = {"i": i, "ok": False, "why": "vertical"}
             continue
+        pre[i] = (pbox, vertical, text)
         # Сперва — замер по пикселям и стирание (`text_paint`): цвет, кегль,
         # жирность, угол и дуга как у оригинала, а неровный фон стирается
-        # inpaint'ом по маске букв, и подписи под картинкой не нужно.
-        pp = _paint_plan(arr, pbox, it, k, draw)
+        # по маске букв (клетка и линейка — по модели бумаги, Ф6).
+        pms[i] = _paint_measure(arr, pbox, it, k, draw)
+
+    # ── Проход 2: страница — один кегль, шаг и цвет у класса абзацев (Ф4) ──
+    boxes_all = [list(o) for o in (obstacles or []) if o and len(o) >= 4]
+    for j, it2 in enumerate(items):
+        if it2.get("box"):
+            boxes_all.append(list(it2["box"]))
+
+    def others_of(i):
+        own = list(items[i].get("box") or [])[:4]
+        return [o for o in boxes_all if o[:4] != own]
+    even = _page_even(pms, draw, arr, w, h, others_of)
+
+    # ── Проход 3: раскладка, плашка там, где букв не выделить ──
+    for i, it in enumerate(items):
+        if report[i] is not None or pre[i] is None:
+            continue
+        pbox, vertical, text = pre[i]
+        box = it.get("box") or [0, 0, 0, 0]
+        pm = pms[i]
+        pp = None
+        if pm is not None:
+            pp = even.get(i)
+            if pp is None:
+                extra = _free_rows(pm, others_of(i), arr, w, h) if pm.get("geo") else 0
+                pp = _paint_layout(pm, draw, extra=extra)
         if pp is not None and vertical and abs(abs(pp["m"]["angle"]) - 90) > 20 \
                 and not pp["m"].get("arc"):
             # Детектор сказал «одна строка, рамка выше ширины», а буквы в ней
             # горизонтальные: где и под каким углом текст — неизвестно, и
             # писать наугад нельзя.
-            report.append({"i": i, "ok": False, "why": "vertical"})
+            report[i] = {"i": i, "ok": False, "why": "vertical"}
             continue
         if pp is not None:
             pp["i"] = i
             paint.append(pp)
-            report.append({"i": i, "ok": True, "size": round(pp["size"] / k, 1),
-                           "rows": len(pp["lines"]), "paint": 1})
+            r = {"i": i, "ok": True, "size": round(float(pp["size"]) / k, 1),
+                 "rows": len(pp["lines"]), "paint": 1}
+            if pp.get("over"):
+                r["over"] = 1           # строк больше, чем места: сказано числом
+            if i in even:
+                r["even"] = 1
+            if pm.get("handFallback"):
+                r["handFallback"] = 1   # рукописного файла с этими буквами нет
+            if pm["m"].get("eraseHow"):
+                r["erase"] = pm["m"]["eraseHow"]
+            report[i] = r
             continue
         if vertical:
-            report.append({"i": i, "ok": False, "why": "vertical"})
+            report[i] = {"i": i, "ok": False, "why": "vertical"}
             continue
         flat = flatness(arr, pbox)
         if flat < IMG_FLAT_MIN and _tp() is None:
             # Пёстрый фон и мерить буквы нечем: заливка была бы заплаткой.
-            report.append({"i": i, "ok": False, "why": "flat", "flat": round(flat, 3)})
+            report[i] = {"i": i, "ok": False, "why": "flat", "flat": round(flat, 3)}
             continue
         # Пёстрый фон, букв по пикселям не выделить: перевод — на плашке
         # цвета фона В САМОЙ картинке, а не подписью под ней (подписи под
         # рисунками читатель не просил; решение владельца 11.10.2026).
+        lbs = [lb for lb in (it.get("lineBoxes") or []) if lb and len(lb) >= 4]
+        if lbs and int(it.get("rows") or 1) == len(lbs):
+            # Рамка плашки — по строкам с небольшим полем (Ф5), не шире рамки.
+            lh = float(it.get("lineH") or 0) or (box[3] - box[1]) / max(1, len(lbs))
+            pd = IMG_PLATE_PAD * lh
+            pbox = _clip((min(b[0] for b in lbs) - pd, min(b[1] for b in lbs) - pd,
+                          max(b[2] for b in lbs) + pd, max(b[3] for b in lbs) + pd), w, h)
+            pbox = (max(pbox[0], pre[i][0][0]), max(pbox[1], pre[i][0][1]),
+                    min(pbox[2], pre[i][0][2]), min(pbox[3], pre[i][0][3]))
         fill, ink = _fill_and_ink(arr, pbox)
         sbox = [v * k for v in pbox]
         bw, bh = sbox[2] - sbox[0], sbox[3] - sbox[1]
-        font, rows, step, size = _fit(draw, text, _paint_font(False, text) or fpath, bw, bh, max(6, int(bh)))
+        font, rows, step, size = _fit(draw, text, _paint_font(False, text, it.get("fam") or "") or fpath,
+                                      bw, bh, max(6, int(bh)))
         if font is None or size < IMG_FONT_MIN_PX * k:
             # Влезть-то влезет, но читать будет нечего. Такой блок уходит
             # подписью под картинкой — это честнее нечитаемой строки.
-            report.append({"i": i, "ok": False, "why": "tiny_font",
-                           "size": round(size / k, 1)})
+            report[i] = {"i": i, "ok": False, "why": "tiny_font", "size": round(size / k, 1)}
             continue
+        bgimg = None
+        if flat < IMG_FLAT_MIN and arr.ndim == 3 and arr.shape[-1] == 3:
+            # Прозрачная картинка — прежней заливкой: она хранит прозрачность.
+            bgimg = _plate_bg(arr, pbox, float(it.get("lineH") or 0), k)
         plan.append({"i": i, "sbox": sbox, "font": font, "rows": rows, "step": step,
-                     "fill": fill, "ink": ink, "align": _start_align(it.get("align"), it.get("text"))})
-        report.append({"i": i, "ok": True, "size": round(size / k, 1), "rows": len(rows)})
+                     "fill": fill, "ink": ink, "bg": bgimg,
+                     "align": _start_align(it.get("align"), it.get("text"))})
+        report[i] = {"i": i, "ok": True, "size": round(size / k, 1), "rows": len(rows)}
+    report = [r for r in report if r is not None]
     if not plan and not paint:
         return None, report
 
@@ -2135,7 +2443,11 @@ def render_target(img_bytes: bytes, items: list) -> tuple:
     # пересекаются, и заливка второго стирала бы уже написанный перевод
     # первого — с отчётом «оба написаны».
     for p in plan:
-        draw.rectangle(p["sbox"], fill=p["fill"])
+        if p.get("bg") is not None:
+            bg = p["bg"].convert(big.mode) if big.mode in ("RGB", "RGBA") else p["bg"]
+            big.paste(bg, (int(p["sbox"][0]), int(p["sbox"][1])))
+        else:
+            draw.rectangle(p["sbox"], fill=p["fill"])
     for p in plan:
         sbox, bw = p["sbox"], p["sbox"][2] - p["sbox"][0]
         ink = p["ink"] + (255,) if big.mode == "RGBA" else p["ink"]

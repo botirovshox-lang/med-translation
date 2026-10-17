@@ -3412,6 +3412,12 @@ def _paint_measure(sampler, b: dict) -> bool:
         sc_ = tp.mono_score(m["mask"], loc0, len(" ".join((b.get("src") or "").split())))
         if sc_ is not None and sc_ >= tp.MONO_COH:
             b["fam"] = "type"               # Х1: машинопись
+    if b.get("image") and b.get("fam") in ("", "sans") and not m["angle"] and not m.get("arc"):
+        # Х9: засечки надписи с картинки — по буквам (у PDF "" — антиква).
+        loc9 = ([[(l_[0] - cx0) * scale, (cy1 - l_[1]) * scale, (l_[2] - cx0) * scale,
+                  (cy1 - l_[3]) * scale] for l_ in lns]
+                if lns else [[0, 0, m["mask"].shape[1], m["mask"].shape[0]]] if rows == 1 else [])
+        b["fam"] = tp.serif_fam(m["mask"], loc9, b.get("fam") or "", "sans")
     if not m["angle"] and not m.get("arc") and rows >= 2 and len(lns) == rows:
         loc = [[(l_[0] - cx0) * scale, (cy1 - l_[1]) * scale, (l_[2] - cx0) * scale,
                 (cy1 - l_[3]) * scale] for l_ in lns]

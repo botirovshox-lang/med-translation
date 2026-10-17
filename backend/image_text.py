@@ -1849,6 +1849,11 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
                                        for lb in lbs], len(" ".join((it.get("src") or "").split())))
         if sc is not None and sc >= tp.MONO_COH:
             fam = "type"
+    if fam != "hand" and not m["angle"] and not m.get("arc"):
+        # Х9: засечки — по буквам; одна строка без рамок — вся вырезка.
+        loc = ([[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs]
+               if lbs else [[0, 0, rgb.shape[1], rgb.shape[0]]] if rows == 1 else [])
+        fam = tp.serif_fam(m["mask"], loc, fam, "")
     fpath = _paint_font(m["bold"], text, fam)
     if not fpath:
         return None

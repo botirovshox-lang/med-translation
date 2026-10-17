@@ -1590,6 +1590,103 @@ def mono_score(mask, line_boxes, src_len: int) -> "float | None":
     return float(np.median(vals))
 
 
+# Х9. Засечки — по буквам, а не только по слову модели. Признак «serif»
+# ставит зрячая модель при чтении; блоки, прочитанные до вопроса о засечках
+# (книга Чехова на лендинге, 1886 г.), его не несут, и перевод антиквы
+# рисовался рубленым. Мера: вертикальный штрих, дошедший от середины
+# строчной буквы до строки, и ширина его «ступни» в нижних строках; вынос
+# засечки = (ступня − штрих − 1 точка дрожания) / высота строчной, медиана
+# по штрихам. Замер: рубленые (Arial, Calibri, Verdana, Segoe, Tahoma,
+# Trebuchet, Noto Sans, обычные и жирные) 0–0.10, антиква (Times, Georgia,
+# Cambria, Noto Serif, обычные и жирные, от 24 px) 0.17–0.58; книга 1886 г.
+# 0.43, заголовок статьи (Times) 0.21, её текст (рубленый) 0. Мерить нечем
+# (строчная ниже `SERIF_XH` точек, штрихов меньше `SERIF_STEMS`) — None,
+# решает модель. Между порогами — тоже решает модель.
+SERIF_EXT = float(os.environ.get("PAINT_SERIF_EXT", "0.13"))
+SANS_EXT = float(os.environ.get("PAINT_SANS_EXT", "0.05"))
+SERIF_XH = int(os.environ.get("PAINT_SERIF_XH", "10"))
+SERIF_STEMS = int(os.environ.get("PAINT_SERIF_STEMS", "10"))
+
+
+def serif_score(mask, line_boxes) -> "float | None":
+    """Вынос засечки в долях высоты строчной (медиана) или None."""
+    if np is None or mask is None or not line_boxes:
+        return None
+    H, W = mask.shape[:2]
+    vals = []
+    for lb in line_boxes:
+        x0, y0, x1, y1 = lb[:4]
+        a, b = max(0, int(y0)), min(H, int(math.ceil(y1)))
+        c, d = max(0, int(x0)), min(W, int(math.ceil(x1)))
+        m = mask[a:b, c:d]
+        if m.shape[0] < 8 or m.shape[1] < 8:
+            continue
+        stem = _stem(m)
+        if stem < 1:
+            continue
+        prof = m.sum(axis=1)
+        core = np.nonzero(prof >= 0.5 * prof.max())[0]
+        if not len(core):
+            continue
+        # Размах, а не число строк: у прописных с засечками профиль — пики
+        # сверху и снизу (сами засечки), середина тоньше половины пика.
+        top, bot = int(core[0]), int(core[-1])
+        if bot - top < SERIF_XH:
+            continue
+        xh = bot - top
+        # Штрихи — на двух высотах буквы: у прописных середина занята
+        # перекладинами (Е, Н, Ч) и стыками (Р, В, К); ниже — уже чаши
+        # букв (а, б). Штрих считается раз.
+        seen = []
+        for share in (0.5, 0.3):
+            mid = top + int(round(share * xh))
+            dif = np.diff(np.concatenate(([0], m[mid].astype(np.int8), [0])))
+            for s0, e0 in zip(np.nonzero(dif == 1)[0], np.nonzero(dif == -1)[0]):
+                w = int(e0 - s0)
+                if w > 1.8 * stem:
+                    continue                    # не штрих: перекладина, дуга
+                cx = int((s0 + e0) // 2)
+                if any(abs(cx - q) <= stem for q in seen):
+                    continue
+                seen.append(cx)
+                y = mid
+                while y + 1 < m.shape[0] and m[y + 1, cx]:
+                    y += 1
+                if abs(y - bot) > max(2, 0.15 * xh):
+                    continue                    # штрих не дошёл до строки (р, у)
+                foot = 0
+                for yy in range(max(mid, y - max(1, int(0.12 * xh))), y + 1):
+                    r = m[yy]
+                    l_ = cx
+                    while l_ > 0 and r[l_ - 1]:
+                        l_ -= 1
+                    r_ = cx
+                    while r_ + 1 < len(r) and r[r_ + 1]:
+                        r_ += 1
+                    foot = max(foot, r_ - l_ + 1)
+                vals.append(max(0, foot - w - 1) / float(max(1, xh)))
+    if len(vals) < SERIF_STEMS:
+        return None
+    return float(np.median(vals))
+
+
+def serif_fam(mask, line_boxes, fam: str, plain: str = "") -> str:
+    """Семейство по засечкам (Х9): `fam` — что сказала модель; `plain` —
+    как вызывающий называет рубленый ("" у картинки, "sans" у PDF), а
+    антиква — "serif" у картинки, "" у PDF (там она по умолчанию)."""
+    if fam in ("hand", "type"):
+        return fam
+    sc = serif_score(mask, line_boxes)
+    if sc is None:
+        return fam
+    serif = "serif" if plain == "" else ""
+    if sc >= SERIF_EXT:
+        return serif
+    if sc <= SANS_EXT:
+        return plain
+    return fam
+
+
 # Х2. Выключка — по краям строк оригинала, а не по слову модели о блоке:
 # машинопись 1940 г. (левый край ровный, правый рваный) печаталась по центру.
 # Левый край ровный (разброс начал ≤ `ALIGN_MAD` кегля, без первых строк

@@ -14,7 +14,8 @@
   Ф6. бумага с узором (клетка, линейка) стирается по модели, а не
       размыванием; ложный узор экзамен не сдаёт;
   Ф7. толщина пера рукописи;
-  Ф1/общий шрифт: рукописный список один на оба пути печати.
+  Ф1/общий шрифт: рукописный список один на оба пути печати;
+  Х9. засечки определяются по буквам, когда чтение о них не сказало.
 Без сети и без вызовов модели.
 """
 import io
@@ -378,6 +379,38 @@ seed0[30:40, 60:70] = True
 rgb0[30:40, 60:70] = 20
 add0 = tp.continuation_mask(rgb0, seed0, (20, 20, 71, 60), 8.0)
 check(add0 is None or not add0[5:15, 70:73].any(), "линия-рамка выше CUT_MAX строк не стирается")
+
+print("\n── Х9. засечки — по буквам ──")
+SUB = "frontend/vendor/fonts/sub/"
+TX9 = ["Один прекрасный вечер, не менее прекрасный экзекутор",
+       "Иван Дмитрич Червяков сидел во втором ряду кресел",
+       "СМЕРТЬ ЧИНОВНИКА. THE DEATH OF A CIVIL SERVANT."]
+for fn, size, want in (("NotoSerif-Regular.ttf", 40, "serif"), ("NotoSerif-Bold.ttf", 40, "serif"),
+                       ("NotoSans-Regular.ttf", 40, ""), ("NotoSans-Bold.ttf", 60, ""),
+                       ("NotoSerif-Regular.ttf", 60, "serif")):
+    im9, lb9 = typed_page(SUB + fn, TX9, size)
+    a9 = np.asarray(im9.convert("L")) < 150
+    sc9 = tp.serif_score(a9, lb9)
+    check(sc9 is not None and tp.serif_fam(a9, lb9, "") == want,
+          "%s %dpx: засечки=%r (вынос %s)" % (fn, size, want, sc9))
+    check(tp.serif_fam(a9, lb9, "sans", "sans") == ("" if want else "sans"), "%s: соглашение PDF" % fn)
+im9, lb9 = typed_page(SUB + "NotoSerif-Regular.ttf", TX9[:1], 12)
+a9 = np.asarray(im9.convert("L")) < 150
+check(tp.serif_score(a9, lb9) is None and tp.serif_fam(a9, lb9, "serif") == "serif",
+      "мелкий кегль — мерить нечем, решает модель")
+check(tp.serif_fam(a9, lb9, "hand") == "hand" and tp.serif_fam(a9, lb9, "type") == "type",
+      "рукопись и машинопись мера не трогает")
+# Сквозной: книга без признака от чтения (прочитана до вопроса о засечках)
+# печатается антиквой; рубленый с ложным «serif» — рубленым.
+for fn, fam_in, want in (("NotoSerif-Regular.ttf", "", "serif"), ("NotoSans-Regular.ttf", "serif", None)):
+    im9, lb9 = typed_page(SUB + fn, TX9[:2], 40)
+    b9 = io.BytesIO()
+    im9.save(b9, "PNG")
+    bx9 = [min(b[0] for b in lb9), min(b[1] for b in lb9), max(b[2] for b in lb9), max(b[3] for b in lb9)]
+    _, r9 = it.render_target(b9.getvalue(), [{"box": bx9, "text": "One fine evening, an equally fine clerk " * 2,
+                                              "rows": 2, "lineH": 60, "lineBoxes": lb9, "fam": fam_in,
+                                              "src": " ".join(TX9[:2]), "align": "left"}])
+    check(r9 and r9[0].get("ok") and r9[0].get("fam") == want, "%s: печать %r — %s" % (fn, want, r9))
 
 print()
 if fail:

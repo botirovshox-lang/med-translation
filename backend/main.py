@@ -5081,7 +5081,12 @@ PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health",
                     "/api/pay/click/prepare", "/api/pay/click/complete", "/api/pay/payme",
                     # Octo: телу уведомления не верим вовсе — оно лишь повод
                     # спросить статус НАШИМ ключом (`_octo_sync`).
-                    "/api/pay/octo"}
+                    "/api/pay/octo",
+                    # Ошибки браузера. Публична потому, что самая дорогая
+                    # ошибка — та, что случилась ДО входа. В STATE не пишет
+                    # ничего, коды — из закрытых наборов, потолки по сети
+                    # (`client_beacon`).
+                    "/api/client/beacon"}
 
 # Служебный токен бота. Бот — ОТДЕЛЬНЫЙ процесс и ходит к нам как обычный
 # клиент, поэтому ему нужен вход. Пароль суперпользователя ему давать нельзя:
@@ -6309,6 +6314,7 @@ def login(req: LoginRequest, request: Request):
     user["lastLogin"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     user["lastIp"] = raw_ip
     user["loginCount"] = int(user.get("loginCount") or 0) + 1
+    _ev("funnel.login", _SESSIONS[token].get("tenant") or DEFAULT_TENANT)
     save_state(STATE)
     return {"ok": True, "token": token, "expiresIn": SESSION_TTL,
             "me": _user_public(user)}
@@ -6524,6 +6530,8 @@ def register(req: RegisterRequest, request: Request):
         _audit("signup", email=email, tenant_new=tid, ip=raw_ip)
     finally:
         CURRENT_SESSION.reset(tok)
+    # Верх воронки ДО первого файла (инвариант 34, «путь с регистрации»).
+    _ev("funnel.signup", tid)
     save_state(STATE)
     # Письмо — из фонового потока, как у /resend и /forgot. `mailSent` теперь
     # значит «почта настроена, письмо поставлено»: сбой самой отправки уходит
@@ -6576,6 +6584,7 @@ def verify_email(req: CodeRequest, request: Request):
         _audit("email.verify", email=user["email"])
     finally:
         CURRENT_SESSION.reset(tok)
+    _ev("funnel.verified", user.get("tenant") or DEFAULT_TENANT)
     # Бонус за приглашение — ЗДЕСЬ, а не в `register`: это единственная
     # точка, где почта доказана. Сбой не роняет подтверждение (человек
     # пришёл входить, а не за бонусом) — он уходит строкой в журнал.
@@ -7050,6 +7059,8 @@ def profile_update(req: ProfilePatch, request: Request):
         # Только ВПЕРЁД: пройденное знакомство само не возвращается.
         # Показать его заново — отдельная кнопка в «Профиле», она шлёт
         # false явно, и это решение человека, а не побочный эффект.
+        if req.tourDone and not u.get("tourDone"):
+            _ev("funnel.tour")
         u["tourDone"] = bool(req.tourDone)
     if req.password is not None:
         _check_user_fields(None, req.password, None)
@@ -8277,11 +8288,12 @@ def _metrics_events(rows: list) -> dict:
     Коды разбираются ПО ПРЕФИКСУ, а не по списку: `api:` — маршрут,
     `err:` — отказ, `cap.` — упёрлись в НАШ потолок, `dead.` — пришли
     за работой, которой у нас НЕТ, `funnel.` — шаг воронки, `waste.` —
-    сожжённая работа, `provider.` — поставщик моделей. Список кодов
+    сожжённая работа, `provider.` — поставщик моделей, `js.` — ошибка
+    в браузере, `ui.` — открытый экран (`client_beacon`). Список кодов
     в коде разбора разошёлся бы с местами, где их ставят, при первой же
     новой строке."""
     routes, errs, caps, waste, prov = {}, {}, {}, {}, {}
-    dead, funnel = {}, {}
+    dead, funnel, js, ui = {}, {}, {}, {}
     by_tenant_caps, by_tenant_dead, by_tenant_funnel = {}, {}, {}
     for r in rows:
         code, n = r["code"], r.get("n") or 0
@@ -8320,6 +8332,12 @@ def _metrics_events(rows: list) -> dict:
             t = r.get("tenant") or ""
             by_tenant_funnel.setdefault(t, {})
             by_tenant_funnel[t][code[7:]] = by_tenant_funnel[t].get(code[7:], 0) + n
+        elif code.startswith("js."):
+            # Ошибка в браузере: «вид:файл» (`client_beacon`).
+            js[code[3:]] = js.get(code[3:], 0) + n
+        elif code.startswith("ui."):
+            # Открытый экран или шаг знакомства (`UI_EVENTS`).
+            ui[code[3:]] = ui.get(code[3:], 0) + n
     for d in routes.values():
         d["avgMs"] = round(d["ms"] / d["n"], 1) if d["n"] else 0.0
         d["msMax"] = round(d["msMax"], 1)
@@ -8340,7 +8358,11 @@ def _metrics_events(rows: list) -> dict:
             "dead": sorted([{"code": k, "n": v} for k, v in dead.items()],
                            key=lambda d: -d["n"]),
             "deadByTenant": by_tenant_dead,
-            "funnelRaw": funnel, "funnelByTenant": by_tenant_funnel}
+            "funnelRaw": funnel, "funnelByTenant": by_tenant_funnel,
+            "js": sorted([{"code": k, "n": v} for k, v in js.items()],
+                         key=lambda d: (-d["n"], d["code"])),
+            "ui": sorted([{"code": k, "n": v} for k, v in ui.items()],
+                         key=lambda d: (-d["n"], d["code"]))}
 
 
 # Порог «организация молчит»: дней без единого прогона при живом остатке
@@ -8365,7 +8387,11 @@ METRICS_NORUN_MIN = int(os.environ.get("METRICS_NORUN_MIN", "3"))
 METRICS_CHURN_SHARE = float(os.environ.get("METRICS_CHURN_SHARE", "0.8"))
 
 
-def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict) -> list:
+METRICS_JS_HINT_MIN = int(os.environ.get("METRICS_JS_HINT_MIN", "3"))
+
+
+def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict,
+                   cohort: Optional[dict] = None) -> list:
     """Подсказки — правилами в коде, без единого вызова модели.
 
     Каждая подсказка обязана нести ЧИСЛО и, где это уместно, организацию:
@@ -8500,6 +8526,21 @@ def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict) -> list:
         if r["avgMs"] >= metrics_mod.SLOW_MS:
             out.append({"kind": "fix", "code": "slowRoute", "n": round(r["avgMs"]),
                         "route": r["route"], "calls": r["n"]})
+    # Ошибки в БРАУЗЕРЕ. Сервер про них не знает ничего (ответ 200, а экран
+    # белый), поэтому строка обязана быть: иначе их видно только в отдельной
+    # карточке, куда смотрят, когда уже ищут.
+    js = ev.get("js") or []
+    js_n = sum(d["n"] for d in js)
+    if js_n >= METRICS_JS_HINT_MIN:
+        out.append({"kind": "fix", "code": "jsErrors", "n": js_n, "name": js[0]["code"]})
+    # Подтвердил почту и не принёс ни одного файла. Знаменатель — те, кто
+    # ПОДТВЕРДИЛ: неподтверждённые — это ещё не клиенты (боты, опечатки).
+    if cohort:
+        st = {d["code"]: d["n"] for d in cohort.get("steps") or []}
+        stuck = max(0, st.get("verified", 0) - st.get("upload", 0))
+        if stuck >= METRICS_NORUN_MIN:
+            out.append({"kind": "loss", "code": "signupNoUpload", "n": stuck,
+                        "of": st.get("verified", 0)})
     return out
 
 
@@ -8714,6 +8755,250 @@ def _metrics_signups(day_from: str, day_to: str) -> dict:
     return {"n": len(ids), "verified": len(verified)}
 
 
+# ─── Путь с регистрации: КОГОРТА, а не события периода ───────────────
+# Воронка `funnel.*` считает события ПЕРИОДА (п. 14 инварианта 34) и на вопрос
+# «из тех, кто зарегистрировался на этой неделе, сколько дошли до файла»
+# не отвечает. Когорта отвечает, и считается она по ЗАПИСЯМ: регистрация —
+# `tenant["signup"]`, почта и знакомство — запись человека, а первые
+# загрузка, прогон, выгрузка и оплата — отметкой `tenant["firstAt"]`, которую
+# ставит `_tenant_first` ровно один раз.
+#
+# Отметка — на ОРГАНИЗАЦИИ, а не в таблице событий: событие говорит «было
+# столько раз за период», а здесь нужен ответ «было ли вообще и когда
+# впервые». У организаций, заведённых до отметок, ответ выводится из данных
+# (проекты, `filesSeen`, история выгрузок, `payApplied`) — без времени: его
+# у них взять негде, и медиана «часов до первого файла» их честно не видит.
+COHORT_STEPS = ("signup", "verified", "tour", "upload", "run", "export", "paid")
+COHORT_ROWS = int(os.environ.get("METRICS_COHORT_ROWS", "60"))
+
+
+def _tenant_first(step: str, tid: Optional[str] = None) -> None:
+    """Отметить ПЕРВЫЙ раз шага организации (`firstAt[step]`, время эпохой).
+
+    Пишет только API: документ `tenants` воркер не пишет никогда (см. «Деплой»,
+    учёт страниц). Запись — по ПЕРЕЧИТАННОЙ под `_SAVE_LOCK` организации:
+    `_sync_shared` из чужого потока подменяет `STATE["tenants"]` целиком.
+    `save_state` — только когда отметка новая, то есть раз на шаг за всю
+    жизнь организации. Молчит при любом сбое: наблюдение не вправе ронять
+    загрузку, прогон или оплату."""
+    if IS_WORKER or step not in COHORT_STEPS:
+        return
+    try:
+        tid = tid or _current_tenant()
+        rec = _tenant_rec(tid)
+        if rec is None or (rec.get("firstAt") or {}).get(step):
+            return
+        with _SAVE_LOCK:
+            rec = _tenant_rec(tid)
+            if rec is None or (rec.get("firstAt") or {}).get(step):
+                return
+            rec.setdefault("firstAt", {})[step] = round(time.time(), 1)
+        save_state(STATE)
+        _ev("funnel.first:" + step, tid)
+    except Exception as e:
+        print("[metrics] firstAt %s: %s" % (step, e), file=sys.stderr)
+
+
+def _metrics_cohort(day_from: str, day_to: str) -> dict:
+    """Кто из зарегистрировавшихся за период до какого шага дошёл.
+
+    Шаги не обязаны идти подряд (файл приносят и не пройдя знакомство),
+    поэтому у каждого шага своё число, а «где остановился» — самый ДАЛЬНИЙ
+    пройденный. Строки — суперпользователю: это список «кому позвонить»."""
+    tens = [t for t in _tenants()
+            if t.get("signup") and not t.get("team")
+            and day_from <= (t.get("created") or "")[:10] <= day_to]
+    ids = {t["id"] for t in tens}
+    owner = {}
+    for u in _users():
+        tid = u.get("tenant")
+        if tid in ids and (tid not in owner
+                           or (u.get("registeredAt") or 0) < (owner[tid].get("registeredAt") or 0)):
+            owner[tid] = u
+    projs = {}
+    for p in STATE.get("projects") or []:
+        t = _tenant_of(p)
+        if t in ids:
+            projs.setdefault(t, []).append(p)
+    exported = {e.get("tenant") for e in (STATE.get("exportHistory") or [])
+                if e.get("tenant") in ids}
+    counts = dict.fromkeys(COHORT_STEPS, 0)
+    waits = {"upload": [], "run": [], "export": [], "paid": []}
+    rows = []
+    for t in tens:
+        u = owner.get(t["id"]) or {}
+        fa = t.get("firstAt") or {}
+        ps = projs.get(t["id"], [])
+        got = {
+            "signup": True,
+            "verified": bool(u.get("emailVerified")),
+            "tour": bool(u.get("tourDone")),
+            "upload": bool(fa.get("upload") or ps or t.get("filesSeen")),
+            "run": bool(fa.get("run") or any((s.get("target") or "").strip()
+                                             for p in ps for s in (p.get("segments") or []))),
+            "export": bool(fa.get("export") or t["id"] in exported),
+            "paid": bool(fa.get("paid") or t.get("payApplied")),
+        }
+        for c in COHORT_STEPS:
+            counts[c] += 1 if got[c] else 0
+        reg = u.get("registeredAt")
+        for c in waits:
+            if reg and fa.get(c):
+                waits[c].append(max(0.0, (fa[c] - reg) / 3600.0))
+        rows.append({"tenant": t["id"], "name": t.get("name") or t["id"],
+                     "login": u.get("login") or "", "created": t.get("created") or "",
+                     "stage": [c for c in COHORT_STEPS if got[c]][-1],
+                     "steps": [c for c in COHORT_STEPS if got[c]],
+                     "lastLogin": u.get("lastLogin"), "active": t.get("active", True)})
+    rows.sort(key=lambda r: (r["created"], r["tenant"]), reverse=True)
+
+    def med(v):
+        v = sorted(v)
+        return round(v[len(v) // 2], 1) if v else None
+    return {"n": len(tens),
+            "steps": [{"code": c, "n": counts[c]} for c in COHORT_STEPS],
+            "medianHours": {c: med(v) for c, v in waits.items()},
+            "rows": rows[:COHORT_ROWS]}
+
+
+# События ПЕРИОДА на пути с регистрации: сколько раз это случилось за окно,
+# у кого угодно. Дополняет когорту, а не заменяет её: «входов 40» — это
+# и старые клиенты.
+SIGNUP_FLOW_CODES = ("signup", "verified", "login", "tour", "first:upload",
+                     "first:run", "first:export", "first:paid")
+
+
+def _signup_flow(raw: dict) -> list:
+    return [{"code": c, "n": int(raw.get(c) or 0)} for c in SIGNUP_FLOW_CODES]
+
+
+# ─── Браузер: ошибки JS и открытые экраны ────────────────────────────
+# До этого сервис не знал о браузере НИЧЕГО: белый экран у клиента был виден
+# только письмом в поддержку. Дверь одна — `POST /api/client/beacon`, и она
+# ПУБЛИЧНАЯ намеренно: самая дорогая ошибка — та, после которой человек
+# не смог войти (экран входа не нарисовался), и токена у него нет.
+#
+# Публичность стоит ровно на трёх рубежах, и ослаблять их нельзя:
+#   * в STATE не пишется НИЧЕГО (инвариант 23: приём анкеты — единственная
+#     неаутентифицированная запись в STATE). Счётчики — в буфер метрик,
+#     подробности — кольцом в памяти процесса API;
+#   * код события — из закрытых наборов: вид ошибки (`JS_KINDS`), имя файла
+#     из каталога `frontend/js` (чужое — `other`), экран — из `UI_EVENTS`.
+#     Посторонний не может завести строку в таблице событий;
+#   * потолки: размер тела, число записей в теле, запросов в минуту с сети.
+# Экраны (`ui.*`) принимаются только от вошедшего: до входа экранов нет,
+# а анонимные счётчики экранов были бы накруткой без смысла.
+#
+# Текст сообщения ошибки лежит ТОЛЬКО в кольце (не в событии, п. 7
+# инварианта 34) и обрезан: он нужен разработчику, чтобы найти строку кода,
+# а показывается только суперпользователю. Кольцо не переживает рестарт —
+# это свежая улика, а не архив; число ошибок по файлам хранится в базе.
+JS_KINDS = frozenset(("error", "rejection", "render", "load"))
+_UI_TABS = ("import", "editor", "glossary", "preflight", "export",
+            "learn", "profile", "org", "admin")
+UI_EVENTS = frozenset(
+    ["tab." + t for t in _UI_TABS]
+    + ["tour.step%d" % i for i in range(1, 13)]
+    + ["tour.done", "tour.skip", "tour.open", "support.open"])
+BEACON_MAX_BYTES = 16384
+BEACON_MAX_ERRORS = 10
+BEACON_MAX_UI = 40
+BEACON_PER_MIN = int(os.environ.get("BEACON_PER_MIN", "30"))
+CLIENT_ERR_RING_MAX = 300
+_CLIENT_ERRORS: list = []
+_BEACON_HITS: dict = {}
+_BEACON_LOCK = threading.Lock()
+_JS_FILE_SET: Optional[frozenset] = None
+
+
+def _js_file_code(raw) -> str:
+    """Имя файла из адреса — только если такой файл у нас ЕСТЬ."""
+    global _JS_FILE_SET
+    if _JS_FILE_SET is None:
+        try:
+            _JS_FILE_SET = frozenset(os.listdir(FRONTEND_DIR / "js")) | {"index.html", "handoff.html"}
+        except Exception:
+            _JS_FILE_SET = frozenset()
+    s = str(raw or "").split("?", 1)[0].split("#", 1)[0]
+    name = s.rsplit("/", 1)[-1][:64]
+    if not name:
+        return "inline"
+    return name if name in _JS_FILE_SET else "other"
+
+
+def _beacon_allowed(ip: str) -> bool:
+    now = time.time()
+    with _BEACON_LOCK:
+        if len(_BEACON_HITS) > 5000:
+            for k in [k for k, v in _BEACON_HITS.items() if not v or now - v[-1] > 60]:
+                _BEACON_HITS.pop(k, None)
+        hits = [x for x in _BEACON_HITS.get(ip, []) if now - x < 60]
+        if len(hits) >= BEACON_PER_MIN:
+            _BEACON_HITS[ip] = hits
+            return False
+        hits.append(now)
+        _BEACON_HITS[ip] = hits
+        return True
+
+
+def _clip(v, n: int) -> str:
+    return str(v if v is not None else "")[:n]
+
+
+@app.post("/api/client/beacon")
+async def client_beacon(request: Request):
+    """Ошибки JS и открытые экраны от браузера. Ни STATE, ни модели."""
+    raw = await request.body()
+    if len(raw) > BEACON_MAX_BYTES:
+        return JSONResponse({"ok": False}, status_code=413)
+    if not _beacon_allowed(_rate_ip(request)):
+        return JSONResponse({"ok": False}, status_code=429)
+    try:
+        body = json.loads(raw.decode("utf-8") or "{}")
+    except Exception:
+        return JSONResponse({"ok": False}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"ok": False}, status_code=400)
+    auth = request.headers.get("authorization") or ""
+    sess = _session_of(auth[7:].strip() if auth.lower().startswith("bearer ") else "")
+    tenant = (sess or {}).get("tenant") or ""
+    ua = _clip(request.headers.get("user-agent"), 160)
+    got = 0
+    for e in (body.get("errors") or [])[:BEACON_MAX_ERRORS]:
+        if not isinstance(e, dict):
+            continue
+        kind = _clip(e.get("kind"), 12)
+        kind = kind if kind in JS_KINDS else "other"
+        f = _js_file_code(e.get("file"))
+        _ev("js.%s:%s" % (kind, f), tenant)
+        got += 1
+        try:
+            line, col = int(e.get("line") or 0), int(e.get("col") or 0)
+        except Exception:
+            line, col = 0, 0
+        scr = _clip(e.get("screen"), 24)
+        rec = {"at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "kind": kind,
+               "file": f, "line": max(0, min(line, 10 ** 7)), "col": max(0, min(col, 10 ** 6)),
+               "msg": _clip(e.get("msg"), 300), "stack": _clip(e.get("stack"), 1200),
+               "screen": scr if ("tab." + scr) in UI_EVENTS else "",
+               "ver": _clip(e.get("ver"), 24), "tenant": tenant,
+               "user": (sess or {}).get("user"), "ua": ua}
+        with _BEACON_LOCK:
+            _CLIENT_ERRORS.append(rec)
+            del _CLIENT_ERRORS[:-CLIENT_ERR_RING_MAX]
+    if sess:
+        for c in (body.get("ui") or [])[:BEACON_MAX_UI]:
+            if isinstance(c, str) and c in UI_EVENTS:
+                _ev("ui." + c, tenant)
+    return {"ok": True, "errors": got}
+
+
+def _client_errors_recent(day_from: str, n: int = 60) -> list:
+    with _BEACON_LOCK:
+        rows = [r for r in _CLIENT_ERRORS if r["at"][:10] >= day_from]
+    return list(reversed(rows[-n:]))
+
+
 @app.get("/api/admin/metrics")
 def admin_metrics(request: Request, days: int = 7):
     """Сводка для владельца сервиса. Ни одного вызова модели.
@@ -8731,6 +9016,7 @@ def admin_metrics(request: Request, days: int = 7):
     tenants = _metrics_tenants(day_from, ev.get("capsByTenant") or {})
     quotes = _metrics_quotes(day_from)
     spend = round(sum(r.get("cost") or 0.0 for r in led), 4)
+    cohort = _metrics_cohort(day_from, day_to)
     return _json_bytes({
         "ok": True, "days": days, "from": day_from, "to": day_to,
         "spendUsd": spend,
@@ -8745,7 +9031,15 @@ def admin_metrics(request: Request, days: int = 7):
         # второй проход по таблице ради двух списков был бы платой без товара.
         "blocked": _blocked_rows(ev),
         "funnel": _funnel_view(ev.get("funnelRaw") or {}),
-        "hints": _metrics_hints(days, tenants, ev, quotes),
+        # Путь с регистрации: когорта периода и события периода — рядом,
+        # потому что отвечают на разные вопросы (см. `_metrics_cohort`).
+        "cohort": cohort,
+        "signupFlow": _signup_flow(ev.get("funnelRaw") or {}),
+        # Браузер: ошибки по файлам, свежие подробности (кольцо в памяти
+        # процесса API) и открытые экраны.
+        "js": ev["js"], "jsRecent": _client_errors_recent(day_from),
+        "ui": ev["ui"],
+        "hints": _metrics_hints(days, tenants, ev, quotes, cohort),
         "eventsPending": (metrics_mod.pending() if metrics_mod else 0),
         "store": STORE.kind,
     }, "admin/metrics", t0)
@@ -8842,6 +9136,10 @@ METRICS_HINT_TEXT = {
                    "спросите, что не подошло.",
     "http5xx": "Ошибки сервера: %(n)d (%(route)s). Отказ в обслуживании.",
     "slowRoute": "Медленно: %(route)s отвечает в среднем %(n)d мс на %(calls)d вызовов.",
+    "jsErrors": "Ошибки в браузере: %(n)d, чаще всего %(name)s. Сервер их не видит — "
+                "у человека мог быть белый экран.",
+    "signupNoUpload": "Подтвердили почту и не принесли ни одного файла: %(n)d из %(of)d. "
+                      "Спросите, что остановило на первом шаге.",
 }
 # Тупик словами — для суточного текста. Браузер собирает свою фразу
 # по коду (инвариант 17), а этот текст уходит МИМО браузера — в Telegram
@@ -8886,7 +9184,7 @@ METRICS_WASTE_TEXT = {
 METRICS_PROVIDER_TEXT = {
     "quota": "кончились деньги у поставщика",
     "region": "отказ поставщика по стране",
-    "rate":"слишком часто просим (rate limit)",
+    "rate": "слишком часто просим (rate limit)",
     "timeout": "сеть/таймаут",
     "other": "прочие ошибки поставщика",
 }
@@ -8937,6 +9235,16 @@ def _metrics_digest_text(d: dict) -> str:
     su = d.get("signups") or {}
     L.append("Новых регистраций: %d%s." % (
         su.get("n", 0), ", почту подтвердили %d" % su.get("verified", 0) if su.get("n") else ""))
+    co = d.get("cohort") or {}
+    if co.get("n"):
+        st = {x["code"]: x["n"] for x in co.get("steps") or []}
+        L.append("Из них дошли: до знакомства %d, до файла %d, до прогона %d, "
+                 "до выгрузки %d, до оплаты %d." % (
+                     st.get("tour", 0), st.get("upload", 0), st.get("run", 0),
+                     st.get("export", 0), st.get("paid", 0)))
+    js_n = sum(x["n"] for x in d.get("js") or [])
+    if js_n:
+        L.append("Ошибок в браузере: %d." % js_n)
     q = (d["quotes"].get("byStatus") or {})
     if d["quotes"].get("total"):
         L.append("Сметы: новых %d, выставлено %d, оплачено %d%s."
@@ -13247,6 +13555,7 @@ def _pay_apply(order: dict) -> bool:
     _audit("pay.paid", _tenant=tid, order=oid, pages=pages, minutes=minutes,
            amount=order.get("amount"), currency=order.get("currency"), via=order.get("paidVia"))
     _ev("funnel.paid:" + order["method"], tid)
+    _tenant_first("paid", tid)
     if tg_mod:
         tg_mod.notify_admin_async("💰 Оплата №%d: %s %s (%s) — организация «%s», %d стр., %d мин"
                                   % (oid, order.get("amount"), order.get("currency"), order.get("paidVia"),
@@ -14429,6 +14738,7 @@ async def upload_project(
     # видно, что люди НЕСУТ, а рядом `cap.format415:*` показывает, чего
     # они несут и не получают.
     _ev("funnel.upload:" + _ext_code(file.filename or ""), tid)
+    _tenant_first("upload", tid)
     return new_project
 
 
@@ -35070,6 +35380,7 @@ def export_project(pid: int, req: ExportRequest):
     # и её отсутствие при живых загрузках означает, что человек ушёл
     # с полпути; по журналу действий этого не видно — он кольцевой.
     _ev("funnel.export")
+    _tenant_first("export")
     project = get_project(pid)
     fmt = req.format.lower()
     if fmt not in EXPORT_EXT:
@@ -37952,6 +38263,11 @@ def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict]) -> dict
     # проекта: документ во время прогона пишет воркер, и приращение API
     # в нём ушло бы в DocConflict (см. `_proj_spend_add`).
     _proj_spend_add(job["tenant"], pid, runs=1)
+    # «Первый прогон» — только перевод, запущенный человеком: чтение надписей
+    # и распознавание речи ставятся сами при загрузке и о решении клиента
+    # ничего не говорят.
+    if kind in ("translate", "full"):
+        _tenant_first("run", job["tenant"])
     if EXTERNAL_WORKER:
         # Задачу заберёт medcat-worker из таблицы jobs (claim_job).
         pass
@@ -38540,6 +38856,7 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
         _folders_changed()
     job = _job_enqueue(new_id, "asr", [], {"limitSec": limit_sec, "est_cost": round(est_usd, 4)})
     _ev("funnel.upload:" + _ext_code(rec["name"]), tid)
+    _tenant_first("upload", tid)
     return dict(project, jobId=job["id"])
 
 

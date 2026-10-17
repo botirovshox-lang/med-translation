@@ -480,6 +480,124 @@ check("None" not in d2["text"] and "%(" not in d2["text"],
       "ни одного невыполненного шаблона: " + d2["text"][:160])
 
 
+print("=== 12. Браузер: дверь ошибок и экранов ===")
+# Дверь публичная (ошибка ДО входа — самая дорогая), поэтому сторожится
+# ровно то, на чём держится её публичность: STATE не трогается, коды —
+# из закрытых наборов, потолки работают.
+main.metrics_mod.reset()
+main.STATE[main.EVENTS_KEY] = {}
+main._BEACON_HITS.clear()
+del main._CLIENT_ERRORS[:]
+snap = json.dumps({k: v for k, v in main.STATE.items() if k != main.EVENTS_KEY},
+                  ensure_ascii=False, default=str, sort_keys=True)
+rb = c.post("/api/client/beacon", json={
+    "errors": [{"kind": "error", "file": "https://x/js/app.jsx?v=abc", "line": 12, "col": 3,
+                "msg": "x" * 900, "stack": "at f (https://x/js/app.jsx:12:3)", "screen": "editor"},
+               {"kind": "<b>", "file": "https://evil/zzz<script>.js", "msg": "y",
+                "screen": "<img>"}],
+    "ui": ["tab.editor"]})
+check(rb.status_code == 200 and rb.json().get("errors") == 2, "анонимная ошибка принята: " + rb.text[:80])
+check(json.dumps({k: v for k, v in main.STATE.items() if k != main.EVENTS_KEY},
+                 ensure_ascii=False, default=str, sort_keys=True) == snap,
+      "в STATE не записано НИЧЕГО (инвариант 23)")
+c.post("/api/client/beacon", headers=H(O),
+       json={"ui": ["tab.editor", "tour.step2", "tab.<script>", "anything"],
+             "errors": [{"kind": "render", "file": "", "msg": "boom"}]})
+evb = main._metrics_events(main._events_rows(day, day))
+jsc = {x["code"]: x["n"] for x in evb["js"]}
+uic = {x["code"]: x["n"] for x in evb["ui"]}
+check(jsc.get("error:app.jsx") == 1, "файл из каталога назван по имени: " + str(jsc))
+check(jsc.get("other:other") == 1, "чужой вид и чужой файл — «other», а не строка посетителя")
+check(jsc.get("render:inline") == 1, "ошибка без файла — «inline»")
+check(uic == {"tab.editor": 1, "tour.step2": 1},
+      "экраны — только от вошедшего и только из закрытого списка: " + str(uic))
+rec = main._client_errors_recent(day)
+check(len(rec) == 3 and rec[0]["tenant"] == "acme" and rec[-1]["tenant"] == "",
+      "кольцо помнит, у кого ошибка (до входа — пусто), свежие сверху")
+check(len(rec[-1]["msg"]) == 300 and rec[-1]["screen"] == "editor",
+      "сообщение обрезано, экран из списка вкладок")
+check(rec[1]["screen"] == "" and rec[1]["file"] == "other", "чужой экран не принят")
+check(c.post("/api/client/beacon", content=b"{" + b" " * 20000 + b"}",
+             headers={"Content-Type": "application/json"}).status_code == 413,
+      "тело больше потолка — отказ")
+check(c.post("/api/client/beacon", content=b"not json",
+             headers={"Content-Type": "application/json"}).status_code == 400,
+      "мусор вместо JSON — 400, а не 500")
+main._BEACON_HITS.clear()
+codes = [c.post("/api/client/beacon", json={}).status_code for _ in range(main.BEACON_PER_MIN + 1)]
+check(codes[-1] == 429 and codes[0] == 200, "потолок запросов в минуту с сети работает")
+main._BEACON_HITS.clear()
+
+print("=== 12а. Путь с регистрации: отметки первых шагов и когорта ===")
+today = day
+main.STATE["tenants"].append({"id": "newbie", "name": "Новичок", "created": today,
+                              "active": True, "signup": True})
+main.STATE["tenants"].append({"id": "lazy", "name": "Лентяй", "created": today,
+                              "active": True, "signup": True})
+main.STATE["tenants"].append({"id": "oldie", "name": "Старый", "created": "2020-01-01",
+                              "active": True, "signup": True})
+reg = time.time() - 7200
+main.STATE["users"] += [
+    {"id": 901, "tenant": "newbie", "login": "n@x", "emailVerified": True,
+     "tourDone": True, "registeredAt": reg},
+    {"id": 902, "tenant": "lazy", "login": "l@x", "emailVerified": True,
+     "registeredAt": reg},
+]
+main.metrics_mod.reset()
+main._tenant_first("upload", "newbie")
+t1 = main._tenant_rec("newbie")["firstAt"]["upload"]
+main._tenant_first("upload", "newbie")
+check(main._tenant_rec("newbie")["firstAt"]["upload"] == t1,
+      "первый раз — ПЕРВЫЙ: повтор отметку не сдвигает")
+main._tenant_first("bogus", "newbie")
+check("bogus" not in main._tenant_rec("newbie")["firstAt"], "чужой шаг не пишется")
+check(sum(1 for k in main.metrics_mod._BUF if k[2] == "funnel.first:upload") == 1,
+      "первый файл стал и событием периода — один раз")
+main.IS_WORKER = True
+main._tenant_first("run", "newbie")
+main.IS_WORKER = False
+check("run" not in main._tenant_rec("newbie")["firstAt"],
+      "воркер документ организаций не пишет (учёт страниц, «Деплой»)")
+co = main._metrics_cohort(today, today)
+st = {x["code"]: x["n"] for x in co["steps"]}
+check(co["n"] == 2, "в когорте только зарегистрировавшиеся за период: " + str(co["n"]))
+check(st["verified"] == 2 and st["tour"] == 1 and st["upload"] == 1 and st["run"] == 0,
+      "каждый шаг посчитан отдельно: " + str(st))
+check(co["medianHours"]["upload"] is not None and 1.9 < co["medianHours"]["upload"] < 2.2,
+      "время до первого файла считается от регистрации: " + str(co["medianHours"]))
+check(co["medianHours"]["run"] is None, "нет данных — None, а не ноль")
+stage = {r["tenant"]: r["stage"] for r in co["rows"]}
+check(stage == {"newbie": "upload", "lazy": "verified"}, "кто где остановился: " + str(stage))
+main.STATE["projects"].append({"id": 7001, "tenant": "lazy", "segments": [{"id": 1, "target": "hi"}]})
+st2 = {x["code"]: x["n"] for x in main._metrics_cohort(today, today)["steps"]}
+check(st2["upload"] == 2 and st2["run"] == 1,
+      "у организаций без отметок шаги выводятся из данных: " + str(st2))
+main.STATE["projects"].pop()
+
+print("=== 12б. Подсказки и сводка про браузер и регистрации ===")
+hj = main._metrics_hints(7, [], {"js": [{"code": "error:app.jsx", "n": 4}]}, {})
+check(any(h["code"] == "jsErrors" and h["n"] == 4 and h["name"] == "error:app.jsx" for h in hj),
+      "ошибки браузера стали подсказкой с числом и местом")
+hs = main._metrics_hints(7, [], {}, {}, {"steps": [{"code": "verified", "n": 5},
+                                                  {"code": "upload", "n": 1}]})
+check(any(h["code"] == "signupNoUpload" and h["n"] == 4 and h["of"] == 5 for h in hs),
+      "подтвердили и не принесли файл — подсказка со знаменателем")
+for h in hj + hs:
+    check("%(" not in main._hint_line(h) and h["code"] not in main._hint_line(h),
+          "у подсказки есть фраза: " + main._hint_line(h)[:70])
+m3 = c.get("/api/admin/metrics?days=7", headers=H(S)).json()
+check(all(k in m3 for k in ("cohort", "signupFlow", "js", "jsRecent", "ui")),
+      "сводка отдаёт путь с регистрации и браузер")
+check([x["code"] for x in m3["signupFlow"]] == list(main.SIGNUP_FLOW_CODES),
+      "события пути названы закрытым списком")
+d3 = c.get("/api/admin/metrics/digest?days=1", headers=H(S)).json()["text"]
+check("Из них дошли" in d3, "суточный текст говорит, докуда дошли зарегистрировавшиеся")
+main.metrics_mod.reset()
+c.post("/api/auth/login", json={"login": "acme", "password": "acme-pass-123"})
+evl = main._metrics_events(main._events_rows(day, day))
+check(evl["funnelRaw"].get("login") == 1, "вход посчитан шагом пути: " + str(evl["funnelRaw"]))
+
+
 print()
 if fail:
     print("ПРОВАЛЕНО %d:" % len(fail))

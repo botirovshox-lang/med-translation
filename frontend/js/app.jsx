@@ -319,6 +319,15 @@ function useStore(authed) {
     if (window.API) window.API.safeCall(() => window.API.deleteTM(entry.src, entry.lang, entry.project));
   };
 
+  /* Какие экраны открывают (telemetry.js → `ui.tab.*`). Здесь, на отрисовке,
+     а не обёрткой над `go`: вкладку меняют и прямые `setTab` из полудюжины
+     мест. Хук сюда не добавляем намеренно — тесты рендера считают хуки по
+     порядку. Повтор той же вкладки не шлётся (глобальная отметка). */
+  if (authed && window._mcat_tab !== tab) {
+    window._mcat_tab = tab;
+    if (window.TELEMETRY) window.TELEMETRY.ui("tab." + tab);
+  }
+
   return {
     projects, glossary, tm, activeId, activeProject, tab,
     folders, dicts, setDicts, viewFolder, setViewFolder, openFolder, folderOf, activeFolder,
@@ -941,6 +950,8 @@ class Boundary extends React.Component {
   static getDerivedStateFromError(err) { return { err: err }; }
   componentDidCatch(err, info) {
     try { console.error("[ui]", err, info && info.componentStack); } catch (e) {}
+    /* Экран упал — сервер об этом не узнал бы никак: ответы у него 200. */
+    try { if (window.TELEMETRY) window.TELEMETRY.error("render", err); } catch (e) {}
   }
   render() {
     if (!this.state.err) return this.props.children;

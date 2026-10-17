@@ -335,6 +335,43 @@ check(!!notSuper && !notSuper.includes("Пополнить"), "не суперп
   check(!!empty && empty.includes("Ни одной находки за период"),
         "пустой ответ — это ответ, а не пустой экран");
   check(metRender(null) !== null, "вкладка рисуется до ответа сервера");
+
+  /* Путь с регистрации и браузер. Форма — ровно та, что отдают
+     `_metrics_cohort`, `_signup_flow` и `client_beacon` (их сторожит
+     tests/test_metrics.py, раздел 12): заглушка другой формы прятала бы
+     поломку экрана. Коды шагов, экранов и видов ошибок на экран выходить
+     не должны — у каждого своя фраза. */
+  const PATH = Object.assign({}, MET, {
+    cohort: { n: 4,
+      steps: [{ code: "signup", n: 4 }, { code: "verified", n: 3 }, { code: "tour", n: 2 },
+              { code: "upload", n: 2 }, { code: "run", n: 1 }, { code: "export", n: 0 },
+              { code: "paid", n: 0 }],
+      medianHours: { upload: 1.5, run: 26, export: null, paid: null },
+      rows: [{ tenant: "newbie", name: "Новичок", login: "n@x.uz", created: "2026-09-19",
+               stage: "upload", steps: ["signup", "verified", "upload"], lastLogin: null, active: true }] },
+    signupFlow: [{ code: "signup", n: 4 }, { code: "verified", n: 3 }, { code: "login", n: 11 },
+                 { code: "tour", n: 2 }, { code: "first:upload", n: 2 }, { code: "first:run", n: 1 },
+                 { code: "first:export", n: 0 }, { code: "first:paid", n: 0 }],
+    js: [{ code: "error:app.jsx", n: 5 }, { code: "load:tab_editor.jsx", n: 1 }],
+    jsRecent: [{ at: "2026-09-20 10:00:00", kind: "render", file: "tab_editor.jsx", line: 0, col: 0,
+                 msg: "Cannot read properties of undefined", stack: "at x", screen: "editor",
+                 ver: "abc", tenant: "acme", user: 2, ua: "Chrome" }],
+    ui: [{ code: "tab.editor", n: 30 }, { code: "tour.step2", n: 3 }, { code: "tour.skip", n: 1 }],
+    hints: [{ kind: "fix", code: "jsErrors", n: 6, name: "error:app.jsx" },
+            { kind: "loss", code: "signupNoUpload", n: 1, of: 3 }],
+  });
+  const path = metRender(PATH);
+  check(!!path && path.includes("Путь с регистрации") && path.includes("Подтвердили почту"),
+        "путь с регистрации нарисован словами");
+  check(!!path && path.includes("75%"), "доля от зарегистрировавшихся посчитана");
+  check(!!path && path.includes("Кто где остановился") && path.includes("Новичок"),
+        "список «кому позвонить» на месте");
+  check(!!path && path.includes("Браузер: ошибки и экраны") && path.includes("app.jsx")
+        && path.includes("экран упал") && path.includes("Знакомство, шаг 2"),
+        "ошибки браузера и открытые экраны — словами");
+  check(!!path && !/\b(first:upload|tour\.skip|tab\.editor|signupNoUpload|jsErrors)\b/.test(path),
+        "коды шагов, экранов и подсказок на экран не выходят");
+  check(!!path && path.includes("1/3"), "у подсказки «не принесли файл» виден знаменатель");
 }
 
 /* ---------- Вкладка «Возможности» ----------

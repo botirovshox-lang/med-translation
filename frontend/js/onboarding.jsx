@@ -95,7 +95,7 @@ function SupportWidget({ store, toast }) {
      (и встанет ещё где-нибудь), а тянуть состояние виджета через App,
      Sidebar и вкладку значило бы связать их всех ради одного нажатия. */
   useEffect(() => {
-    const h = () => setOpen(true);
+    const h = () => { setOpen(true); if (window.TELEMETRY) window.TELEMETRY.ui("support.open"); };
     window.addEventListener("mct-support-open", h);
     return () => window.removeEventListener("mct-support-open", h);
   }, []);
@@ -128,7 +128,7 @@ function SupportWidget({ store, toast }) {
 
   return React.createElement("div", { className: "sup" },
     React.createElement("button", {
-      className: "sup-fab", onClick: () => setOpen(v => !v),
+      className: "sup-fab", onClick: () => { if (!open && window.TELEMETRY) window.TELEMETRY.ui("support.open"); setOpen(v => !v); },
       "aria-label": open ? TR("Закрыть поддержку") : TR("Написать в поддержку"),
       "aria-expanded": open,
     },
@@ -216,6 +216,8 @@ function WelcomeTour({ store, onDone }) {
   /* Рамка пересчитывается на смене шага, на прокрутке и на смене размера:
      застывшая дыра подсвечивает чужой элемент. */
   useEffect(() => {
+    /* Докуда доходят в знакомстве (`ui.tour.stepN`) — без нового хука. */
+    if (window.TELEMETRY) window.TELEMETRY.ui("tour.step" + (i + 1));
     const recalc = () => setRect(tourRect(TOUR_STEPS[i].sel));
     recalc();
     /* Ещё раз следующим кадром: вкладка могла ещё не дорисоваться. */
@@ -229,9 +231,12 @@ function WelcomeTour({ store, onDone }) {
     };
   }, [i]);
 
+  const tel = (c) => { if (window.TELEMETRY) window.TELEMETRY.ui(c); };
+  const skip = () => { tel("tour.skip"); onDone(); };
+
   useEffect(() => {
     const h = (e) => {
-      if (e.key === "Escape") onDone();
+      if (e.key === "Escape") skip();
       if (e.key === "ArrowRight" || e.key === "Enter") next();
       if (e.key === "ArrowLeft") setI(v => Math.max(0, v - 1));
     };
@@ -240,7 +245,7 @@ function WelcomeTour({ store, onDone }) {
   });
 
   const last = i === TOUR_STEPS.length - 1;
-  const next = () => { if (last) onDone(); else setI(v => v + 1); };
+  const next = () => { if (last) { tel("tour.done"); onDone(); } else setI(v => v + 1); };
 
   const PAD = 6;
   const hole = rect ? {
@@ -285,7 +290,7 @@ function WelcomeTour({ store, onDone }) {
       React.createElement("h3", null, step.title),
       React.createElement("p", { className: "tour-txt" }, step.text),
       React.createElement("div", { className: "tour-act" },
-        React.createElement("button", { className: "btn btn-ghost", onClick: onDone },
+        React.createElement("button", { className: "btn btn-ghost", onClick: skip },
           TR("Пропустить")),
         React.createElement("button", { className: "btn btn-primary", onClick: next },
           last ? TR("Понятно") : TR("Далее")))));
@@ -307,7 +312,7 @@ function OnboardingLayer({ store, toast }) {
   const show = asked || (!!me && !me.tourDone && !done);
 
   useEffect(() => {
-    const h = () => { setAsked(true); setDone(false); };
+    const h = () => { setAsked(true); setDone(false); if (window.TELEMETRY) window.TELEMETRY.ui("tour.open"); };
     window.addEventListener("mct-tour-open", h);
     return () => window.removeEventListener("mct-tour-open", h);
   }, []);

@@ -916,6 +916,8 @@ function metHintText(code) {
     // Оговорка про когорту — В САМОЙ ФРАЗЕ, а не в подсказке рядом:
     // считаются события периода, и удалить могли не то, что принесли.
     // Без неё строка звучит обвинением, которого мы доказать не можем.
+    case "jsErrors": return TR("ошибок в браузере за период — сервер их не видит, у человека мог быть белый экран; подробности — в карточке «Браузер»");
+    case "signupNoUpload": return TR("подтвердили почту и не принесли ни одного файла — спросите, что остановило на первом шаге");
     case "uploadChurn": return TR("принесённых файлов удалено за период (не обязательно те же самые): разбор мы оплатили, а заказом это не стало");
     case "http5xx": return TR("ошибок сервера: отказ в обслуживании");
     case "slowRoute": return TR("мс в среднем отвечает маршрут");
@@ -945,6 +947,7 @@ function metHintNum(h) {
   // наблюдение, а не доля, и суточный текст на сервере говорит «из N»,
   // то есть экран и Telegram рассказывали бы про одно число разное.
   if (h.code === "uploadChurn" && h.of) return h.n + "/" + h.of;
+  if (h.code === "signupNoUpload" && h.of) return h.n + "/" + h.of;
   return String(h.n);
 }
 
@@ -1101,6 +1104,140 @@ function MetDigest({ days, toast }) {
     text ? React.createElement("pre", { className: "met-pre" }, text) : null);
 }
 
+/* ---------- Путь с регистрации и браузер ----------
+   Когорта (кто из зарегистрировавшихся за период до чего дошёл) и события
+   периода стоят рядом, но не смешиваются: первая — про путь людей, вторые —
+   «сколько раз это случилось», включая прежних клиентов. Коды шагов и
+   экранов приходят с сервера, фразу собирает браузер (инвариант 17). */
+function metStepText(code) {
+  switch (code) {
+    case "signup": return TR("Зарегистрировались");
+    case "verified": return TR("Подтвердили почту");
+    case "tour": return TR("Прошли знакомство");
+    case "upload": return TR("Принесли файл");
+    case "run": return TR("Запустили перевод");
+    case "export": return TR("Скачали перевод");
+    case "paid": return TR("Оплатили");
+    case "login": return TR("Входов");
+    case "first:upload": return TR("Первый файл");
+    case "first:run": return TR("Первый перевод");
+    case "first:export": return TR("Первая выгрузка");
+    case "first:paid": return TR("Первая оплата");
+    default: return code;
+  }
+}
+
+function metUiText(code) {
+  if (code.indexOf("tab.") === 0) {
+    const t = (typeof TABS !== "undefined" ? TABS : []).find(x => x.key === code.slice(4));
+    return TR("Экран: ") + (t ? t.label : code.slice(4));
+  }
+  if (code.indexOf("tour.step") === 0) return TR("Знакомство, шаг ") + code.slice(9);
+  switch (code) {
+    case "tour.done": return TR("Знакомство пройдено до конца");
+    case "tour.skip": return TR("Знакомство пропущено");
+    case "tour.open": return TR("Знакомство открыто заново");
+    case "support.open": return TR("Открыли поддержку");
+    default: return code;
+  }
+}
+
+function metJsKind(kind) {
+  switch (kind) {
+    case "error": return TR("ошибка кода");
+    case "rejection": return TR("необработанный отказ");
+    case "render": return TR("экран упал");
+    case "load": return TR("файл не загрузился");
+    default: return TR("прочее");
+  }
+}
+
+function MetPath({ m }) {
+  const c = m.cohort || {};
+  const steps = c.steps || [];
+  const top = c.n || 0;
+  const mh = c.medianHours || {};
+  const hours = ["upload", "run", "export", "paid"].filter(k => mh[k] != null);
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Путь с регистрации")),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "0 0 8px" } },
+      TR("Из тех, кто зарегистрировался за период, — сколько дошли до каждого шага. Шаги не обязаны идти подряд: файл приносят и не пройдя знакомство.")),
+    !top
+      ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("За период никто не зарегистрировался."))
+      : React.createElement("div", { style: { overflowX: "auto" } },
+        React.createElement("table", { className: "tbl" },
+          React.createElement("tbody", null, steps.map(s => React.createElement("tr", { key: s.code },
+            React.createElement("td", null, metStepText(s.code)),
+            React.createElement("td", { style: { width: "45%" } },
+              React.createElement("div", { className: "met-bar" },
+                React.createElement("i", { style: { width: Math.round(s.n / top * 100) + "%" } }))),
+            React.createElement("td", null, s.n),
+            React.createElement("td", { className: "dim" }, Math.round(s.n / top * 100) + "%")))))),
+    hours.length ? React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "8px 0 0" } },
+      TR("Медиана от регистрации: ") + hours.map(k => metStepText(k) + " — " + mh[k] + TR(" ч")).join(", ")) : null,
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "8px 0 0" } },
+      TR("События за период (у всех, включая прежних клиентов): ") +
+      (m.signupFlow || []).map(f => metStepText(f.code) + " " + f.n).join(" · ")),
+    (c.rows || []).length ? React.createElement("details", { style: { marginTop: 8 } },
+      React.createElement("summary", null, TR("Кто где остановился") + " · " + c.rows.length),
+      React.createElement("div", { style: { overflowX: "auto", marginTop: 8 } },
+        React.createElement("table", { className: "tbl" },
+          React.createElement("thead", null, React.createElement("tr", null,
+            [TR("Организация"), TR("Почта"), TR("Создана"), TR("Дошли до"), TR("Последний вход")]
+              .map((h, i) => React.createElement("th", { key: i }, h)))),
+          React.createElement("tbody", null, c.rows.map(r => React.createElement("tr", { key: r.tenant },
+            React.createElement("td", null, r.name,
+              r.active === false ? React.createElement("span", { className: "dim" }, TR(" · отключена")) : null),
+            React.createElement("td", { className: "dim" }, r.login),
+            React.createElement("td", { className: "dim" }, r.created),
+            React.createElement("td", null, metStepText(r.stage)),
+            React.createElement("td", { className: "dim" }, r.lastLogin || "—"))))))) : null);
+}
+
+function MetBrowser({ m }) {
+  const js = m.js || [];
+  const recent = m.jsRecent || [];
+  const ui = m.ui || [];
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Браузер: ошибки и экраны")),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "0 0 8px" } },
+      TR("Ошибки кода у людей в браузере — сервер о них не знает: его ответы при этом успешные. Текста документов здесь нет, только место в коде.")),
+    js.length === 0
+      ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Ошибок в браузере не было."))
+      : React.createElement("div", { style: { overflowX: "auto" } },
+        React.createElement("table", { className: "tbl" },
+          React.createElement("tbody", null, js.map(r => {
+            const parts = r.code.split(":");
+            return React.createElement("tr", { key: r.code },
+              React.createElement("td", null, parts[1] || "—"),
+              React.createElement("td", { className: "dim" }, metJsKind(parts[0])),
+              React.createElement("td", null, r.n));
+          })))),
+    recent.length ? React.createElement("details", { style: { marginTop: 8 } },
+      React.createElement("summary", null, TR("Последние ошибки") + " · " + recent.length),
+      React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "6px 0" } },
+        TR("Хранятся в памяти сервиса до перезапуска; число ошибок по файлам — в базе.")),
+      React.createElement("ul", { className: "met-list" }, recent.map((r, i) =>
+        React.createElement("li", { key: i, className: "met-hint" },
+          React.createElement("span", { className: "dim" }, r.at + " · "),
+          React.createElement("b", null, r.file + (r.line ? ":" + r.line : "")),
+          React.createElement("span", null, " — " + r.msg),
+          React.createElement("span", { className: "dim" },
+            " · " + metJsKind(r.kind) + (r.screen ? " · " + r.screen : "") +
+            (r.tenant ? " · " + r.tenant : TR(" · до входа"))),
+          r.stack ? React.createElement("pre", { className: "met-pre", style: { fontSize: 11, maxHeight: 140, overflow: "auto" } }, r.stack) : null)))) : null,
+    React.createElement("div", { className: "eyebrow", style: { margin: "12px 0 6px" } }, TR("Что открывают")),
+    ui.length === 0
+      ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Открытых экранов за период не записано."))
+      : React.createElement("div", { style: { overflowX: "auto" } },
+        React.createElement("table", { className: "tbl" },
+          React.createElement("tbody", null, ui.map(r => React.createElement("tr", { key: r.code },
+            React.createElement("td", null, metUiText(r.code)),
+            React.createElement("td", null, r.n)))))));
+}
+
 function TabMetrics({ toast }) {
   const [days, setDays] = useState(7);
   const [m, setM] = useState(null);
@@ -1125,6 +1262,8 @@ function TabMetrics({ toast }) {
         m.from + " — " + m.to) : null),
     !m && React.createElement("div", { className: "dim" }, TR("Считаем…")),
     m && React.createElement(MetHints, { m }),
+    m && React.createElement(MetPath, { m }),
+    m && React.createElement(MetBrowser, { m }),
     m && React.createElement(MetTenants, { m }),
     m && React.createElement(MetSteps, { m }),
     m && React.createElement(MetCaps, { m }),

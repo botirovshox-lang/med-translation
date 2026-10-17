@@ -88,7 +88,9 @@
          похоже на код языка, заменяем умолчанием, а не грузим по нему файл. */
       if (!/^[a-z]{2}$/.test(lang)) lang = DEFAULT_LANG;
 
-      var core = ["vendor/react.production.min.js", "vendor/react-dom.production.min.js", "js/i18n.js"];
+      /* telemetry.js — ПЕРВЫМ: он ловит ошибки, включая незагрузившиеся
+         файлы ниже по списку. */
+      var core = ["js/telemetry.js", "vendor/react.production.min.js", "vendor/react-dom.production.min.js", "js/i18n.js"];
       if (lang !== KEY_LANG) core.push("js/i18n_" + lang + ".js");
       core.push("js/api.js", "js/handoff.js", "js/ui.jsx", "js/app.jsx");
 

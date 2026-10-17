@@ -3407,6 +3407,17 @@ def _paint_measure(sampler, b: dict) -> bool:
                    "areas": areas, "areaInk": area_ink,
                    "flat": m["flat"],
                    "len": (math.hypot(cx1 - cx0, cy1 - cy0) * 0.92) if m["angle"] else None}
+    # Х14: полосы в точках вырезки (по ним — деление блока), высота
+    # строчных и ширина краски каждой полосы (в точках страницы).
+    W_m = m["mask"].shape[1]
+    band_xh, band_inkw = [], []
+    for a, bb in m["bands"]:
+        band_xh.append(tp.x_height(m["mask"], [[0, a, W_m, bb + 1]]) / scale)
+        cols = np.nonzero(m["mask"][a:bb + 1].any(axis=0))[0]
+        band_inkw.append((cols[-1] - cols[0] + 1) / scale if len(cols) else 0.0)
+    b["_paint"]["bandsPx"] = [list(x) for x in m["bands"]]
+    b["_paint"]["bandXh"] = band_xh
+    b["_paint"]["bandInkw"] = band_inkw
     # Абзац с рамками строк (Ф1): базы, шаг и отступ — тем же правилом, что
     # у перерисовки картинки (`text_paint.line_geometry`), в пикселях вырезки,
     # и обратно в точки страницы.
@@ -3512,7 +3523,33 @@ def _page_em_even(boxes: list) -> int:
     return done
 
 
+# Х14–Х15 — те же правила, что у перерисовки картинки (`image_text`), и те
+# же переменные окружения: разошлись бы пороги — страница PDF и та же
+# картинка печатались бы по-разному.
+TYPE_HMIN = float(os.environ.get("IMG_TYPE_HMIN", "0.8"))
+SPLIT_EM_MIN = float(os.environ.get("IMG_SPLIT_EM_MIN", "0.4"))
+
+
 def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
+    """Раскладка надписи с рисунка (`_paint_plan1`) и Х15: машинопись, не
+    влезшая в своё место, уменьшается поровну кеглем и шириной (общее
+    сжатие не ниже `TYPE_HMIN`)."""
+    import math
+    ent = _paint_plan1(b, text, fonts, sw, hyph)
+    pt = b["_paint"]
+    if (ent is None or b.get("fam") != "type" or pt.get("arc") or pt["angle"]
+            or ent.get("split") or ent.get("f", 1.0) >= 0.97):
+        return ent
+    h0 = max(TYPE_HMIN, ent["h0"] * math.sqrt(max(0.0, ent["f"])))
+    if h0 >= ent["h0"] - 0.01:
+        return ent
+    ent2 = _paint_plan1(b, text, fonts, sw, hyph, h0_force=h0)
+    if ent2 is not None and not ent2.get("over") and ent2["size"] > ent["size"]:
+        return ent2
+    return ent
+
+
+def _paint_plan1(b: dict, text: str, fonts: dict, sw, hyph, h0_force=None) -> "dict | None":
     """Раскладка перевода надписи с рисунка: кегль — измеренный кегль
     оригинала (не высота рамки детектора), строки — в ширину надписи и в
     высоту её строк (с переносами), ужатие — только если не влезает.
@@ -3537,7 +3574,40 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
             em, h0 = _tp().calibrate(em, pt["inkw"], ours, hand=by_w, hmin=HSCALE_WIDTH_MIN)
             if hand and not by_w:
                 h0 = 1.0
+    if h0_force is not None:
+        h0 = h0_force
     geo = pt.get("geo")
+    # Х14: строка другого размера в конце блока (авторы под заголовком) —
+    # свой участок: свой кегль по высоте строчных, свой шаг, сжатие — по
+    # первому участку и его части оригинала; ровный ритм не применяется.
+    split = None
+    if (not pt.get("arc") and not pt["angle"] and pt.get("bandsPx")
+            and len(pt.get("areas") or []) <= 1):
+        split = _tp().size_split([tuple(x) for x in pt["bandsPx"]], text, b.get("src") or "")
+    part_em, part_pitch = None, []
+    if split:
+        geo = None
+        xhs = []
+        for p0, p1 in split[0]:
+            v = sorted(x for x in pt["bandXh"][p0:p1 + 1] if x > 0)
+            xhs.append(v[len(v) // 2] if v else 0.0)
+        ratio_b = split[3][1] / max(1e-6, split[3][0])
+        ratio = (xhs[1] / xhs[0]) if (xhs[0] > 0 and xhs[1] > 0) else ratio_b
+        if not (SPLIT_EM_MIN <= ratio <= 1.0):
+            ratio = min(1.0, max(SPLIT_EM_MIN, ratio_b))
+        a0, a1 = split[0][0]
+        inkw0 = sum(pt["bandInkw"][a0:a1 + 1])
+        ours0 = sw(split[2][0], font, em)
+        if inkw0 > 0 and ours0 > 0 and not hand and h0_force is None:
+            h0 = _tp().calibrate(em, inkw0, ours0,
+                                 hmin=TYPE_HMIN if b.get("fam") == "type" else HSCALE_WIDTH_MIN)[1]
+        big = max(x[1] - x[0] + 1 for x in pt["bandsPx"])
+        for p0, p1 in split[0]:
+            tops = [pt["bands"][i][0] for i in range(p0, p1 + 1)
+                    if (pt["bandsPx"][i][1] - pt["bandsPx"][i][0] + 1) >= _tp().SPLIT_FRAG * big]
+            gaps = sorted(tops[i] - tops[i + 1] for i in range(len(tops) - 1))
+            part_pitch.append(gaps[len(gaps) // 2] if gaps else None)
+        part_em = [em, em * ratio]
     if geo and not pt.get("arc") and not pt["angle"]:
         tp = _tp()
 
@@ -3606,9 +3676,9 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
 
     def mw(t_, s_):
         return sw(t_, font, s_) * h0
-    split = None
+    hsplit = None
     if hyph is not None and not pt.get("arc") and not pt["angle"]:
-        def split(w_, room, s_):
+        def hsplit(w_, room, s_):
             return _hyph_split(w_, hyph, room, lambda x_: mw(x_, s_))
     if pt.get("arc") or pt["angle"]:
         # Дуга — одна строка: кегль ужимается, пока перевод не ляжет на дугу.
@@ -3621,7 +3691,10 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
     tp = _tp()
     bands = pt["bands"]
     areas = pt.get("areas") or []
-    if len(bands) >= 2 and len(areas) > 1:
+    if split:
+        chunks = split[1]
+        areas_t = [(bands[a0][0], bands[a1][1], a1 - a0 + 1) for a0, a1 in split[0]]
+    elif len(bands) >= 2 and len(areas) > 1:
         # Блок — столбец схемы из нескольких плашек: перевод — по участкам,
         # каждый в своей плашке (`text_paint._areas`, `split_text`).
         chunks = tp.split_text(text, pt.get("areaInk") or [1.0] * len(areas))
@@ -3633,13 +3706,15 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
     parts, over, fmin = [], False, 1.0
     rooms = pt.get("rooms") or []
     for k_, ((top, bot, rows_k), chunk) in enumerate(zip(areas_t, chunks)):
-        h_k = max(top - bot, em)
+        em_k = part_em[k_] if part_em else em
+        h_k = max(top - bot, em_k)
         # Место участка — комната плашки, а не рамка блока (Т30): рамка идёт
         # по самой широкой строке блока, и у верха круга перевод выходил за
         # край. Комната только сужает: край плашки не найден — рамка блока.
         left, right, width_k = b["x0"], b["x1"], width
-        if PAINT_ROOM and k_ < len(rooms):
-            lo, hi = rooms[k_]
+        rk_ = 0 if split else k_            # Х14: комната измерена для блока целиком
+        if PAINT_ROOM and rk_ < len(rooms):
+            lo, hi = rooms[rk_]
             m_ = ROOM_MARGIN * em
             if lo is not None and lo + m_ > left:
                 left = lo + m_
@@ -3649,17 +3724,22 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
                 width_k = right - left
             else:
                 left, right = b["x0"], b["x1"]
-        size, step, lines = tp.fit_lines(chunk, width_k, h_k + 0.3 * em, em,
-                                         max(pt["pitch"], em * 1.05), mw, split, 0.45, rows_k)
+        pitch_k = (part_pitch[k_] if (part_em and part_pitch[k_]) else pt["pitch"] * em_k / em)
+        if split:
+            # Строк участка не больше, чем вместит его высота (как у картинки).
+            cap = int((h_k + 0.6 * em_k - 0.95 * em_k) // max(max(pitch_k, em_k * 1.05), 1e-6)) + 1
+            rows_k = max(1, min(rows_k, cap))
+        size, step, lines = tp.fit_lines(chunk, width_k, h_k + 0.3 * em_k, em_k,
+                                         max(pitch_k, em_k * 1.05), mw, hsplit, 0.45, rows_k)
         need = (len(lines) - 1) * step + 0.95 * size if lines else 0.0
-        over = over or need > h_k + 0.5 * em
-        fmin = min(fmin, size / em)
+        over = over or need > h_k + 0.5 * em_k
+        fmin = min(fmin, size / em_k)
         parts.append({"top": top, "bot": bot, "lines": lines, "size": size, "step": step,
                       "L": left, "R": right})
     first = parts[0] if parts else {"lines": [], "size": em, "step": em}
     return {"b": b, "font": font, "size": first["size"], "step": first["step"],
             "lines": [ln for p_ in parts for ln in p_["lines"]], "parts": parts, "h0": h0,
-            "f": fmin, "over": over, "align": b.get("align") or "left"}
+            "f": fmin, "over": over, "align": b.get("align") or "left", "split": bool(split)}
 
 
 def _paint_fill(c, ent: dict) -> None:

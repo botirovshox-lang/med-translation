@@ -629,6 +629,58 @@ for fam15 in ("hand", "serif", ""):
 check(tp.tail_anchor("Jadval 1 2020 2021 2022 3.4 5.6 7.8", "Table 1 2020 2021 2022 3.4 5.6 7.8") is None,
       "хвост из чисел — не имена, не делим")
 
+print("\n── Х14–Х15 в PDF ──")
+from reportlab.pdfbase import pdfmetrics                      # noqa: E402
+fonts16 = layout_pdf._register_fonts(set(TR14 + SRC14 + LONG15))
+f16 = layout_pdf._font_for(fonts16, {"style": "", "fam": "serif"})
+head16 = SRC14[:tp.tail_anchor(TR14, SRC14)[1]].rstrip()
+b16 = {"x0": 50.0, "x1": 50.0 + 1.02 * pdfmetrics.stringWidth(head16, f16, 12.0) / 2, "top": 200.0,
+       "bottom": 160.0, "src": SRC14, "image": 1, "fam": "serif", "align": "left",
+       "_paint": {"em": 12.0, "bands": [(200.0, 188.0), (186.0, 176.0), (172.0, 165.0)],
+                  "bandsPx": [[0, 49], [60, 99], [130, 156]], "bandXh": [6.0, 6.0, 3.0],
+                  "bandInkw": [pdfmetrics.stringWidth(head16, f16, 12.0) / 2] * 2 + [100.0],
+                  "areas": [[0, 2]], "areaInk": [1.0], "pitch": 14.0, "bold": False,
+                  "inkw": pdfmetrics.stringWidth(head16, f16, 12.0) + 100.0, "angle": 0.0, "rooms": []}}
+e16 = layout_pdf._paint_plan(b16, TR14, fonts16, pdfmetrics.stringWidth, None)
+check(e16 and e16.get("split") and len(e16["parts"]) == 2, "PDF: блок с авторами разделён: %s" % (e16 and e16.get("split"),))
+if e16 and len(e16.get("parts") or []) == 2:
+    check(e16["parts"][1]["size"] < 0.7 * e16["parts"][0]["size"] and e16["parts"][1]["lines"][0].startswith("Kana"),
+          "PDF: у авторов свой кегль (%.1f против %.1f)" % (e16["parts"][1]["size"], e16["parts"][0]["size"]))
+    check(e16["h0"] >= 0.9, "PDF: заголовок не сжат авторами (h0 %.2f)" % e16["h0"])
+b16n = dict(b16, _paint=dict(b16["_paint"], bandsPx=[[0, 49], [60, 99], [110, 150]]))
+e16n = layout_pdf._paint_plan(b16n, TR14, fonts16, pdfmetrics.stringWidth, None)
+check(e16n is not None and not e16n.get("split"), "PDF: строки одного размера — не делим")
+ft = layout_pdf._font_for(fonts16, {"style": "", "fam": "type"})
+src15 = " ".join(TL)
+b15p = {"x0": 50.0, "x1": 50.0 + pdfmetrics.stringWidth(TL[0], ft, 12.0), "top": 200.0, "bottom": 140.0,
+        "src": src15, "image": 1, "fam": "type", "align": "left",
+        "_paint": {"em": 12.0, "bands": [(200.0 - 15 * i, 190.0 - 15 * i) for i in range(4)],
+                   "areas": [[0, 3]], "areaInk": [1.0], "pitch": 15.0, "bold": False,
+                   "inkw": pdfmetrics.stringWidth(src15, ft, 12.0), "angle": 0.0, "rooms": []}}
+calls15 = []
+_p1 = layout_pdf._paint_plan1
+
+
+def _cap16(*a, **kw):
+    r_ = _p1(*a, **kw)
+    calls15.append((kw.get("h0_force"), r_ and r_["size"]))
+    return r_
+
+
+layout_pdf._paint_plan1 = _cap16
+try:
+    e15 = layout_pdf._paint_plan(b15p, LONG15, fonts16, pdfmetrics.stringWidth, None)
+    calls15_t = list(calls15)
+    calls15.clear()
+    layout_pdf._paint_plan(dict(b15p, fam="serif"), LONG15, fonts16, pdfmetrics.stringWidth, None)
+    calls15_s = list(calls15)
+finally:
+    layout_pdf._paint_plan1 = _p1
+check(e15 is not None and len(calls15_t) == 2 and calls15_t[1][0] is not None and calls15_t[1][0] >= layout_pdf.TYPE_HMIN
+      and e15["size"] >= calls15_t[0][1],
+      "PDF: машинопись — второй проход со сжатием (%s), кегль %.2f" % (calls15_t, e15["size"] if e15 else -1))
+check(len(calls15_s) == 1, "PDF: печатный набор — один проход (Х15 только машинопись)")
+
 print()
 if fail:
     print("ПРОВАЛЕНО: %d" % len(fail))

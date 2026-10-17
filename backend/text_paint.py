@@ -1548,6 +1548,119 @@ def font_stem(path: str) -> float:
     return _STEM_CACHE[path]
 
 
+# Х10. Кегль и толщина печатного текста — по СТРОЧНЫМ оригинала и нашего
+# шрифта. Кегль из высоты буквы считается постоянными долями (0.73 и 0.53
+# кегля), а у старой книжной антиквы строчные ниже, чем у Noto: перевод
+# книги 1886 г. выходил крупнее оригинала, и строку сжимали по ширине —
+# узкие высокие буквы вместо широких низких. Правило: высота строчных
+# оригинала (размах профиля строки, медиана по строкам) ÷ высота «x» нашего
+# шрифта — кегль, если он меньше прежнего (прописные мерить так нельзя —
+# их высота не строчная, поэтому нужна доля строчных `XH_LOWER`). Файл
+# семейства — по ширине (`image_text._face_by_width`). Вес обводкой НЕ
+# догоняется: штрих скана раздут размытием (книга 1886 г. по нему «жирнее»
+# Noto на треть, а по отношению к строчным — 0.18 против 0.17), и обводка
+# делала буквы тяжелее оригинала.
+XH_LOWER = float(os.environ.get("PAINT_XH_LOWER", "0.6"))
+_XH_CACHE: dict = {}
+
+
+def x_height(mask, line_boxes) -> float:
+    """Высота строчных оригинала в точках снимка (медиана по строкам) или 0."""
+    if np is None or mask is None or not line_boxes:
+        return 0.0
+    H, W = mask.shape[:2]
+    vals = []
+    for lb in line_boxes:
+        a, b = max(0, int(lb[1])), min(H, int(math.ceil(lb[3])))
+        c, d = max(0, int(lb[0])), min(W, int(math.ceil(lb[2])))
+        if b - a < 4 or d - c < 4:
+            continue
+        prof = mask[a:b, c:d].sum(axis=1)
+        if not prof.max():
+            continue
+        core = np.nonzero(prof >= 0.5 * prof.max())[0]
+        if len(core):
+            vals.append(float(core[-1] - core[0] + 1))
+    return float(np.median(vals)) if vals else 0.0
+
+
+def font_xh(path: str) -> float:
+    """Высота «x» шрифта на единицу кегля."""
+    if not path:
+        return 0.0
+    if path not in _XH_CACHE:
+        v = 0.0
+        try:
+            from PIL import ImageFont
+            bb = ImageFont.truetype(path, 200).getbbox("x")
+            v = (bb[3] - bb[1]) / 200.0
+        except Exception:
+            v = 0.0
+        _XH_CACHE[path] = v
+    return _XH_CACHE[path]
+
+
+def lower_share(src: str) -> float:
+    letters = [ch for ch in (src or "") if ch.isalpha()]
+    return (sum(1 for ch in letters if ch.islower()) / float(len(letters))) if letters else 0.0
+
+
+def em_by_xheight(em: float, xh_src: float, path: str, src: str) -> float:
+    """Кегль по строчным (Х10): меньше прежнего — он, иначе прежний."""
+    fx = font_xh(path)
+    if not (em > 0 and xh_src > 0 and fx > 0) or lower_share(src) < XH_LOWER:
+        return em
+    return min(em, xh_src / fx)
+
+
+# Х11. «Полужирный» снимается площадью краски. Полужирный решает толщина
+# штриха к кеглю (`BOLD_STEM`), и у JPEG её решает размытие: аннотация
+# статьи (обычный гротеск) мерилась 0.121 при пороге 0.12 и печаталась
+# жирным. Площадь краски оригинала в рамках строк сравнивается с площадью
+# букв исходного текста, набранного обычным и жирным файлом при том же
+# кегле (лог-расстояние): ближе к обычному — не жирный. Размытие площадь
+# только РАЗДУВАЕТ, то есть тянет к жирному, — снять жирный зря правило
+# не может. Назначать жирный площадью нельзя: у контрастной антиквы
+# размытие раздувает волосяные штрихи, и обычная выглядит жирной (замер на
+# Old Standard: 0.94 к жирному при 1.38 к обычному). Ширину не правим:
+# узкий шрифт оригинала не тоньше (аннотация: 1.09 к обычному, 0.69 к
+# жирному).
+
+
+def ink_area(mask, line_boxes) -> int:
+    """Площадь краски внутри рамок строк."""
+    H, W = mask.shape[:2]
+    area = 0
+    for lb in line_boxes or ():
+        a, b = max(0, int(lb[1])), min(H, int(math.ceil(lb[3])))
+        c, d = max(0, int(lb[0])), min(W, int(math.ceil(lb[2])))
+        if b > a and d > c:
+            area += int(mask[a:b, c:d].sum())
+    return area
+
+
+def _text_area(path: str, src: str, em: float) -> float:
+    from PIL import Image, ImageDraw, ImageFont
+    f = ImageFont.truetype(path, max(4, int(round(em))))
+    im = Image.new("L", (int(f.getlength(src)) + 20, int(em * 2.2) + 10), 0)
+    ImageDraw.Draw(im).text((5, int(0.3 * em)), src, font=f, fill=255)
+    return float((np.asarray(im) > 127).sum())
+
+
+def bold_by_area(mask, line_boxes, src: str, em: float, reg_path: str, bold_path: str) -> bool:
+    """False — краска ближе к обычному начертанию, чем к жирному (Х11)."""
+    if np is None or not (src and line_boxes and em > 0 and reg_path and bold_path)             or reg_path == bold_path:
+        return True
+    area = ink_area(mask, line_boxes)
+    try:
+        ar, ab = _text_area(reg_path, src, em), _text_area(bold_path, src, em)
+    except Exception:
+        return True
+    if area <= 0 or ar <= 0 or ab <= 0:
+        return True
+    return abs(math.log(area / ab)) <= abs(math.log(area / ar))
+
+
 # ── Раздел Х: машинопись, выключка, абзацы внутри блока (16.10.2026) ─────
 
 # Х1. Машинопись — шаг знака постоянный: середины букв строки ложатся на

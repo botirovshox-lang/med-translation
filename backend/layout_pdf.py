@@ -167,6 +167,11 @@ FAMILY_CANDIDATES = {
         "": list(_print_fonts().MONO_FONTS),
         "b": list(_print_fonts().MONO_BOLD),
     },
+    # Дореформенная печать (Х10): общий список с перерисовкой картинки.
+    "old": {
+        "": list(_print_fonts().OLD_FONTS),
+        "b": list(_print_fonts().OLD_BOLD),
+    },
     "mono": {
         "": [os.environ.get("LAYOUT_FONT_MONO", ""),
              "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
@@ -3418,6 +3423,8 @@ def _paint_measure(sampler, b: dict) -> bool:
                   (cy1 - l_[3]) * scale] for l_ in lns]
                 if lns else [[0, 0, m["mask"].shape[1], m["mask"].shape[0]]] if rows == 1 else [])
         b["fam"] = tp.serif_fam(m["mask"], loc9, b.get("fam") or "", "sans")
+        if b["fam"] == "" and _print_fonts().pre_reform(b.get("src") or ""):
+            b["fam"] = "old"                # Х10: дореформенная печать
     if not m["angle"] and not m.get("arc") and rows >= 2 and len(lns) == rows:
         loc = [[(l_[0] - cx0) * scale, (cy1 - l_[1]) * scale, (l_[2] - cx0) * scale,
                 (cy1 - l_[3]) * scale] for l_ in lns]

@@ -15,7 +15,9 @@
       размыванием; ложный узор экзамен не сдаёт;
   Ф7. толщина пера рукописи;
   Ф1/общий шрифт: рукописный список один на оба пути печати;
-  Х9. засечки определяются по буквам, когда чтение о них не сказало.
+  Х9. засечки определяются по буквам, когда чтение о них не сказало;
+  Х10. дореформенная печать — старой антиквой, кегль — по строчным;
+  Х11. полужирный от размытия снимается площадью краски.
 Без сети и без вызовов модели.
 """
 import io
@@ -411,6 +413,62 @@ for fn, fam_in, want in (("NotoSerif-Regular.ttf", "", "serif"), ("NotoSans-Regu
                                               "rows": 2, "lineH": 60, "lineBoxes": lb9, "fam": fam_in,
                                               "src": " ".join(TX9[:2]), "align": "left"}])
     check(r9 and r9[0].get("ok") and r9[0].get("fam") == want, "%s: печать %r — %s" % (fn, want, r9))
+
+print("\n── Х10. старая антиква, кегль по строчным ──")
+from PIL import ImageFilter                                   # noqa: E402
+def scan9(fn, lines, size, blur=0.8):
+    im_, lb_ = typed_page(SUB + fn, lines, size)
+    im_ = im_.filter(ImageFilter.GaussianBlur(blur))
+    bb_ = io.BytesIO()
+    im_.save(bb_, "JPEG", quality=70)
+    rgb_ = np.asarray(Image.open(bb_).convert("RGB")).copy()
+    box_ = [min(b[0] for b in lb_), min(b[1] for b in lb_), max(b[2] for b in lb_), max(b[3] for b in lb_)]
+    m_ = tp.measure(rgb_, " ".join(lines), len(lines), 60, inner=box_)
+    return m_, lb_
+check(print_fonts.family_files("old")[0].endswith("OldStandard-Regular.ttf")
+      and os.path.exists(SUB + "OFL-OldStandard.txt"), "Old Standard — семейство «old», лицензия рядом")
+check(print_fonts.pre_reform("Въ одинъ прекрасный вечеръ, не менѣе прекрасный экзекуторъ"),
+      "дореформенная орфография узнана (ер на конце, ять)")
+check(not print_fonts.pre_reform("Объём, съезд и подъезд — в один прекрасный вечер"),
+      "современный ъ внутри слова — не старая орфография")
+check(not print_fonts.pre_reform("Бір тамаша кеште Іван Дмитрич"), "казахская і — не старая орфография")
+for lang_t, want in (("One fine evening, an equally fine clerk", "OldStandard-Regular.ttf"),
+                     ("Bir goʻzal oqshomda, ekzekutor", "OldStandard-Regular.ttf"),
+                     ("Бір тамаша кеште, екзекутор", "OldStandard-Regular.ttf")):
+    check(it._paint_font(False, lang_t, "old").endswith(want), "старая антиква знает буквы: %s" % lang_t)
+OLD_SRC = ["Въ одинъ прекрасный вечеръ, не менѣе прекрасный экзекуторъ,",
+           "Иванъ Дмитричъ Червяковъ, сидѣлъ во второмъ ряду креселъ",
+           "и глядѣлъ въ бинокль на Корневильскія колокола. Онъ глядѣлъ",
+           "и чувствовалъ себя на верху блаженства. Но вдругъ... Въ"]
+im10, lb10 = typed_page(SUB + "OldStandard-Regular.ttf", OLD_SRC, 30)
+ti10, tl10 = typed_page(SUB + "OldStandard-Regular.ttf", ["СМЕРТЬ ЧИНОВНИКА."], 40)
+pg10 = Image.new("RGB", (im10.width, im10.height + 240), (238, 238, 232))
+pg10.paste(ti10.crop((0, 0, im10.width, 100)), (0, 0))
+pg10.paste(im10, (0, 120))
+lb10 = [[a, b + 120, c, d + 120] for a, b, c, d in lb10]
+b10 = io.BytesIO()
+pg10.save(b10, "PNG")
+box10 = [min(b[0] for b in lb10), min(b[1] for b in lb10), max(b[2] for b in lb10), max(b[3] for b in lb10)]
+_, r10 = it.render_target(b10.getvalue(), [
+    {"box": list(tl10[0]), "text": "THE DEATH OF A CIVIL SERVANT.", "rows": 1, "lineH": 60,
+     "lineBoxes": [list(tl10[0])], "fam": "serif", "src": "СМЕРТЬ ЧИНОВНИКА.", "align": "center"},
+    {"box": box10, "text": "One fine evening, an equally fine clerk Ivan Dmitrich " * 4, "rows": 4,
+     "lineH": 60, "lineBoxes": lb10, "fam": "serif", "src": " ".join(OLD_SRC), "align": "left"}])
+check(r10 and all(x.get("fam") == "old" for x in r10),
+      "страница в старой орфографии — вся антиква старая, и заголовок без ъ: %s" % r10)
+check(tp.em_by_xheight(42.0, 21.0, SUB + "NotoSerif-Regular.ttf", "один прекрасный") < 42.0,
+      "строчные ниже наших — кегль по ним")
+check(tp.em_by_xheight(42.0, 30.0, SUB + "NotoSerif-Regular.ttf", "один прекрасный") == 42.0,
+      "кегль по строчным крупнее — прежний")
+check(tp.em_by_xheight(42.0, 21.0, SUB + "NotoSerif-Regular.ttf", "СМЕРТЬ ЧИНОВНИКА") == 42.0,
+      "прописные — не строчные, кегль прежний")
+
+print("\n── Х11. жирный снимается площадью краски ──")
+for fn, want in (("NotoSans-Regular.ttf", False), ("NotoSans-Bold.ttf", True)):
+    m11, lb11 = scan9(fn, TX9[:2], 28, 1.0)
+    got11 = tp.bold_by_area(m11["mask"], lb11, " ".join(TX9[:2]), float(m11["em"]),
+                            SUB + "NotoSans-Regular.ttf", SUB + "NotoSans-Bold.ttf")
+    check(got11 == want, "%s: жирный=%s по площади" % (fn, got11))
 
 print()
 if fail:

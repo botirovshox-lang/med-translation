@@ -1854,6 +1854,12 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         loc = ([[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs]
                if lbs else [[0, 0, rgb.shape[1], rgb.shape[0]]] if rows == 1 else [])
         fam = tp.serif_fam(m["mask"], loc, fam, "")
+        if m["bold"] and not tp.bold_by_area(m["mask"], loc, " ".join((it.get("src") or "").split()),
+                                             float(m["em"]), _paint_font(False, text, fam) or "",
+                                             _paint_font(True, text, fam) or ""):
+            m["bold"] = False               # Х11: жирный — от размытия
+    if fam == "serif" and (it.get("era") == "old" or _pf().pre_reform(it.get("src") or "")):
+        fam = "old"                         # Х10: дореформенная печать
     fpath = _paint_font(m["bold"], text, fam)
     if not fpath:
         return None
@@ -1874,6 +1880,11 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
             geo = g
     em = m["em"] * k
     src = " ".join((it.get("src") or "").split())
+    if fam != "hand" and not m["angle"] and not m.get("arc"):
+        # Х10: кегль по строчным оригинала и нашего шрифта.
+        xl = ([[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs]
+              if lbs else [[0, 0, m["mask"].shape[1], m["mask"].shape[0]]] if rows == 1 else [])
+        em = tp.em_by_xheight(em, tp.x_height(m["mask"], xl) * k, fpath, src)
     h0 = 1.0
     if src and not m["angle"] and not m.get("arc") and (m["bands"] or geo):
         inkw = 0.0
@@ -2426,6 +2437,10 @@ def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = Non
     w, h = im.size
     arr = _np.asarray(im)
     k = _scale_for(im, items)
+    # Х10: эпоха — свойство страницы: заголовок без ъ и ѣ («СМЕРТЬ
+    # ЧИНОВНИКА.») набран той же старой антиквой, что и текст под ним.
+    if any(_pf().pre_reform(x.get("src") or "") for x in items):
+        items = [dict(x, era="old") for x in items]
     big = im.resize((w * k, h * k), Image.LANCZOS) if k > 1 else im.copy()
     draw = ImageDraw.Draw(big)
     n = len(items)

@@ -57,7 +57,7 @@ EMAIL = "hello@simpletranslate.me"
 INDEXABLE = True
 # Номер счётчика Яндекс Метрики. Пусто — счётчика на странице нет вовсе
 # (а не «счётчик с нулём»): выдуманный номер слал бы визиты в чужой счётчик.
-METRIKA_ID = ""
+METRIKA_ID = "113660224"
 # Коды подтверждения прав в Яндекс Вебмастере и Google Search Console.
 # Пусто — тега нет. Берутся из кабинетов при добавлении сайта.
 YANDEX_VERIFICATION = ""
@@ -523,8 +523,11 @@ def metrika():
             '(function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};'
             'm[i].l=1*new Date();for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r){return;}}'
             'k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})'
-            '(window,document,"script","https://mc.yandex.ru/metrika/tag.js","ym");'
-            'ym(%(id)s,"init",{clickmap:true,trackLinks:true,accurateTrackBounce:true,webvisor:true});</script>\n'
+            '(window,document,"script","https://mc.yandex.ru/metrika/tag.js?id=%(id)s","ym");'
+            # Параметры — как в коде кабинета (17.10.2026): ssr, ecommerce
+            # через dataLayer, явные referrer и url.
+            'ym(%(id)s,"init",{ssr:true,webvisor:true,clickmap:true,ecommerce:"dataLayer",'
+            'referrer:document.referrer,url:location.href,accurateTrackBounce:true,trackLinks:true});</script>\n'
             '<noscript><div><img src="https://mc.yandex.ru/watch/%(id)s" style="position:absolute;left:-9999px" alt=""></div></noscript>'
             % {"id": int(METRIKA_ID)})
 

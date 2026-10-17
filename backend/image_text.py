@@ -1992,6 +1992,7 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
     split = (tp.size_split(m["bands"], text, it.get("src") or "")
              if not m.get("arc") and not m["angle"] and len(m.get("areas") or []) <= 1 else None)
     part_em = None
+    part_pitch = []
     if split:
         # Х14: строки разного размера — не ровный ритм; у участка свой кегль
         # (по высоте его строк), сжатие — по первому участку: ширина его
@@ -2008,6 +2009,14 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
         if not (SPLIT_EM_MIN <= ratio <= 1.0):
             ratio = min(1.0, max(SPLIT_EM_MIN, ratio_b))   # шумная оценка — по полосам
         part_em = [em, em * ratio]
+        # Шаг строк участка — по ЕГО строкам (верх к верху полос): общий шаг
+        # блока считает и обрывки выносных, и строку авторов, и две строки
+        # заголовка вставали теснее оригинала.
+        part_pitch = []
+        for p0, p1 in split[0]:
+            tops = [a_ for a_, b_ in m["bands"][p0:p1 + 1]
+                    if (b_ - a_ + 1) >= tp.SPLIT_FRAG * max(b2 - a2 + 1 for a2, b2 in m["bands"])]
+            part_pitch.append(float(_np.median(_np.diff(tops))) * k if len(tops) >= 2 else None)
         a0, a1 = split[0][0]
         inkw0 = 0.0
         for a_, b_ in m["bands"][a0:a1 + 1]:
@@ -2092,7 +2101,8 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
         for pi_, ((top, bot, rows_k), chunk) in enumerate(zip(spans, chunks)):
             em_p = part_em[pi_] if part_em else em
             height = max(bot - top, em_p)
-            pitch = max(m["pitch"] * k * em_p / em, em_p * 1.05)
+            pp_ = part_pitch[pi_] if (part_em and part_pitch[pi_]) else m["pitch"] * k * em_p / em
+            pitch = max(pp_, em_p * 1.05)
             # Строк не больше, чем вместит место ПО ТОЙ ЖЕ мерке, которой
             # раскладку проверяют ниже (Ф1): лишние полосы маски (обрывки
             # выносных) разрешали `fit_lines` раскладку, которую проверка

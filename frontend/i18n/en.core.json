@@ -441,5 +441,8 @@
   " · добавится строк: до ": " · lines to add: up to ",
   "Читаю новые строки: ": "Reading new lines: ",
   "Раскладываю строки по тексту: ": "Placing lines into the text: ",
-  "Готовлю страницы…": "Preparing pages…"
+  "Готовлю страницы…": "Preparing pages…",
+  "Файл ждёт оплаты": "The file is waiting for payment",
+  "Страниц не хватает. Пополните баланс — файл добавится и переведётся сам.": "Not enough pages. Top up your balance — the file will be added and translated on its own.",
+  "Страниц не хватает. Пополните баланс и нажмите «Добавить в проект» ещё раз.": "Not enough pages. Top up your balance and press “Add to the project” again."
 }

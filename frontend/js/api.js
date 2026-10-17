@@ -76,7 +76,7 @@
           /* Поля отказа (409 дубля: code, project) — экрану, чтобы предложить
              «Открыть проект», а не разбирать текст сообщения. */
           err.data = data;
-          payNeed(xhr.getResponseHeader("X-Pay-Need"), data);
+          payNeed(xhr.getResponseHeader("X-Pay-Need"), data, xhr.getResponseHeader("X-Pay-Short"));
           reject(err);
           return;
         }
@@ -102,9 +102,12 @@
   /* Отказ «нечем платить» (страницы, минуты видео, денежный лимит) сервер
    помечает заголовком X-Pay-Need. Экран по нему предлагает пополнить —
    полосой оплаты в оболочке (pay.jsx), а не разбором текста ошибки. */
-function payNeed(kind, data) {
+function payNeed(kind, data, short) {
   if (!kind) return;
-  try { window.dispatchEvent(new CustomEvent("mct-pay-need", { detail: { kind, need: data && data.need, left: data && data.left } })); }
+  /* `short` — сколько страниц не хватает (заголовок X-Pay-Short у отказа
+     загрузки): окно оплаты подставит его само. */
+  const sh = Number(short) > 0 ? Number(short) : null;
+  try { window.dispatchEvent(new CustomEvent("mct-pay-need", { detail: { kind, need: data && data.need, left: data && data.left, short: sh } })); }
   catch (e) { /* старый браузер без CustomEvent — полосы не будет, ошибка покажется как была */ }
 }
 
@@ -169,7 +172,7 @@ function onUnauthorized() {
         err.status = r.status;
         err.detail = detail;
         err.data = data;
-        payNeed(r.headers.get("X-Pay-Need"), data);
+        payNeed(r.headers.get("X-Pay-Need"), data, r.headers.get("X-Pay-Short"));
         throw err;
       }
       return await r.json();
@@ -235,7 +238,7 @@ function onUnauthorized() {
         const d = j.detail || j.error || "";
         const e = new Error(typeof d === "string" && d ? TRS(d) : "Upload failed: " + r.status);
         e.status = r.status;
-        payNeed(r.headers.get("X-Pay-Need"), j);
+        payNeed(r.headers.get("X-Pay-Need"), j, r.headers.get("X-Pay-Short"));
         throw e;
       }
       fails++;

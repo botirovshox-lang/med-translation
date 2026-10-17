@@ -199,7 +199,12 @@ function PayNeedBar({ store, toast }) {
     const tick = () => window.API.payOrderGet(oid).then(r => {
       if (!alive || !r || !r.order) return;
       setRet(r.order);
-      if (r.order.status === "new" && ++tries < 6) setTimeout(tick, 3000);
+      /* Оплата прошла — то, что ждало её (файл, перевод), продолжается само. */
+      if (r.order.status === "paid") {
+        if (window.MCT_HANDOFF) window.MCT_HANDOFF.markPaid();
+        try { window.dispatchEvent(new CustomEvent("mct-pay-paid", { detail: { order: r.order.id } })); } catch (e) {}
+      }
+      if (r.order.status === "new" && ++tries < 20) setTimeout(tick, 3000);
     }).catch(() => {});
     tick();
     return () => { alive = false; };
@@ -207,7 +212,8 @@ function PayNeedBar({ store, toast }) {
   const owner = !!(store.can && store.can.owner);
   const open = () => {
     window._mcat_payIntent = need && need.kind === "minutes" && need.need
-      ? { minutes: Math.max(1, Number(need.need) - Math.max(0, Number(need.left || 0))) } : null;
+      ? { minutes: Math.max(1, Number(need.need) - Math.max(0, Number(need.left || 0))) }
+      : need && need.kind === "pages" && need.short ? { pages: need.short } : null;
     setNeed(null);
     store.go("org");
     try { window.dispatchEvent(new CustomEvent("mct-pay-open", { detail: window._mcat_payIntent || {} })); } catch (e) {}

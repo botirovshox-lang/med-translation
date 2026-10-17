@@ -1448,6 +1448,48 @@ try {
     check(edIsPicture({ importKind: "scan" }) && !edIsPicture({ importKind: "docx" }), "картинка и скан — да, docx — нет");
   }
 
+  console.log("\n22a. «Перевести» на лендинге: после загрузки перевод стартует сам, отказ лимита ждёт оплаты");
+  {
+    if (typeof window.addEventListener !== "function") { window.addEventListener = () => {}; window.removeEventListener = () => {}; }
+    sessionStorage.removeItem("mct-autorun");
+    let ran = 0;
+    const props = { project: { id: 88, segments: [{ id: 1 }] }, job: null, onRunFull: () => { ran++; }, tick: 0,
+                    planReady: true, planCount: 3, planSegs: 1, seenJob: null };
+    const runIt = (extra) => {
+      const from = effects.length;
+      React.createElement(EdChainRunner, Object.assign({}, props, extra || {}));
+      effects.slice(from).forEach(f => { const c = f(); });
+    };
+    edAutoRunArm(88);
+    check(JSON.parse(sessionStorage.getItem("mct-autorun") || "{}")[88], "отметка автозапуска лежит в sessionStorage (переживёт кассу)");
+    runIt({ planReady: false });
+    check(ran === 0, "состав ещё не посчитан — не запускаем");
+    runIt({ planSegs: 5 });
+    check(ran === 0, "состав посчитан под другие строки — не запускаем");
+    runIt();
+    check(ran === 1, "состав готов — перевод запущен сам, ровно один раз");
+    runIt();
+    check(ran === 1, "второй раз сам не запускается");
+    edAutoRunWait(88);
+    runIt();
+    check(ran === 1, "запуск получил отказ «нечем платить» — на каждом открытии не повторяем");
+    edAutoRunRestore(88);
+    runIt();
+    check(ran === 1, "оплаты не было — повтора нет");
+    const paidAt = Date.now() + 1000;
+    window.MCT_HANDOFF = { paidAt: () => paidAt };
+    edAutoRunRestore(88);
+    runIt();
+    check(ran === 2, "оплата прошла (время оплаты позже отказа) — перевод запускается сам, даже если редактор открыли потом");
+    delete window.MCT_HANDOFF;
+    edAutoRunDone(88);
+    check(!JSON.parse(sessionStorage.getItem("mct-autorun") || "{}")[88], "запуск удался — отметка снята");
+    edAutoRunArm(89);
+    ran = 0;
+    runIt({ project: { id: 89, segments: [{ id: 1 }] }, planCount: 0 });
+    check(ran === 0 && !JSON.parse(sessionStorage.getItem("mct-autorun") || "{}")[89], "переводить нечего — отметка снята молча");
+  }
+
   /* 22. Колонка «Время» у субтитров. Седьмая ячейка стоит ТРЕТЬЕЙ (слева
      от текста), у обычного файла ячеек по-прежнему шесть: раскладка на
      телефоне держится на номерах ячеек (styles.css, `.tbl-cues`). */

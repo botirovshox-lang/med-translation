@@ -120,21 +120,29 @@ function useStore(authed) {
     if (!authed || !apiReady) return;
     const intent = authLandingIntent();
     const hf = window.MCT_HANDOFF;
+    /* Вернулись с кассы платёжной системы (`?pay=N`): загрузка, которой
+       не хватило страниц, продолжается сама — файл ждал в браузере. Запись
+       с уже заведённой папкой БЕЗ возврата с кассы сама не поднимается:
+       человек ушёл от отказа, и напоминать ему на каждом входе нельзя. */
+    const payBack = !!(window.MCT_HANDOFF && window.MCT_HANDOFF.payBack);
     (hf ? hf.peek() : Promise.resolve(null)).then(rec => {
+      if (rec && rec.folder != null && !(payBack && rec.payWait)) rec = null;
       if (!rec && !intent) return;
       setHandoff({ file: rec ? rec.file : null, name: rec ? rec.name : "",
+                   folder: rec && rec.folder != null ? rec.folder : null,
                    src: (rec && rec.src) || (intent && intent.src) || "",
                    tgt: (rec && rec.tgt) || (intent && intent.tgt) || "" });
       setViewFolder(null);
       setTab("import");
     });
   }, [authed, apiReady]);
-  /* Снимается, когда проект заведён: раньше — и сбой создания (сеть, 402)
-     потерял бы файл, который человек нёс через регистрацию. */
+  /* Экран первого файла своё отработал (папка заведена) — но САМ файл
+     снимается из браузера, только когда заведён ПРОЕКТ (`dropHandoff`
+     из ImpAddFile): отказ «страниц не хватает» уводит на кассу, и файл,
+     стёртый раньше, после оплаты пришлось бы выбирать заново. */
   const clearHandoff = () => {
     setHandoff(null);
     authLandingIntentUsed();
-    if (window.MCT_HANDOFF) window.MCT_HANDOFF.drop();
   };
 
   const statusCounts = (p) => {
@@ -1019,6 +1027,10 @@ function App() {
 
   /* Перезагрузка после выхода: иначе документы клиента остаются в памяти вкладки. */
   const logout = () => {
+    /* Файл, ждавший оплаты, и отметка автоперевода — этого человека:
+       следующему на этом компьютере их не поднимать. */
+    if (window.MCT_HANDOFF) window.MCT_HANDOFF.drop();
+    try { sessionStorage.removeItem("mct-autorun"); sessionStorage.removeItem("mct-paid-at"); } catch (e) {}
     const done = () => window.location.reload();
     if (window.API) window.API.logout().then(done, done); else done();
   };

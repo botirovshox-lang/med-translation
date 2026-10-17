@@ -73,8 +73,21 @@
     return { file: f, name: f.name.slice(0, 200), src: code(rec.src), tgt: code(rec.tgt), at: Date.now() };
   }
 
+  /* Вернулись с кассы платёжной системы (`/?pay=N`)? Читаем ПРИ ЗАГРУЗКЕ:
+     полоса оплаты (PayNeedBar) сразу убирает номер из адреса, а приложение
+     спрашивает об этом позже, когда пришли данные. */
+  var PAY_BACK = false;
+  try { PAY_BACK = /^\d+$/.test(new URLSearchParams(window.location.search).get("pay") || ""); } catch (e) { PAY_BACK = false; }
+  var PAID_SS = "mct-paid-at";
+
   window.MCT_HANDOFF = {
     MAX_BYTES: MAX_BYTES,
+    payBack: PAY_BACK,
+    /* Оплата прошла (заказ по возврату с кассы стал paid) — время в
+       sessionStorage: экран, ждавший оплаты, мог быть не открыт в момент
+       события и узнает об этом, когда откроется. */
+    markPaid: function () { try { sessionStorage.setItem(PAID_SS, String(Date.now())); } catch (e) {} },
+    paidAt: function () { try { return Number(sessionStorage.getItem(PAID_SS) || 0) || 0; } catch (e) { return 0; } },
     clean: clean,
     put: function (rec) {
       var r = clean(rec);
@@ -89,6 +102,19 @@
         if (Date.now() - (r.at || 0) > TTL_MS) { window.MCT_HANDOFF.drop(); return null; }
         return r;
       }, function () { return null; });
+    },
+    /* Дописать в запись то, что узналось по дороге: номер заведённой папки
+       (возврат с кассы не плодит вторую) и отметку «ждём оплату». Файл
+       и срок жизни прежние. */
+    update: function (patch) {
+      return window.MCT_HANDOFF.peek().then(function (r) {
+        if (!r) return null;
+        var n = {};
+        Object.keys(r).forEach(function (k) { n[k] = r[k]; });
+        if (patch && patch.folder != null && /^\d+$/.test(String(patch.folder))) n.folder = Number(patch.folder);
+        if (patch && "payWait" in patch) { n.payWait = !!patch.payWait; n.waitAt = Date.now(); }
+        return tx("readwrite", function (st) { return st.put(n, KEY); });
+      }).catch(function () { /* хранилище закрыто — продолжим без памяти */ });
     },
     drop: function () {
       return tx("readwrite", function (st) { return st.delete(KEY); }).catch(function () { /* нечего снимать */ });

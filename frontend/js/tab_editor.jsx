@@ -1799,8 +1799,9 @@ function TabEditor({ store, toast }) {
     // («смета больше остатка лимита») — без них человеку нечего исправлять.
     // e.message уже переведён на границе показа (TRS в api.js).
     let res = null;
+    ED_START_ERR.status = 0;
     try { res = await window.API.createJob(project.id, kind, targets.map(s => s.id), withEst); }
-    catch (e) { toast.error(TR("Не удалось запустить"), (e && e.message) || TR("Сервер не принял задачу.")); return null; }
+    catch (e) { ED_START_ERR.status = (e && e.status) || 0; toast.error(TR("Не удалось запустить"), (e && e.message) || TR("Сервер не принял задачу.")); return null; }
     if (!res || !res.ok) { toast.error(TR("Не удалось запустить"), TR("Сервер не принял задачу.")); return null; }
     setJob(res.job);
     toast.info(JOB_LABELS[kind] + TR(": запущено"), targets.length + TR(" сегментов. Можно закрыть вкладку — прогон идёт на сервере."));
@@ -2644,7 +2645,14 @@ function TabEditor({ store, toast }) {
       include_confirmed: rpFixConfirmed, rv_confirmed: rvConfirmed,
       rv_ask_confirmed: rvAskConfirmed,
     }, TR("В выбранных сегментах нечего делать."), fullEst);
-    if (!started) return;
+    /* Автозапуск после загрузки: отказ (лимит) — ждать оплаты, успех — снять. */
+    if (!started) {
+      /* Ждать оплату — только если отказ «нечем платить»; любой другой
+         (прогон уже идёт, нечего делать) снимает автозапуск. */
+      if (ED_START_ERR.status === 402) edAutoRunWait(project.id); else edAutoRunDone(project.id);
+      return;
+    }
+    edAutoRunDone(project.id);
     // Выбор шагов отработал свой прогон и гаснет (см. эффект смены проекта):
     // состав этого прогона уже в снимке ниже, а следующий запуск из сводки
     // обязан снова означать весь путь, а не остаток спрятанных галочек.
@@ -3933,6 +3941,36 @@ const ED_PIC_CHAIN = window.__edPicChain || (window.__edPicChain = {});
 /* Перевод прицеплен именно к ЭТОЙ задаче чтения: отметка от прошлой
    задачи (её конец экран не видел) кнопки не гасит. */
 function edChainOn(pid, job) { const ch = ED_PIC_CHAIN[pid]; return !!ch && !!job && ch.job === job.id; }
+/* Перевод «сам после загрузки»: человек нажал «Перевести» на лендинге или
+   на первом экране, второй кнопки он не ждёт. Отметка — в sessionStorage:
+   переживает уход на кассу (отказ лимита при запуске) в этой же вкладке.
+   `wait` — запуск получил отказ «нечем платить»: повторяем только после
+   оплаты (`mct-pay-paid`), а не на каждом открытии файла. */
+const ED_AUTO_SS = "mct-autorun";
+function edAutoRead() { try { return JSON.parse(sessionStorage.getItem(ED_AUTO_SS) || "{}") || {}; } catch (e) { return {}; } }
+function edAutoWrite(m) { try { sessionStorage.setItem(ED_AUTO_SS, JSON.stringify(m)); } catch (e) { /* приватное окно */ } }
+function edAutoRunArm(pid) {
+  const m = edAutoRead(); m[pid] = { at: Date.now() }; edAutoWrite(m);
+  ED_PIC_CHAIN[pid] = { phase: "pulled", ok: true, auto: true, at: Date.now() };
+}
+function edAutoRunDone(pid) { const m = edAutoRead(); if (m[pid]) { delete m[pid]; edAutoWrite(m); } }
+function edAutoRunWait(pid) { const m = edAutoRead(); if (m[pid]) { m[pid].wait = true; m[pid].waitAt = Date.now(); edAutoWrite(m); } }
+/* Код отказа последнего запуска прогона (402 = «нечем платить»): вне
+   компонента, чтобы не добавлять хук — рендер-тесты считают хуки по порядку. */
+const ED_START_ERR = { status: 0 };
+function edAutoRunPending() { return Object.keys(edAutoRead()).map(Number).filter(n => n > 0); }
+/* Отметка из прошлой загрузки страницы (касса, перезагрузка) — снова в сцепку. */
+/* Оплата прошла ПОСЛЕ отказа этого запуска: время оплаты помнит handoff.js
+   (sessionStorage) — событие могло прийти, когда редактор не был открыт. */
+function edAutoRunRestore(pid) {
+  const m = edAutoRead(), a = m[pid];
+  if (!a || ED_PIC_CHAIN[pid]) return;
+  if (Date.now() - (a.at || 0) > 2 * 3600 * 1000) { edAutoRunDone(pid); return; }
+  const paidAt = window.MCT_HANDOFF ? window.MCT_HANDOFF.paidAt() : 0;
+  if (a.wait && !(paidAt > (a.waitAt || 0))) return;
+  if (a.wait) { delete a.wait; edAutoWrite(m); }
+  ED_PIC_CHAIN[pid] = { phase: "pulled", ok: true, auto: true, at: Date.now() };
+}
 
 /* Сцепка «прочитать надписи → перевести»: строки забраны (phase "pulled",
    ставит опрос редактора) — строк нет → сказать; есть → дождаться разбора
@@ -3942,6 +3980,13 @@ function edChainOn(pid, job) { const ch = ED_PIC_CHAIN[pid]; return !!ch && !!jo
 function EdChainRunner({ project, job, toast, onRunFull, tick, planReady, planCount, planSegs, seenJob }) {
   const pid = project.id;
   const nSeg = project.segments.length;
+  const [paidTick, setPaidTick] = useState(0);
+  useEffect(() => {
+    edAutoRunRestore(pid);
+    const h = () => { edAutoRunRestore(pid); setPaidTick(t => t + 1); };
+    window.addEventListener("mct-pay-paid", h);
+    return () => window.removeEventListener("mct-pay-paid", h);
+  }, [pid]);
   useEffect(() => {
     const ch = ED_PIC_CHAIN[pid];
     if (!ch || job) return;
@@ -3967,8 +4012,12 @@ function EdChainRunner({ project, job, toast, onRunFull, tick, planReady, planCo
       return;
     }
     delete ED_PIC_CHAIN[pid];
-    if (planCount > 0 && onRunFull) onRunFull();
-  }, [pid, tick, !!job, nSeg, planReady, planCount, planSegs, seenJob]);
+    /* Автозапуск срабатывает ОДИН раз: отметка сразу переходит в «ждём» —
+       повторное открытие файла, пока запуск не ответил, второй прогон
+       не поставит. Удался — runFullJob снимет её, отказ — оставит ждать оплаты. */
+    if (planCount > 0 && onRunFull) { if (ch.auto) edAutoRunWait(pid); onRunFull(); }
+    else if (ch.auto) edAutoRunDone(pid);
+  }, [pid, tick, paidTick, !!job, nSeg, planReady, planCount, planSegs, seenJob]);
   return null;
 }
 

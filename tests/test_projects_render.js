@@ -200,7 +200,7 @@ console.log("\n[1a] Первый файл: одна зона, один вопр�
   let t = texts(tree).join(" | ");
   check(t.includes("Перетащите файл сюда"), "без проектов — зона «Перетащите файл сюда»");
   check(!t.includes("Проектов пока нет"), "вместо пустого «Проектов пока нет» — сразу куда положить файл");
-  check(!find(tree, n => n.type === "button" && texts(n).join("") === "Начать").length, "до выбора файла кнопки «Начать» нет");
+  check(!find(tree, n => n.type === "button" && texts(n).join("") === "Перевести").length, "до выбора файла кнопки «Перевести» нет");
 
   /* ImpFirstFile: hooks — file, src, tgt, busy, dragging. */
   const raw = { name: "Договор.docx", size: 2048 };
@@ -208,16 +208,16 @@ console.log("\n[1a] Первый файл: одна зона, один вопр�
   tree = ImpFirstFile({ store: makeStore({ folders: [] }), toast, meta: { langs: [["RU", "Русский"], ["UZ", "Узбекский"]] } });
   t = texts(tree).join(" | ");
   check(t.includes("На какой язык переводим?"), "спрошено, на какой язык переводим");
-  let btn = find(tree, n => n.type === "button" && texts(n).join("") === "Начать")[0];
-  check(btn && btn.props.disabled, "пока язык перевода не выбран — «Начать» погашена (умолчания нет намеренно)");
+  let btn = find(tree, n => n.type === "button" && texts(n).join("") === "Перевести")[0];
+  check(btn && btn.props.disabled, "пока язык перевода не выбран — «Перевести» погашена (умолчания нет намеренно)");
 
   hooks = [raw, "RU", "UZ"]; hookIdx = 0;
   const opened = [], made = [];
   global.API.createFolder = async (body) => { made.push(body); return { id: 555, title: body.title, src: body.src, tgt: body.tgt }; };
   global.API.listDicts = async () => null;
   tree = ImpFirstFile({ store: makeStore({ folders: [], openFolder: (id) => opened.push(id) }), toast, meta: { langs: [] } });
-  btn = find(tree, n => n.type === "button" && texts(n).join("") === "Начать")[0];
-  check(btn && !btn.props.disabled, "язык выбран — «Начать» доступна");
+  btn = find(tree, n => n.type === "button" && texts(n).join("") === "Перевести")[0];
+  check(btn && !btn.props.disabled, "язык выбран — «Перевести» доступна");
   await btn.props.onClick();
   check(made.length === 1 && made[0].title === "Договор" && made[0].tgt === "UZ" && made[0].newDict === "Договор",
         "проект заведён по нажатию: имя файла, выбранная пара, свой словарь");
@@ -225,6 +225,7 @@ console.log("\n[1a] Первый файл: одна зона, один вопр�
   const d = impDraft(555);
   check(d.autoAdd === true && d.file && d.file.raw === raw && d.tgt === "UZ",
         "файл и пара лежат в черновике проекта с отметкой «добавить самому»");
+  check(d.autoRun === true, "человек нажал «Перевести» — после загрузки перевод стартует сам (autoRun)");
 }
 
 
@@ -245,17 +246,30 @@ console.log("\n[1b] Файл с лендинга: вопросы уже зада
   const made = [], opened = [];
   global.API.createFolder = async (body) => { made.push(body); return { id: 777, title: body.title, src: body.src, tgt: body.tgt }; };
   global.API.listDicts = async () => null;
+  const hfCalls = [];
+  global.MCT_HANDOFF = { update: (p) => { hfCalls.push("update:" + JSON.stringify(p)); return Promise.resolve(); },
+                         drop: () => { hfCalls.push("drop"); return Promise.resolve(); } };
   const st = makeStore({ folders: [], openFolder: (id) => opened.push(id),
     handoff: { file: raw, name: raw.name, src: "RU", tgt: "EN" }, clearHandoff: () => { cleared++; } });
   tree = ImpFirstFile({ store: st, toast, meta });
   t = texts(tree).join(" | ");
   check(t.includes("Статья.docx") && t.includes("Файл с сайта"), "файл подставлен и назван «с сайта»");
-  const btn = find(tree, n => n.type === "button" && texts(n).join("") === "Начать")[0];
+  const btn = find(tree, n => n.type === "button" && texts(n).join("") === "Перевести")[0];
   check(btn && !btn.props.disabled, "пара подставлена — кнопка открыта сразу");
   await btn.props.onClick();
   check(made.length === 1 && made[0].src === "RU" && made[0].tgt === "EN" && made[0].title === "Статья",
         "проект заведён на паре с сайта");
-  check(cleared === 1 && opened.join() === "777", "передача снята только после того, как проект заведён");
+  check(cleared === 1 && opened.join() === "777", "экран первого файла отработал, папка открыта");
+  check(hfCalls.join() === 'update:{"folder":777}',
+        "файл с сайта НЕ стёрт из браузера при заведении папки — только запомнена папка: " + hfCalls.join());
+  check(impDraft(777).fromHandoff === true && impDraft(777).autoRun === true, "черновик знает, что файл с сайта и что перевод стартует сам");
+
+  /* Возврат с кассы: папка уже есть — вторую не заводим. */
+  hooks = []; hookIdx = 0; made.length = 0; opened.length = 0;
+  tree = ImpFirstFile({ store: makeStore({ folders: [{ id: 777, title: "Статья", files: [] }], openFolder: (id) => opened.push(id),
+    handoff: { file: raw, name: raw.name, src: "RU", tgt: "EN", folder: 777 }, clearHandoff: () => {} }), toast, meta });
+  await find(tree, n => n.type === "button" && texts(n).join("") === "Перевести")[0].props.onClick();
+  check(made.length === 0 && opened.join() === "777", "возврат с кассы: прежняя папка открыта, новой нет");
 
   /* Файл не доехал (браузер не дал хранилище) — пара всё равно подставлена,
      и человеку сказано, что файл надо выбрать ещё раз. */
@@ -317,6 +331,59 @@ console.log("\n[7] Дубль при загрузке (409): «Открыть п
   check(!!open, "есть кнопка «Открыть проект»");
   if (open) open.props.onClick();
   check(opened.join() === "104", "она открывает проект-дубль: " + opened.join());
+}
+
+console.log("\n[7a] Не хватило страниц (402): файл ждёт оплаты, потом проект и перевод сами");
+{
+  const d = impDraft(102);
+  d.file = { name: "big.docx", size: "1 МБ", raw: { name: "big.docx" } };
+  d.probe = { ok: true, exact: [], similar: [] };
+  d.fromHandoff = true; d.autoRun = true; d.payWait = false;
+  const errs = [], warns = [], hfCalls = [], armed = [], opened = [];
+  global.MCT_HANDOFF = { update: (p) => { hfCalls.push("update:" + JSON.stringify(p)); return Promise.resolve(); },
+                         drop: () => { hfCalls.push("drop"); return Promise.resolve(); } };
+  global.edAutoRunArm = (pid) => armed.push(pid);
+  const tst = { info() {}, success() {}, warning: (t) => warns.push(t), error: (t, m) => errs.push(t + " | " + m) };
+  const st = makeStore({ openProject: (id) => opened.push(id) });
+  global.API.uploadProject = async () => { const e = new Error("страниц не хватает"); e.status = 402; throw e; };
+  hooks = []; hookIdx = 0;
+  const folder = folders[0];
+  const meta = { langs: [["RU", "Русский"], ["EN", "Английский"]] };
+  let tree = ImpAddFile({ folder, store: st, toast: tst, meta });
+  await find(tree, n => n.type === "button" && texts(n).join("").indexOf("Добавить в проект") !== -1)[0].props.onClick();
+  check(d.payWait === true && d.file && d.file.raw, "402: файл остался в черновике и ждёт оплаты");
+  check(!errs.length && warns.indexOf("Файл ждёт оплаты") !== -1, "сказано «ждёт оплаты», а не «файл не добавлен»");
+  check(hfCalls.join() === 'update:{"folder":102,"payWait":true}', "в браузере отмечено «ждём оплату» и папка (переживёт кассу): " + hfCalls.join());
+  hfCalls.length = 0;
+  global.API.uploadProject = async () => ({ id: 909, title: "big", segments: [{ id: 1 }], folder: 102 });
+  hookIdx = 0;
+  tree = ImpAddFile({ folder, store: st, toast: tst, meta });
+  await find(tree, n => n.type === "button" && texts(n).join("").indexOf("Добавить в проект") !== -1)[0].props.onClick();
+  check(hfCalls.join() === "drop", "проект заведён — файл с сайта снят из браузера");
+  check(armed.join() === "909" && opened.join() === "909", "и перевод поставлен сам (edAutoRunArm), файл открыт");
+  check(!d.payWait && !d.autoRun, "отметки ожидания сняты");
+
+  /* Файл выбран в приложении (не с лендинга): на время оплаты он тоже
+     кладётся в браузер — касса уводит со страницы. */
+  d.file = { name: "own.docx", size: "1 МБ", raw: { name: "own.docx" } };
+  d.fromHandoff = false; d.payWait = false; d.fly = false; d.probe = { ok: true, exact: [], similar: [] };
+  hfCalls.length = 0;
+  global.MCT_HANDOFF.put = (r) => { hfCalls.push("put:" + r.file.name); return Promise.resolve(); };
+  global.API.uploadProject = async () => { const e = new Error("страниц не хватает"); e.status = 402; throw e; };
+  hooks = []; hookIdx = 0;
+  tree = ImpAddFile({ folder, store: st, toast: tst, meta });
+  await find(tree, n => n.type === "button" && texts(n).join("").indexOf("Добавить в проект") !== -1)[0].props.onClick();
+  check(hfCalls.join() === 'put:own.docx,update:{"folder":102,"payWait":true}' && d.fromHandoff === true,
+        "свой файл положен в браузер до оплаты: " + hfCalls.join());
+
+  /* Другой отказ (не 402): копия в браузере снимается, решает человек. */
+  hfCalls.length = 0; d.payWait = false; d.fly = false;
+  global.API.uploadProject = async () => { const e = new Error("не разобрался"); e.status = 415; throw e; };
+  hooks = []; hookIdx = 0;
+  tree = ImpAddFile({ folder, store: st, toast: tst, meta });
+  await find(tree, n => n.type === "button" && texts(n).join("").indexOf("Добавить в проект") !== -1)[0].props.onClick();
+  check(hfCalls.join() === "drop" && !d.fromHandoff, "отказ не по оплате — файл снят из браузера");
+  delete global.edAutoRunArm;
 }
 
 console.log("\n[8] Файл-картинка: чтение ведёт в «Перевод», причина названа");

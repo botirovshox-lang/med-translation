@@ -400,12 +400,18 @@ function ImpFirstFile({ store, toast, meta }) {
     const title = file.name.replace(/\.[^.]+$/, "") || TR("Новый проект");
     setBusy(true);
     try {
-      const r = await window.API.createFolder({ title, src, tgt, domain: (meta && meta.domainDefault) || "general",
+      /* Возврат с кассы: папка уже заведена прошлой попыткой — вторую не плодим. */
+      const old = hf && hf.folder != null && (store.folders || []).find(f => f.id === hf.folder);
+      const r = old || await window.API.createFolder({ title, src, tgt, domain: (meta && meta.domainDefault) || "general",
         dicts: [], newDict: title });
+      /* `autoRun`: человек нажал «Перевести» — после загрузки перевод
+         стартует сам (сцепка в редакторе), вторую кнопку он не ждёт.
+         `fromHandoff`: файл с лендинга снимается из браузера, когда заведён проект. */
       Object.assign(impDraft(r.id), {
         file: { name: file.name, size: impSize(file.size), raw: file },
-        title, src, tgt, autoAdd: true });
-      store.addFolder(r);
+        title, src, tgt, autoAdd: true, autoRun: true, fromHandoff: !!(hf && hf.file) });
+      if (!old) store.addFolder(r);
+      if (hf && hf.file && window.MCT_HANDOFF) window.MCT_HANDOFF.update({ folder: r.id });
       window.API.safeCall(() => window.API.listDicts()).then(d => { if (d && d.dicts && store.setDicts) store.setDicts(d.dicts); });
       if (hf && store.clearHandoff) store.clearHandoff();
       store.openFolder(r.id);
@@ -445,7 +451,7 @@ function ImpFirstFile({ store, toast, meta }) {
     file && tgt && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
     file && React.createElement(Btn, { variant: "primary", size: "lg", icon: busy ? null : "check",
         disabled: busy || !tgt || src === tgt, onClick: start },
-      busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Начать")));
+      busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…")) : TR("Перевести")));
 }
 
 /* ---------- Новый проект ---------- */
@@ -849,6 +855,21 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
      экран предложил бы «Добавить» второй раз (дубль, 409). */
   const aliveRef = useRef(true);
   useEffect(() => () => { aliveRef.current = false; }, []);
+  /* Не хватило страниц, человек пополнил баланс, не уходя со страницы
+     (или вернулся с кассы раньше, чем дошло подтверждение): оплата
+     прошла — добавляем файл сами, второй раз «Добавить» он не ждёт. */
+  useEffect(() => {
+    const retry = () => {
+      if (!draft.payWait || !aliveRef.current || draft.fly || !draft.file || !draft.file.raw) return;
+      draft.payWait = false; create();
+    };
+    /* Оплатили, пока экран был закрыт (окно оплаты на «Организации»), —
+       подхватываем на возвращении. */
+    const hf = window.MCT_HANDOFF;
+    if (draft.payWait && hf && hf.paidAt() > (draft.waitAt || 0)) retry();
+    window.addEventListener("mct-pay-paid", retry);
+    return () => window.removeEventListener("mct-pay-paid", retry);
+  }, []);
   /* Файл пришёл с первого экрана (ImpFirstFile) — пробу запускаем сами. */
   useEffect(() => { if (draft.autoAdd && draft.file && draft.file.raw && !draft.probing) runProbe(draft.file.raw); }, []);
   /* Вернулись, пока проба ещё шла: ответ ляжет в черновик — ждём его. */
@@ -891,6 +912,9 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
     if (draft.autoAdd) {
       draft.autoAdd = false;
       if (aliveRef.current && res && !res.error && !(res.exact && res.exact.length) && !(res.similar && res.similar.length)) create();
+      /* Проба задала вопрос (уже есть, похоже на новую версию, ошибка) —
+         дальше решает человек, а копия файла в браузере больше не нужна. */
+      else if (draft.fromHandoff && window.MCT_HANDOFF) { window.MCT_HANDOFF.drop(); draft.fromHandoff = false; draft.autoRun = false; }
     }
   };
   const pickFile = (f) => {
@@ -938,6 +962,8 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
     if (!raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл")); return; }
     if (src === tgt) { toast.error(TR("Языки совпадают"), TR("Выберите разные языки оригинала и перевода.")); return; }
     if (impIsMedia(raw.name)) return createMedia(raw);
+    if (draft.fly) return;
+    draft.fly = true;
     setBusy(true); setProg(null);
     try {
       const project = await window.API.uploadProject(file.raw, title || file.name.replace(/\.[^.]+$/, ""),
@@ -945,7 +971,13 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
       store.addProject(project);
       /* Виртуальная папка после второго файла стала настоящей записью. */
       store.patchFolder(folder.id, { virtual: false });
+      const autoRun = !!draft.autoRun;
+      if (draft.fromHandoff && window.MCT_HANDOFF) window.MCT_HANDOFF.drop();
+      Object.assign(draft, { autoRun: false, fromHandoff: false, payWait: false });
       reset();
+      /* Человек нажал «Перевести» (лендинг или первый экран): перевод
+         стартует сам, как только редактор посчитает состав (EdChainRunner). */
+      if (autoRun && typeof edAutoRunArm === "function") edAutoRunArm(project.id);
       /* Файл больше пробного подарка: переведётся фрагмент. Сказать это
          СРАЗУ и предупреждением, а не «Файл добавлен»: человек ждёт весь
          документ. Полоса с числами — на «Переводе» и на карточке файла. */
@@ -953,6 +985,7 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
         toast.warning(TR("Добавлен пробный фрагмент"),
           TR("Документ больше бесплатной страницы: переведём один случайный фрагмент. Остальное — кнопкой «Перевести остальное» после пополнения."));
         store.openProject(project.id);
+        draft.fly = false;
         setBusy(false);
         return;
       }
@@ -967,6 +1000,31 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
           : project.importNote ? " " + TRS(project.importNote) : ""));
       store.openProject(project.id);
     } catch (e) {
+      /* Не хватило страниц: файл ждёт оплаты здесь же (и в браузере —
+         на случай ухода на кассу), а после оплаты добавится сам. */
+      if (e && e.status === 402) {
+        draft.payWait = true; draft.waitAt = Date.now();
+        /* Касса уводит со страницы, и файл из памяти пропал бы: кладём его
+           в браузер (как файл с лендинга) — после оплаты загрузка продолжится. */
+        const hf = window.MCT_HANDOFF;
+        let kept = false;
+        if (hf) {
+          if (draft.fromHandoff) kept = true;
+          else {
+            try { await hf.put({ file: raw, src, tgt }); kept = true; draft.fromHandoff = true; }
+            catch (e2) { kept = false; }
+          }
+          if (kept) await hf.update({ folder: folder.id, payWait: true });
+        }
+        toast.warning(TR("Файл ждёт оплаты"), kept
+          ? TR("Страниц не хватает. Пополните баланс — файл добавится и переведётся сам.")
+          : TR("Страниц не хватает. Пополните баланс и нажмите «Добавить в проект» ещё раз."));
+        draft.fly = false;
+        setBusy(false);
+        return;
+      }
+      /* Любой другой отказ: дальше решает человек — копия в браузере не нужна. */
+      if (draft.fromHandoff && window.MCT_HANDOFF) { window.MCT_HANDOFF.drop(); draft.fromHandoff = false; draft.autoRun = false; }
       toast.error(TR("Файл не добавлен"), e.message || TR("Не удалось разобрать файл"));
       /* Дубль (409): какой проект — полями ответа, не текстом. Кладём его
          в «уже есть» — та же карточка, что у пробы, с кнопкой «Открыть проект». */
@@ -977,6 +1035,7 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
         setProbe(p);
       }
     }
+    draft.fly = false;
     setBusy(false);
   };
   const update = async (target) => {

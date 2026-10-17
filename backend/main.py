@@ -13159,9 +13159,13 @@ def _pages_debit(tid: str, pages: float, key: str, project_id: int, title: str,
         caps, usage = _tenant_caps(tid), _tenant_usage(tid)
         if caps["pagesLimited"] and usage["pages"] + debit > caps["maxPages"]:
             _ev("cap.pages402", tid)
+            # Нехватка числом — заголовком, рядом с X-Pay-Need: окно оплаты
+            # подставляет её само, а не просит человека считать (текст отказа
+            # постоянный и переводится браузером — числа в нём для глаз).
+            short = math.ceil(usage["pages"] + debit - caps["maxPages"] - 1e-9)
             raise HTTPException(402, "В организации списано %.1f стр., с этим файлом %.1f при лимите %g: пополните лимит у администратора"
                                 % (usage["pages"], usage["pages"] + debit, caps["maxPages"]),
-                                headers=PAY_NEED_PAGES)
+                                headers=dict(PAY_NEED_PAGES, **{"X-Pay-Short": str(max(1, short))}))
         if debit > 0:
             _fn_actor_check("pages", debit)
         # При действующем лимите счётчик заводится и первым списанием: без него

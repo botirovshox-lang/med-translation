@@ -8294,6 +8294,7 @@ def _metrics_events(rows: list) -> dict:
     новой строке."""
     routes, errs, caps, waste, prov = {}, {}, {}, {}, {}
     dead, funnel, js, ui = {}, {}, {}, {}
+    clicks, rage, dwell, perf = {}, {}, {}, {}
     by_tenant_caps, by_tenant_dead, by_tenant_funnel = {}, {}, {}
     for r in rows:
         code, n = r["code"], r.get("n") or 0
@@ -8338,6 +8339,26 @@ def _metrics_events(rows: list) -> dict:
         elif code.startswith("ui."):
             # Открытый экран или шаг знакомства (`UI_EVENTS`).
             ui[code[3:]] = ui.get(code[3:], 0) + n
+        elif code.startswith("click."):
+            clicks[code[6:]] = clicks.get(code[6:], 0) + n
+        elif code.startswith("rage."):
+            rage[code[5:]] = rage.get(code[5:], 0) + n
+        elif code.startswith("dwell."):
+            d = dwell.setdefault(code[6:], [0, 0.0])
+            d[0] += n
+            d[1] += r.get("ms_sum") or 0.0
+        elif code.startswith("perf."):
+            k, _, b = code[5:].partition(":")
+            perf.setdefault(k, {})
+            perf[k][b] = perf[k].get(b, 0) + n
+    labels = _ui_labels() if (clicks or rage) else {}
+
+    def _click_rows(src, top):
+        out = []
+        for key, v in sorted(src.items(), key=lambda kv: (-kv[1], kv[0]))[:top]:
+            tab, _, h = key.partition(":")
+            out.append({"tab": tab, "h": h, "label": labels.get(h, ""), "n": v})
+        return out
     for d in routes.values():
         d["avgMs"] = round(d["ms"] / d["n"], 1) if d["n"] else 0.0
         d["msMax"] = round(d["msMax"], 1)
@@ -8362,7 +8383,14 @@ def _metrics_events(rows: list) -> dict:
             "js": sorted([{"code": k, "n": v} for k, v in js.items()],
                          key=lambda d: (-d["n"], d["code"])),
             "ui": sorted([{"code": k, "n": v} for k, v in ui.items()],
-                         key=lambda d: (-d["n"], d["code"]))}
+                         key=lambda d: (-d["n"], d["code"])),
+            "clicks": _click_rows(clicks, 40), "rage": _click_rows(rage, 20),
+            "clicksByTab": {t: sum(v for k, v in clicks.items() if k.split(":", 1)[0] == t)
+                            for t in sorted({k.split(":", 1)[0] for k in clicks})},
+            "dwell": sorted([{"tab": t, "n": v[0], "avgSec": round(v[1] / v[0] / 1000.0, 1) if v[0] else 0.0,
+                              "totalMin": round(v[1] / 60000.0, 1)} for t, v in dwell.items()],
+                            key=lambda d: -d["totalMin"]),
+            "perf": perf}
 
 
 # Порог «организация молчит»: дней без единого прогона при живом остатке
@@ -8544,6 +8572,164 @@ def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict,
             out.append({"kind": "loss", "code": "signupNoUpload", "n": stuck,
                         "of": st.get("verified", 0)})
     return out
+
+
+# ─── «Что улучшить»: предложения по поведению людей ─────────────────
+# Подсказки выше отвечают «где теряем и где заработать» по ОТКАЗАМ и
+# деньгам. Здесь — по ПОВЕДЕНИЮ: где люди жмут по три раза, где бросают
+# знакомство, форму регистрации и оплату, что тормозит. Каждое предложение —
+# правило в коде с ЧИСЛОМ и знаменателем (закон подсказок, инвариант 34,
+# п. 9), без вызова модели: оно уходит и на экран, и в суточный текст, и
+# должно воспроизводиться одинаково. Направления три: `ux` (интерфейс),
+# `speed` (оптимизация), `money` (монетизация). Порог выборки — SUGGEST_MIN:
+# «1 из 2» не повод переделывать экран.
+SUGGEST_MIN = int(os.environ.get("METRICS_SUGGEST_MIN", "5"))
+SUGGEST_AREAS = (("ux", "ИНТЕРФЕЙС (UX/UI)"), ("speed", "СКОРОСТЬ И НАДЁЖНОСТЬ"),
+                 ("money", "ДЕНЬГИ (монетизация)"))
+
+
+def _metrics_suggest(ev: dict, cohort: Optional[dict] = None) -> list:
+    out = []
+    ui = {d["code"]: d["n"] for d in ev.get("ui") or []}
+    fr = ev.get("funnelRaw") or {}
+    caps = {d["code"]: d["n"] for d in ev.get("caps") or []}
+
+    def share(a, b):
+        return (a / b) if b else None
+
+    # ── Интерфейс ──
+    for r in (ev.get("rage") or [])[:3]:
+        if r["n"] >= 3 and r["label"]:
+            out.append({"area": "ux", "code": "rageClick", "n": r["n"],
+                        "label": r["label"], "tab": r["tab"]})
+    done, skip = ui.get("tour.done", 0), ui.get("tour.skip", 0)
+    if done + skip >= SUGGEST_MIN and share(skip, done + skip) >= 0.5:
+        out.append({"area": "ux", "code": "tourSkip", "n": skip, "of": done + skip})
+    # Только до последнего шага, до которого дошёл ХОТЬ КТО-ТО: за ним шагов
+    # нет вовсе, и «ноль на шаге 7» у тура из шести шагов — не уход.
+    last = max([k for k in range(1, 13) if ui.get("tour.step%d" % k)] or [0])
+    for k in range(2, last + 1):
+        prev, cur = ui.get("tour.step%d" % (k - 1), 0), ui.get("tour.step%d" % k, 0)
+        if prev >= SUGGEST_MIN and cur < prev * 0.6:
+            out.append({"area": "ux", "code": "tourDrop", "n": k, "from": prev, "to": cur})
+            break
+    views, signups = ui.get("auth.register", 0), int(fr.get("signup") or 0)
+    if views >= SUGGEST_MIN * 2 and share(signups, views) < 0.4:
+        out.append({"area": "ux", "code": "signupForm", "n": signups, "of": views})
+    verified = int(fr.get("verified") or 0)
+    if signups >= SUGGEST_MIN and share(verified, signups) < 0.6:
+        out.append({"area": "ux", "code": "verifyDrop", "n": verified, "of": signups})
+    if cohort:
+        st = {d["code"]: d["n"] for d in cohort.get("steps") or []}
+        if st.get("verified", 0) >= 3 and share(st.get("upload", 0), st["verified"]) < 0.5:
+            out.append({"area": "ux", "code": "firstFile", "n": st.get("upload", 0),
+                        "of": st["verified"]})
+    sup = sorted(((c[len("support.open."):], v) for c, v in ui.items()
+                  if c.startswith("support.open.")), key=lambda x: (-x[1], x[0]))
+    if sup and sup[0][1] >= 3:
+        out.append({"area": "ux", "code": "supportHot", "n": sup[0][1], "tab": sup[0][0]})
+    tabs = {c[4:]: v for c, v in ui.items() if c.startswith("tab.")}
+    tot = sum(tabs.values())
+    if tot >= 200:
+        for t in ("glossary", "preflight", "learn"):
+            if share(tabs.get(t, 0), tot) < 0.02:
+                out.append({"area": "ux", "code": "unusedTab", "n": tabs.get(t, 0),
+                            "of": tot, "tab": t})
+    envs = {c[4:]: v for c, v in ui.items() if c.startswith("env.")}
+    allenv = sum(envs.values())
+    if allenv >= 20 and share(envs.get("phone", 0), allenv) >= 0.25:
+        out.append({"area": "ux", "code": "mobileShare", "n": envs.get("phone", 0), "of": allenv})
+
+    # ── Скорость и надёжность ──
+    for kind in ("load", "ready"):
+        b = (ev.get("perf") or {}).get(kind) or {}
+        total = sum(b.values())
+        slow = b.get("3to7", 0) + b.get("gt7", 0)
+        if total >= 20 and share(slow, total) >= 0.2:
+            out.append({"area": "speed", "code": "slowLoad" if kind == "load" else "slowReady",
+                        "n": slow, "of": total})
+    js = [d for d in (ev.get("js") or []) if not d["code"].endswith(":other")]
+    if js and js[0]["n"] >= 3:
+        out.append({"area": "speed", "code": "jsFix", "n": js[0]["n"], "name": js[0]["code"]})
+    for r in (ev.get("slow") or [])[:2]:
+        if r["avgMs"] >= 1500:
+            out.append({"area": "speed", "code": "slowApi", "n": round(r["avgMs"]),
+                        "route": r["route"]})
+
+    # ── Деньги ──
+    quotes = ui.get("pay.quote", 0)
+    orders = sum(v for k, v in fr.items() if k.startswith("payOrder:"))
+    paid = sum(v for k, v in fr.items() if k.startswith("paid:"))
+    if quotes >= SUGGEST_MIN and share(orders, quotes) < 0.3:
+        out.append({"area": "money", "code": "payAbandon", "n": orders, "of": quotes})
+    if orders >= 3 and share(paid, orders) < 0.5:
+        out.append({"area": "money", "code": "orderUnpaid", "n": paid, "of": orders})
+    if caps.get("trialExcerpt", 0) >= 3:
+        out.append({"area": "money", "code": "trialUpsell", "n": caps["trialExcerpt"]})
+    if caps.get("pages402", 0) >= 3:
+        out.append({"area": "money", "code": "packOffer", "n": caps["pages402"]})
+    if caps.get("filePages413", 0) >= 3:
+        out.append({"area": "money", "code": "bigTier", "n": caps["filePages413"]})
+    if cohort:
+        st = {d["code"]: d["n"] for d in cohort.get("steps") or []}
+        if st.get("export", 0) >= 3 and not st.get("paid"):
+            out.append({"area": "money", "code": "exportNoPay", "n": st["export"]})
+    return out
+
+
+# Суточный текст — по-русски на сервере (уходит мимо браузера, п. 9).
+# У каждого кода из `_metrics_suggest` строка обязана быть здесь и в
+# `metSuggestText` (tab_admin.jsx) — сторожит tests/test_metrics.py.
+METRICS_SUGGEST_TEXT = {
+    "rageClick": "«%(label)s» (экран %(tab)s): %(n)d раз жали по нескольку раз подряд. "
+                 "Похоже, не видно, что нажатие сработало, — нужен отклик сразу "
+                 "(индикатор, погашенная кнопка) или кнопка не делает обещанного.",
+    "tourSkip": "Знакомство пропустили %(n)d из %(of)d. Сократите его до 2–3 шагов "
+                "или показывайте подсказку на месте, когда человек впервые открывает экран.",
+    "tourDrop": "В знакомстве на шаге %(n)d остаётся %(to)d из %(from)d — этот шаг "
+                "непонятен или подсвечивает не то. Перепишите его или уберите.",
+    "signupForm": "Форму регистрации открыли %(of)d раз, зарегистрировались %(n)d. "
+                  "Уберите лишние поля (название организации можно спросить позже), "
+                  "добавьте вход через Google/Telegram.",
+    "verifyDrop": "Почту подтвердили %(n)d из %(of)d зарегистрировавшихся. Проверьте, "
+                  "не уходит ли письмо в спам, и дайте войти сразу, а подтвердить позже.",
+    "firstFile": "Принесли первый файл %(n)d из %(of)d подтвердивших почту. Дайте пример "
+                 "файла в один клик и покажите загрузку первым экраном после входа.",
+    "supportHot": "Поддержку чаще всего открывают с экрана %(tab)s (%(n)d раз) — "
+                  "там что-то непонятно. Прочтите эти диалоги и добавьте подсказку на сам экран.",
+    "unusedTab": "Экран %(tab)s открывают %(n)d раз из %(of)d переходов. Его не находят "
+                 "или он не нужен: вынесите его пользу на соседний экран или уберите из меню.",
+    "mobileShare": "С телефона заходят %(n)d из %(of)d. Проверьте на телефоне главный путь: "
+                   "загрузка → перевод → скачать.",
+    "slowLoad": "Страница грузится дольше 3 с у %(n)d из %(of)d. Каждая секунда ожидания — "
+                "потерянные регистрации: ищите тяжёлые файлы и медленный ответ сервера.",
+    "slowReady": "Первый экран появляется дольше 3 с у %(n)d из %(of)d после загрузки — "
+                 "тормозит первый запрос к серверу или отрисовка.",
+    "jsFix": "Ошибка в браузере повторилась %(n)d раз (%(name)s). Починить первой: "
+             "у людей в этот момент мог быть белый экран.",
+    "slowApi": "%(route)s отвечает в среднем %(n)d мс — человек это ждёт. Кэш или фоновая задача.",
+    "payAbandon": "Сумму к оплате смотрели %(of)d раз, заявок — %(n)d. Цена пугает "
+                  "или способа оплаты не хватает: предложите пакет меньше и онлайн-оплату картой.",
+    "orderUnpaid": "Заявок на оплату %(of)d, оплачено %(n)d. Напомните о неоплаченных "
+                   "и проверьте, не обрывается ли оплата на стороне кассы.",
+    "trialUpsell": "Пробным клиентам %(n)d раз перевели только фрагмент. Предложите "
+                   "дописать остальное за деньги прямо на экране фрагмента — это самый тёплый спрос.",
+    "packOffer": "Страницы кончались %(n)d раз. Предлагайте пакет ДО того, как кончатся: "
+                 "при остатке 15%% — письмо и полоса в приложении.",
+    "bigTier": "Файл не взяли из-за размера %(n)d раз — заведите тариф для больших документов.",
+    "exportNoPay": "%(n)d новых клиентов уже скачали перевод и ни разу не платили. "
+                   "Это время предложить пакет: ценность они увидели.",
+}
+
+
+def _suggest_line(s: dict) -> str:
+    tpl = METRICS_SUGGEST_TEXT.get(s.get("code") or "")
+    if not tpl:
+        return "%s: %s" % (s.get("code"), s.get("n"))
+    try:
+        return tpl % s
+    except (KeyError, TypeError, ValueError):
+        return "%s: %s" % (s.get("code"), s.get("n"))
 
 
 # ─── Парето: за что браться первым ──────────────────────────────────
@@ -8898,10 +9084,65 @@ def _signup_flow(raw: dict) -> list:
 JS_KINDS = frozenset(("error", "rejection", "render", "load"))
 _UI_TABS = ("import", "editor", "glossary", "preflight", "export",
             "learn", "profile", "org", "admin")
+_AUTH_MODES = ("login", "register", "verify", "forgot", "reset")
 UI_EVENTS = frozenset(
     ["tab." + t for t in _UI_TABS]
     + ["tour.step%d" % i for i in range(1, 13)]
-    + ["tour.done", "tour.skip", "tour.open", "support.open"])
+    + ["tour.done", "tour.skip", "tour.open", "support.open", "pay.quote"]
+    + ["support.open." + t for t in _UI_TABS]
+    + ["auth." + m for m in _AUTH_MODES]
+    + ["env.phone", "env.tablet", "env.desktop"]
+    + ["lang." + c for c in UI_LANGS])
+# До входа экранов нет, но есть ДВЕРЬ: какой экран входа открыт, устройство
+# и язык. Только эти коды принимаются без сессии.
+UI_ANON = frozenset(c for c in UI_EVENTS if c.split(".", 1)[0] in ("auth", "env", "lang"))
+# Куда клик может прийтись. «auth» — экран входа (до сессии).
+_CLICK_TABS = frozenset(_UI_TABS + ("auth",))
+BEACON_MAX_CLICKS = 30
+DWELL_MAX_MS = 30 * 60 * 1000     # больше получаса на экране в одной пачке — забытая вкладка
+PERF_MAX_MS = 120000
+
+
+def _perf_bucket(ms: float) -> str:
+    """Скорость — корзинами, а не средним: среднее задаёт один зависший
+    телефон, а вопрос «у скольких дольше трёх секунд» корзины решают сразу."""
+    if ms < 1000:
+        return "lt1"
+    if ms < 3000:
+        return "1to3"
+    if ms < 7000:
+        return "3to7"
+    return "gt7"
+
+
+# Надписи интерфейса — ЗАКРЫТЫЙ набор: ключи словаря (`frontend/i18n`, ключ
+# и есть русская строка, инвариант 17). Клик называется хешем надписи, и
+# в таблицу событий не может попасть ничего, кроме надписи НАШЕГО экрана —
+# ни текст документа, ни строка, придуманная посторонним.
+_UI_LABELS: Optional[dict] = None
+
+
+def _label_hash(s: str) -> str:
+    return hashlib.sha1(s.encode("utf-8")).hexdigest()[:10]
+
+
+def _ui_labels() -> dict:
+    """{хеш: русская надпись} по словарю интерфейса (без кусков сервера)."""
+    global _UI_LABELS
+    if _UI_LABELS is None:
+        out = {}
+        try:
+            for p in sorted((FRONTEND_DIR / "i18n").glob("uz.*.json")):
+                if p.name.endswith(".server.json"):
+                    continue
+                for k in json.loads(p.read_text(encoding="utf-8")):
+                    k = " ".join(str(k).split())
+                    if 2 <= len(k) <= 120:
+                        out[_label_hash(k)] = k
+        except Exception as e:
+            print("[metrics] словарь надписей не прочитан: %s" % e, file=sys.stderr)
+        _UI_LABELS = out
+    return _UI_LABELS
 # Пачка браузера — до 5 ошибок со стеком до 800 знаков; кириллица — два
 # байта на знак. Потолок с запасом, но ниже 64 КБ `keepalive`.
 BEACON_MAX_BYTES = 49152
@@ -9011,10 +9252,52 @@ async def client_beacon(request: Request):
         with _BEACON_LOCK:
             _CLIENT_ERRORS.append(rec)
             del _CLIENT_ERRORS[:-CLIENT_ERR_RING_MAX]
-    if sess:
-        for c in (body.get("ui") or [])[:BEACON_MAX_UI]:
-            if isinstance(c, str) and c in UI_EVENTS:
-                _ev("ui." + c, tenant)
+    allowed = UI_EVENTS if sess else UI_ANON
+    for c in (body.get("ui") or [])[:BEACON_MAX_UI]:
+        if isinstance(c, str) and c in allowed:
+            _ev("ui." + c, tenant)
+    # Скорость: загрузка страницы и первый экран — корзинами (`_perf_bucket`).
+    perf = body.get("perf")
+    if isinstance(perf, dict):
+        for k in ("load", "ready"):
+            try:
+                ms = float(perf.get(k))
+            except (TypeError, ValueError):
+                continue
+            if 0 < ms <= PERF_MAX_MS:
+                _ev("perf.%s:%s" % (k, _perf_bucket(ms)), tenant)
+    # Время на экранах — только у вошедшего: экраны за дверью.
+    dwell = body.get("dwell")
+    if sess and isinstance(dwell, dict):
+        for t, ms in list(dwell.items())[:len(_UI_TABS)]:
+            try:
+                ms = float(ms)
+            except (TypeError, ValueError):
+                continue
+            if t in _UI_TABS and 0 < ms:
+                _ev("dwell." + t, tenant, 1, min(ms, DWELL_MAX_MS))
+    # Клики. Надпись приходит кандидатами (с числом и без: «Применить к 12
+    # сегм.» → «Применить к»), берётся первая, что есть в словаре. Ни одной —
+    # клик считается без имени (`_`): общее число нажатий на экране честное.
+    labels = None
+    for k in (body.get("clicks") or [])[:BEACON_MAX_CLICKS]:
+        if not isinstance(k, dict):
+            continue
+        tab = _clip(k.get("t"), 16)
+        if tab not in _CLICK_TABS or (tab != "auth" and not sess):
+            continue
+        if labels is None:
+            labels = _ui_labels()
+        h = "_"
+        for cand in (k.get("c") or [])[:4]:
+            if isinstance(cand, str):
+                x = _label_hash(" ".join(cand.split())[:120])
+                if x in labels:
+                    h = x
+                    break
+        _ev("click.%s:%s" % (tab, h), tenant)
+        if k.get("rage") and h != "_":
+            _ev("rage.%s:%s" % (tab, h), tenant)
     return {"ok": True, "errors": got}
 
 
@@ -9064,6 +9347,11 @@ def admin_metrics(request: Request, days: int = 7):
         # процесса API) и открытые экраны.
         "js": ev["js"], "jsRecent": _client_errors_recent(day_from),
         "ui": ev["ui"],
+        # Поведение внутри приложения: клики по надписям, «нервные» клики,
+        # время на экранах, скорость — и предложения по ним.
+        "clicks": ev["clicks"], "rage": ev["rage"], "clicksByTab": ev["clicksByTab"],
+        "dwell": ev["dwell"], "perf": ev["perf"],
+        "suggest": _metrics_suggest(ev, cohort),
         "hints": _metrics_hints(days, tenants, ev, quotes, cohort),
         "eventsPending": (metrics_mod.pending() if metrics_mod else 0),
         "store": STORE.kind,
@@ -9290,6 +9578,22 @@ def _metrics_digest_text(d: dict) -> str:
         L.append(title)
         for h in mine[:12]:
             L.append("• " + _hint_line(h))
+    # Предложения по поведению людей — отдельным разделом и по направлениям:
+    # это не «что сломалось», а «что сделать на этой неделе».
+    sug = d.get("suggest") or []
+    if sug:
+        L.append("")
+        L.append("ЧТО УЛУЧШИТЬ (по поведению людей)")
+        for area, title in SUGGEST_AREAS:
+            mine = [s for s in sug if s.get("area") == area]
+            if mine:
+                L.append(title + ":")
+                for s in mine[:6]:
+                    L.append("• " + _suggest_line(s))
+    else:
+        L.append("")
+        L.append("Что улучшить: поведенческих находок за период нет — мало данных "
+                 "или всё в норме (порог выборки %d)." % SUGGEST_MIN)
     blocked = [b for b in (d.get("blocked") or []) if b.get("vital")]
     if blocked:
         L.append("")

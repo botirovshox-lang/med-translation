@@ -95,7 +95,7 @@ function SupportWidget({ store, toast }) {
      (и встанет ещё где-нибудь), а тянуть состояние виджета через App,
      Sidebar и вкладку значило бы связать их всех ради одного нажатия. */
   useEffect(() => {
-    const h = () => { setOpen(true); if (window.TELEMETRY) window.TELEMETRY.ui("support.open"); };
+    const h = () => { setOpen(true); if (window.TELEMETRY) (window.TELEMETRY.ui("support.open"), window.TELEMETRY.ui("support.open." + (window._mcat_tab || ""))); };
     window.addEventListener("mct-support-open", h);
     return () => window.removeEventListener("mct-support-open", h);
   }, []);
@@ -128,7 +128,7 @@ function SupportWidget({ store, toast }) {
 
   return React.createElement("div", { className: "sup" },
     React.createElement("button", {
-      className: "sup-fab", onClick: () => { if (!open && window.TELEMETRY) window.TELEMETRY.ui("support.open"); setOpen(v => !v); },
+      className: "sup-fab", onClick: () => { if (!open && window.TELEMETRY) (window.TELEMETRY.ui("support.open"), window.TELEMETRY.ui("support.open." + (window._mcat_tab || ""))); setOpen(v => !v); },
       "aria-label": open ? TR("Закрыть поддержку") : TR("Написать в поддержку"),
       "aria-expanded": open,
     },

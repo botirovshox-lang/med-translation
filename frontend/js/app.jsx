@@ -532,6 +532,13 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   const bad = (m) => { setErr(m); setShake(true); setTimeout(() => setShake(false), 400); };
   const go = (m) => { setMode(m); setErr(""); setNote(""); };
   const msg = (e) => (e && e.message) ? e.message : TR("Сервер недоступен");
+  /* Какой экран двери открыт (`ui.auth.*`): форму регистрации открыли N раз,
+     а зарегистрировались M — главный вопрос к двери. Без хука: тесты
+     рендера считают хуки по порядку. */
+  if (window._mcat_auth !== mode) {
+    window._mcat_auth = mode;
+    if (window.TELEMETRY) window.TELEMETRY.ui("auth." + mode);
+  }
 
   const submit = async (ev) => {
     ev.preventDefault();

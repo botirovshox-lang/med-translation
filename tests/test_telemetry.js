@@ -25,8 +25,12 @@ const win = {
   fetch: (url, opt) => { sent.push({ url, opt, body: JSON.parse(opt.body) }); return Promise.resolve({}); },
   BOOT: { v: "v1" },
 };
+const docListeners = {};
 const ctx = {
-  window: win, document: { addEventListener: () => {}, visibilityState: "visible" },
+  window: win, document: { addEventListener: (t, f) => { (docListeners[t] = docListeners[t] || []).push(f); },
+                           visibilityState: "visible" },
+  performance: { getEntriesByType: () => [{ loadEventStart: 1500 }] },
+  Date,
   setTimeout: (f) => { timers.push(f); return timers.length; },
   JSON, String, Promise,
 };
@@ -74,6 +78,44 @@ win.TELEMETRY.ui("tab.editor"); win.TELEMETRY.ui("tab.editor"); win.TELEMETRY.ui
 tick();
 check(sent.length === n0 + 1 && JSON.stringify(sent[n0].body.ui) === '["tab.editor","tour.step1"]',
       "повтор экрана подряд не шлётся");
+
+console.log("=== 5. Клики: надпись словаря, нервные, экран ===");
+win.I18N = { lang: "uz", toKey: s => ({ "Yangilash": "Обновить" })[s] || s };
+const btn = { textContent: "Yangilash", getAttribute: () => null };
+const clickOn = (el) => (docListeners.click || []).forEach(f => f({ target: { closest: () => el } }));
+win._mcat_tab = "editor";
+const n1 = sent.length;
+clickOn(btn); clickOn(btn); clickOn(btn); clickOn({ textContent: "1Проекты", getAttribute: () => null });
+tick();
+const cl = sent.slice(n1).reduce((a, x) => a.concat(x.body.clicks || []), []);
+check(cl.length === 3, "серия из трёх кликов — один обычный и один «нервный»: " + JSON.stringify(cl));
+check(cl[0] && cl[0].c[0] === "Обновить" && cl[0].t === "editor", "надпись переведена в русский ключ словаря");
+check(cl[1] && cl[1].rage === true, "третий клик подряд — «нервный»");
+check(cl[2] && cl[2].c.indexOf("Проекты") >= 0, "номер шага в меню не мешает надписи: " + JSON.stringify(cl[2]));
+store["mct-token"] = "";
+clickOn({ textContent: "Войти", getAttribute: () => null });
+tick();
+const lastBody = sent[sent.length - 1].body;
+check(lastBody.clicks[0].t === "auth", "до входа клик идёт на экран входа");
+store["mct-token"] = "tok123";
+
+console.log("=== 6. Скорость, устройство, время на экране ===");
+win.innerWidth = 400;
+fire("load", {});
+tick();
+const sl = sent.slice(-2).map(x => x.body);
+check(sl.some(b => b.perf && b.perf.load === 1500), "время загрузки страницы ушло");
+check(sl.some(b => (b.ui || []).indexOf("env.phone") >= 0), "устройство названо: телефон");
+const realNow = Date.now;
+let fake = realNow();
+Date.now = () => fake;
+win.TELEMETRY.ui("tab.glossary");
+fake += 65000;
+win.TELEMETRY.ui("tab.editor");
+win.TELEMETRY.flush();
+Date.now = realNow;
+const dw = sent[sent.length - 1].body.dwell || {};
+check(dw.glossary >= 65000 && dw.glossary < 66000, "время на вкладке посчитано: " + JSON.stringify(dw));
 
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВСЁ ПРОШЛО");
 process.exit(fail.length ? 1 : 0);

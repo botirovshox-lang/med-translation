@@ -1238,6 +1238,136 @@ function MetBrowser({ m }) {
             React.createElement("td", null, r.n)))))));
 }
 
+/* ---------- «Что улучшить» и «Поведение в приложении» ----------
+   Предложения считает сервер правилами (`_metrics_suggest`), код и числа
+   приходят оттуда, фразу собирает браузер (инвариант 17). Забытая строка
+   в `metSuggestText` выводит на экран сам код — сторожит
+   tests/test_metrics.py (по списку кодов из main.py). */
+function metTabName(key) {
+  if (key === "auth") return TR("Вход и регистрация");
+  const t = (typeof TABS !== "undefined" ? TABS : []).find(x => x.key === key);
+  return t ? t.label : key;
+}
+
+function metSuggestText(s) {
+  const lbl = s.label ? "«" + TR(s.label) + "»" : "";
+  const tab = s.tab ? metTabName(s.tab) : "";
+  switch (s.code) {
+    case "rageClick": return lbl + " (" + tab + "): " + TR("жмут по нескольку раз подряд — не видно, что нажатие сработало. Нужен отклик сразу (индикатор, погашенная кнопка) или кнопка не делает обещанного");
+    case "tourSkip": return TR("знакомство пропускают — сократите до 2–3 шагов или подсказывайте на месте, когда экран открыт впервые");
+    case "tourDrop": return TR("в знакомстве на этом шаге уходят — перепишите или уберите шаг ") + s.n;
+    case "signupForm": return TR("форму регистрации открыли, а зарегистрировались немногие — уберите лишние поля, добавьте вход через Google/Telegram");
+    case "verifyDrop": return TR("почту подтверждают не все — проверьте, не уходит ли письмо в спам, и дайте войти сразу");
+    case "firstFile": return TR("первый файл приносят не все подтвердившие — дайте пример файла в один клик и загрузку первым экраном");
+    case "supportHot": return TR("поддержку чаще всего открывают с экрана ") + tab + TR(" — там что-то непонятно, добавьте подсказку на сам экран");
+    case "unusedTab": return TR("экран почти не открывают: ") + tab + TR(" — вынесите его пользу на соседний экран или уберите из меню");
+    case "mobileShare": return TR("заметная доля заходит с телефона — проверьте на телефоне главный путь: загрузка → перевод → скачать");
+    case "slowLoad": return TR("страница грузится дольше 3 с — ищите тяжёлые файлы и медленный ответ сервера");
+    case "slowReady": return TR("первый экран появляется дольше 3 с после загрузки — тормозит первый запрос или отрисовка");
+    case "jsFix": return TR("ошибка в браузере повторяется — починить первой: ") + (s.name || "");
+    case "slowApi": return TR("мс в среднем отвечает ") + (s.route || "") + TR(" — кэш или фоновая задача");
+    case "payAbandon": return TR("сумму к оплате смотрят, а заявок мало — предложите пакет меньше и онлайн-оплату картой");
+    case "orderUnpaid": return TR("заявки на оплату не оплачены — напомните и проверьте, не обрывается ли оплата у кассы");
+    case "trialUpsell": return TR("раз пробным клиентам перевели только фрагмент — предложите дописать остальное за деньги прямо на экране фрагмента");
+    case "packOffer": return TR("раз кончались страницы — предлагайте пакет заранее, при остатке 15%");
+    case "bigTier": return TR("раз файл не взяли из-за размера — нужен тариф для больших документов");
+    case "exportNoPay": return TR("новых клиентов скачали перевод и ни разу не платили — время предложить пакет");
+    default: return s.code;
+  }
+}
+
+function metSuggestNum(s) {
+  if (s.code === "tourDrop") return s.to + "/" + s.from;
+  if (s.of != null) return s.n + "/" + s.of;
+  return String(s.n);
+}
+
+const MET_AREAS = [["ux", TR("Интерфейс (UX/UI)")], ["speed", TR("Скорость и надёжность")], ["money", TR("Деньги")]];
+
+function MetSuggest({ m }) {
+  const sug = m.suggest || [];
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Что улучшить — по поведению людей")),
+    sug.length === 0
+      ? React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("Поведенческих находок за период нет: мало данных или всё в норме. Это ответ, а не пустой экран."))
+      : MET_AREAS.map(([area, title]) => {
+        const mine = sug.filter(s => s.area === area);
+        if (!mine.length) return null;
+        return React.createElement("div", { key: area, style: { marginBottom: 8 } },
+          React.createElement("div", { style: { fontWeight: 600, margin: "4px 0" } }, title),
+          React.createElement("ul", { className: "met-list" }, mine.map((s, i) =>
+            React.createElement("li", { key: i, className: "met-hint" },
+              React.createElement("b", { className: "met-num" }, metSuggestNum(s)),
+              React.createElement("span", null, " ", metSuggestText(s))))));
+      }));
+}
+
+function metPerfRow(b) {
+  b = b || {};
+  const total = ["lt1", "1to3", "3to7", "gt7"].reduce((a, k) => a + (b[k] || 0), 0);
+  if (!total) return "—";
+  return [["lt1", TR("до 1 с")], ["1to3", TR("1–3 с")], ["3to7", TR("3–7 с")], ["gt7", TR("дольше 7 с")]]
+    .map(([k, l]) => l + " " + Math.round((b[k] || 0) / total * 100) + "%").join(" · ") + " (" + total + ")";
+}
+
+function MetBehaviour({ m }) {
+  const clicks = m.clicks || [];
+  const rage = m.rage || [];
+  const dwell = m.dwell || [];
+  const ui = {};
+  (m.ui || []).forEach(x => { ui[x.code] = x.n; });
+  const env = ["phone", "tablet", "desktop"].map(k => [k, ui["env." + k] || 0]);
+  const envTotal = env.reduce((a, x) => a + x[1], 0);
+  const envName = { phone: TR("телефон"), tablet: TR("планшет"), desktop: TR("компьютер") };
+  const auth = ["login", "register", "verify", "forgot", "reset"].map(k => [k, ui["auth." + k] || 0]);
+  const authName = { login: TR("вход"), register: TR("регистрация"), verify: TR("код из письма"),
+                     forgot: TR("забыли пароль"), reset: TR("новый пароль") };
+  const label = (r) => r.label ? TR(r.label) : TR("(кнопка без надписи из словаря)");
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Поведение в приложении")),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "0 0 8px" } },
+      TR("Клики считаются по надписям кнопок из словаря интерфейса — текста документов клиентов здесь нет и быть не может.")),
+    React.createElement("p", { style: { margin: "0 0 4px" } },
+      React.createElement("b", null, TR("Устройства: ")),
+      envTotal ? env.map(([k, n]) => envName[k] + " " + Math.round(n / envTotal * 100) + "%").join(" · ") : "—"),
+    React.createElement("p", { style: { margin: "0 0 4px" } },
+      React.createElement("b", null, TR("Загрузка страницы: ")), metPerfRow((m.perf || {}).load)),
+    React.createElement("p", { style: { margin: "0 0 4px" } },
+      React.createElement("b", null, TR("Первый экран: ")), metPerfRow((m.perf || {}).ready)),
+    React.createElement("p", { style: { margin: "0 0 8px" } },
+      React.createElement("b", null, TR("Экраны входа: ")),
+      auth.map(([k, n]) => authName[k] + " " + n).join(" · ")),
+    dwell.length ? React.createElement("div", { style: { overflowX: "auto", marginBottom: 8 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: "4px 0 6px" } }, TR("Время на экранах")),
+      React.createElement("table", { className: "tbl" },
+        React.createElement("tbody", null, dwell.map(d => React.createElement("tr", { key: d.tab },
+          React.createElement("td", null, metTabName(d.tab)),
+          React.createElement("td", null, d.totalMin + TR(" мин всего")),
+          React.createElement("td", { className: "dim" }, d.avgSec + TR(" с за заход")),
+          React.createElement("td", { className: "dim" }, d.n + TR(" заходов"))))))) : null,
+    rage.length ? React.createElement("div", { style: { overflowX: "auto", marginBottom: 8 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: "4px 0 6px" } },
+        TR("«Нервные» клики — жмут по три раза подряд")),
+      React.createElement("table", { className: "tbl" },
+        React.createElement("tbody", null, rage.map((r, i) => React.createElement("tr", { key: i },
+          React.createElement("td", null, label(r)),
+          React.createElement("td", { className: "dim" }, metTabName(r.tab)),
+          React.createElement("td", { className: "bad" }, r.n)))))) : null,
+    clicks.length
+      ? React.createElement("details", null,
+        React.createElement("summary", null, TR("На что нажимают") + " · " + clicks.length),
+        React.createElement("div", { style: { overflowX: "auto", marginTop: 8 } },
+          React.createElement("table", { className: "tbl" },
+            React.createElement("tbody", null, clicks.map((r, i) => React.createElement("tr", { key: i },
+              React.createElement("td", null, label(r)),
+              React.createElement("td", { className: "dim" }, metTabName(r.tab)),
+              React.createElement("td", null, r.n)))))))
+      : React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Кликов за период не записано.")));
+}
+
 function TabMetrics({ toast }) {
   const [days, setDays] = useState(7);
   const [m, setM] = useState(null);
@@ -1262,7 +1392,9 @@ function TabMetrics({ toast }) {
         m.from + " — " + m.to) : null),
     !m && React.createElement("div", { className: "dim" }, TR("Считаем…")),
     m && React.createElement(MetHints, { m }),
+    m && React.createElement(MetSuggest, { m }),
     m && React.createElement(MetPath, { m }),
+    m && React.createElement(MetBehaviour, { m }),
     m && React.createElement(MetBrowser, { m }),
     m && React.createElement(MetTenants, { m }),
     m && React.createElement(MetSteps, { m }),

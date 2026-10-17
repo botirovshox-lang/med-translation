@@ -68,7 +68,12 @@ function PayCard({ toast, onPaid }) {
     let alive = true;
     const t = setTimeout(() => {
       window.API.payQuote({ pages: pages || 0, minutes: minutes || 0, method })
-        .then(r => { if (alive) { setQuote(r.quote); setQErr(""); } })
+        .then(r => {
+          if (alive) { setQuote(r.quote); setQErr(""); }
+          /* Сумму к оплате увидели (`ui.pay.quote`) — против заявок это
+             «сколько посмотрели цену и ушли». */
+          if (window.TELEMETRY) window.TELEMETRY.ui("pay.quote");
+        })
         .catch(e => { if (alive) { setQuote(null); setQErr(e.message || String(e)); } });
     }, 250);
     return () => { alive = false; clearTimeout(t); };

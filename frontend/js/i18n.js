@@ -54,6 +54,7 @@
   var misses = {};                   // непереведённое: строка -> сколько раз спросили
   var phraseRe = null;               // ленивая регулярка для TS(): собирается один раз
   var phraseFor = null;
+  var reverse = null;                // перевод → русский ключ, для toKey(); ленивый
 
   var lang = DEFAULT_LANG;
   try {
@@ -132,6 +133,23 @@
        нет намеренно: ключ и есть русская строка. */
     register: function (code, table) {
       catalogs[code] = Object.assign(catalogs[code] || {}, table || {});
+      if (code === lang) reverse = null;
+    },
+    /* Надпись на экране → её ключ (русская строка). Нужна учёту кликов
+       (telemetry.js): клик называется надписью ИЗ СЛОВАРЯ, а на узбекском
+       экране надпись узбекская. Не нашлось — строка как есть: сервер
+       сверит её со словарём и чужое отбросит. */
+    toKey: function (s) {
+      if (lang === "ru" || !catalogs[lang]) return s;
+      if (!reverse) {
+        reverse = {};
+        var cat = catalogs[lang];
+        Object.keys(cat).forEach(function (k) {
+          var v = String(cat[k] || "").replace(/\s+/g, " ").trim();
+          if (v && !(v in reverse)) reverse[v] = k.replace(/\s+/g, " ").trim();
+        });
+      }
+      return reverse[s] || s;
     },
     /* Куски сообщений СЕРВЕРА — своей таблицей, а не вперемешку с надписями.
        Из неё и только из неё TRS() собирает фразовую подстановку: обрывки
@@ -151,6 +169,7 @@
       if (!LANGS.some(function (l) { return l.code === code; })) return false;
       var same = code === lang;
       lang = code;
+      reverse = null;
       try { window.localStorage.setItem(LS_KEY, code); } catch (e) { /* приватное окно */ }
       phraseRe = null;
       markDocument();

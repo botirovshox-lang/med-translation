@@ -372,6 +372,36 @@ check(!!notSuper && !notSuper.includes("Пополнить"), "не суперп
   check(!!path && !/\b(first:upload|tour\.skip|tab\.editor|signupNoUpload|jsErrors)\b/.test(path),
         "коды шагов, экранов и подсказок на экран не выходят");
   check(!!path && path.includes("1/3"), "у подсказки «не принесли файл» виден знаменатель");
+
+  /* «Что улучшить» и поведение — форма `_metrics_suggest` и разбора
+     `click.`/`rage.`/`dwell.`/`perf.` (tests/test_metrics.py, раздел 13). */
+  const BEH = Object.assign({}, PATH, {
+    ui: PATH.ui.concat([{ code: "env.phone", n: 3 }, { code: "env.desktop", n: 1 },
+                        { code: "auth.register", n: 9 }]),
+    clicks: [{ tab: "editor", h: "abc", label: "Обновить", n: 12 },
+             { tab: "editor", h: "_", label: "", n: 4 }],
+    rage: [{ tab: "editor", h: "abc", label: "Обновить", n: 5 }],
+    dwell: [{ tab: "editor", n: 10, avgSec: 95.5, totalMin: 15.9 }],
+    perf: { load: { lt1: 6, "3to7": 2 }, ready: { "1to3": 4 } },
+    suggest: [{ area: "ux", code: "rageClick", n: 5, label: "Обновить", tab: "editor" },
+              { area: "ux", code: "tourDrop", n: 3, from: 18, to: 5 },
+              { area: "speed", code: "slowLoad", n: 2, of: 8 },
+              { area: "money", code: "payAbandon", n: 1, of: 20 }],
+  });
+  const beh = metRender(BEH);
+  check(!!beh && beh.includes("Что улучшить — по поведению людей") && beh.includes("Интерфейс (UX/UI)")
+        && beh.includes("Скорость и надёжность") && beh.includes("Деньги"),
+        "предложения разложены по направлениям");
+  check(!!beh && beh.includes("«Обновить»") && beh.includes("5/18") && beh.includes("1/20"),
+        "у предложения надпись кнопки и числа");
+  check(!!beh && !/\b(rageClick|tourDrop|slowLoad|payAbandon)\b/.test(beh), "коды предложений на экран не выходят");
+  check(!!beh && beh.includes("Поведение в приложении") && beh.includes("телефон 75%")
+        && beh.includes("до 1 с 75%") && beh.includes("регистрация 9"),
+        "устройства, скорость и экраны входа — словами и долями");
+  check(!!beh && beh.includes("«Нервные» клики") && beh.includes("(кнопка без надписи из словаря)"),
+        "нервные клики и клик без надписи названы");
+  check(!!metRender(Object.assign({}, MET, { suggest: [] })).includes("Поведенческих находок за период нет"),
+        "нет предложений — это ответ, а не пустой экран");
 }
 
 /* ---------- Вкладка «Возможности» ----------

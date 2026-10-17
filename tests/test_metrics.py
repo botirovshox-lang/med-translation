@@ -604,6 +604,96 @@ c.post("/api/auth/login", json={"login": "acme", "password": "acme-pass-123"})
 evl = main._metrics_events(main._events_rows(day, day))
 check(evl["funnelRaw"].get("login") == 1, "вход посчитан шагом пути: " + str(evl["funnelRaw"]))
 
+print("=== 13. Поведение в приложении: клики, время на экранах, скорость ===")
+O2 = c.post("/api/auth/login", json={"login": "acme", "password": "acme-pass-123"}).json()["token"]
+main.metrics_mod.reset()
+main.STATE[main.EVENTS_KEY] = {}
+main._BEACON_HITS.clear()
+lab = "Обновить"
+check(main._label_hash(lab) in main._ui_labels(), "надпись берётся из словаря интерфейса")
+c.post("/api/client/beacon", headers=H(O2), json={
+    "clicks": [{"t": "editor", "c": ["Обновить 12", lab]},
+               {"t": "editor", "c": [lab], "rage": True},
+               {"t": "editor", "c": ["Пациент Каримов, 45 лет"]},
+               {"t": "evil<tab>", "c": [lab]}],
+    "dwell": {"editor": 90000, "glossary": 10 ** 9, "evil": 5000},
+    "perf": {"load": 800, "ready": 4200},
+    "ui": ["auth.register", "env.phone", "tab.editor"]})
+c.post("/api/client/beacon", json={
+    "clicks": [{"t": "auth", "c": [lab]}, {"t": "editor", "c": [lab]}],
+    "dwell": {"editor": 5000}, "ui": ["auth.register", "tab.editor", "lang.uz"]})
+evc = main._metrics_events(main._events_rows(day, day))
+byc = {(r["tab"], r["h"]): r for r in evc["clicks"]}
+h = main._label_hash(lab)
+check(byc.get(("editor", h), {}).get("n") == 2 and byc[("editor", h)]["label"] == lab,
+      "клик назван надписью из словаря (кандидат с числом пропущен): " + str(evc["clicks"]))
+check(byc.get(("editor", "_"), {}).get("n") == 1,
+      "надпись не из словаря — клик без имени: текст документа в учёт не попал")
+check(not any("Каримов" in json.dumps(r, ensure_ascii=False) for r in evc["clicks"]),
+      "ни буквы текста клиента в счётчиках")
+check(("auth", h) in byc and byc[("auth", h)]["n"] == 1,
+      "до входа принимается только экран входа")
+check(sum(r["n"] for r in evc["clicks"]) == 4, "чужой экран и анонимный клик по вкладке отброшены")
+check([(r["tab"], r["n"]) for r in evc["rage"]] == [("editor", 1)], "«нервный» клик посчитан отдельно")
+dw = {d["tab"]: d for d in evc["dwell"]}
+check(set(dw) == {"editor", "glossary"} and dw["editor"]["n"] == 1 and dw["editor"]["avgSec"] == 90.0,
+      "время на экране — только у вошедшего и только по своим вкладкам: " + str(evc["dwell"]))
+check(dw["glossary"]["totalMin"] == 30.0, "забытая вкладка обрезана получасом")
+check(evc["perf"] == {"load": {"lt1": 1}, "ready": {"3to7": 1}}, "скорость корзинами: " + str(evc["perf"]))
+uic2 = {x["code"]: x["n"] for x in evc["ui"]}
+check(uic2.get("auth.register") == 2 and uic2.get("tab.editor") == 1 and uic2.get("lang.uz") == 1,
+      "до входа принимаются экраны двери, устройство и язык, но не вкладки: " + str(uic2))
+
+print("=== 13а. «Что улучшить»: правила по поведению ===")
+EV = {"ui": [{"code": "tour.step1", "n": 20}, {"code": "tour.step2", "n": 18},
+             {"code": "tour.step3", "n": 5}, {"code": "tour.skip", "n": 12}, {"code": "tour.done", "n": 3},
+             {"code": "auth.register", "n": 40}, {"code": "support.open.editor", "n": 6},
+             {"code": "env.phone", "n": 15}, {"code": "env.desktop", "n": 20},
+             {"code": "pay.quote", "n": 20}],
+      "funnelRaw": {"signup": 8, "verified": 3, "payOrder:click": 4, "paid:click": 1},
+      "rage": [{"tab": "editor", "h": h, "label": lab, "n": 7}],
+      "perf": {"load": {"lt1": 10, "3to7": 8, "gt7": 4}},
+      "js": [{"code": "error:app.jsx", "n": 5}],
+      "slow": [{"route": "GET /seed", "avgMs": 2100, "n": 40}],
+      "caps": [{"code": "trialExcerpt", "n": 4}, {"code": "pages402", "n": 3}]}
+COH = {"steps": [{"code": "verified", "n": 6}, {"code": "upload", "n": 2},
+                 {"code": "export", "n": 4}, {"code": "paid", "n": 0}]}
+sg = {s["code"]: s for s in main._metrics_suggest(EV, COH)}
+want = {"rageClick", "tourSkip", "tourDrop", "signupForm", "verifyDrop", "firstFile", "supportHot",
+        "mobileShare", "slowLoad", "jsFix", "slowApi", "payAbandon", "orderUnpaid",
+        "trialUpsell", "packOffer", "exportNoPay"}
+check(want <= set(sg), "правила сработали: нет " + str(sorted(want - set(sg))))
+check(sg["tourDrop"]["n"] == 3 and sg["tourDrop"]["from"] == 18,
+      "уход в знакомстве назван шагом и числами")
+check(sg["signupForm"]["of"] == 40 and sg["payAbandon"]["of"] == 20,
+      "у доли виден знаменатель")
+check(all(s["area"] in {"ux", "speed", "money"} for s in sg.values()), "у каждого предложения направление")
+check(main._metrics_suggest({"ui": [{"code": "tour.step1", "n": 2}]}) == [],
+      "мало данных — молчим: «1 из 2» не повод переделывать экран")
+check(not any(s["code"] == "tourDrop" for s in main._metrics_suggest(
+      {"ui": [{"code": "tour.step%d" % k, "n": 30} for k in range(1, 6)]})),
+      "конец тура уходом не считается")
+src = io.open("backend/main.py", encoding="utf-8").read()
+fn = src[src.index("def _metrics_suggest("):src.index("METRICS_SUGGEST_TEXT = {")]
+codes = set(re.findall(r'"code": "([A-Za-z]+)"', fn))
+jsx = io.open("frontend/js/tab_admin.jsx", encoding="utf-8").read()
+check(codes and not [x for x in codes if x not in main.METRICS_SUGGEST_TEXT],
+      "у каждого предложения фраза суточного текста: " + str(sorted(codes)))
+check(not [x for x in codes if ('case "%s":' % x) not in jsx],
+      "у каждого предложения фраза на экране: нет " + str([x for x in codes if ('case "%s":' % x) not in jsx]))
+for s in sg.values():
+    line = main._suggest_line(s)
+    check("%(" not in line and s["code"] not in line, "фраза собралась: " + line[:60])
+m4 = c.get("/api/admin/metrics?days=7", headers=H(S)).json()
+check(all(k in m4 for k in ("suggest", "clicks", "rage", "dwell", "perf")),
+      "сводка отдаёт поведение и предложения")
+d4 = main._metrics_digest_text(dict(m4, suggest=list(sg.values())))
+check("ЧТО УЛУЧШИТЬ" in d4 and "ИНТЕРФЕЙС" in d4 and "ДЕНЬГИ" in d4,
+      "в суточном тексте раздел предложений по направлениям")
+check("Что улучшить: поведенческих находок" in main._metrics_digest_text(dict(m4, suggest=[])),
+      "нет находок — сказано словами, а не пустотой")
+main._BEACON_HITS.clear()
+
 
 print()
 if fail:

@@ -1152,6 +1152,21 @@ function metJsKind(kind) {
   }
 }
 
+/* Доля со знаменателем; знаменателя нет — «нет данных», а не ноль. */
+function metFrac(n, of) {
+  return of ? (n + "/" + of + " (" + Math.round(n / of * 100) + "%)") : TR("нет данных");
+}
+
+function metSrcName(src) {
+  switch (src) {
+    case "direct": return TR("напрямую");
+    case "landing": return TR("с лендинга");
+    case "start": return TR("лендинг /start/");
+    case "index": case "uz": case "en": return TR("форма лендинга ") + src;
+    default: return src;
+  }
+}
+
 function MetPath({ m }) {
   const c = m.cohort || {};
   const steps = c.steps || [];
@@ -1176,6 +1191,17 @@ function MetPath({ m }) {
             React.createElement("td", { className: "dim" }, Math.round(s.n / top * 100) + "%")))))),
     hours.length ? React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "8px 0 0" } },
       TR("Медиана от регистрации: ") + hours.map(k => metStepText(k) + " — " + mh[k] + TR(" ч")).join(", ")) : null,
+    c.retention ? React.createElement("p", { style: { margin: "8px 0 0" } },
+      React.createElement("b", null, TR("Удержание: ")),
+      TR("вернулись через день ") + metFrac(c.retention.d1, c.retention.d1Of) + " · " +
+      TR("через неделю ") + metFrac(c.retention.d7, c.retention.d7Of) + " · " +
+      TR("второй файл ") + metFrac(c.retention.file2, c.retention.fileOf)) : null,
+    (c.bySource || []).length > 1 ? React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "4px 0 0" } },
+      TR("По источнику: ") + c.bySource.map(b => {
+        const st = {}; (b.steps || []).forEach(x => { st[x.code] = x.n; });
+        return metSrcName(b.src) + " — " + TR("регистраций ") + (st.signup || 0) + ", " + TR("файл ") + (st.upload || 0) +
+          ", " + TR("скачали ") + (st.export || 0);
+      }).join(" · ")) : null,
     React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "8px 0 0" } },
       TR("События за период (у всех, включая прежних клиентов): ") +
       (m.signupFlow || []).map(f => metStepText(f.code) + " " + f.n).join(" · ")),
@@ -1272,6 +1298,17 @@ function metSuggestText(s) {
     case "packOffer": return TR("раз кончались страницы — предлагайте пакет заранее, при остатке 15%");
     case "bigTier": return TR("раз файл не взяли из-за размера — нужен тариф для больших документов");
     case "exportNoPay": return TR("новых клиентов скачали перевод и ни разу не платили — время предложить пакет");
+    case "failClick": return lbl + " (" + tab + "): " + TR("нажали и получили отказ — человек сделал всё правильно, а мы не дали. Объясните причину до нажатия или уберите преграду") + " (" + metStatusText(s.status) + ")";
+    case "deadClick": return lbl + " (" + tab + "): " + TR("нажатие ничего не меняет на экране — дайте видимый отклик");
+    case "exitNoValue": return TR("чаще всего уходят, не получив перевода, с экрана ") + tab + TR(" — посмотрите его глазами новичка");
+    case "retentionLow": return TR("вернулись через неделю — напомните о себе письмом с готовым переводом и предложением следующего файла");
+    case "secondFileLow": return TR("принесли второй файл — первый результат не убедил, спросите, что было не так");
+    case "ideas": return TR("предложений «Чего не хватает?» — прочтите их ниже: это список того, за что готовы платить");
+    case "landScroll": return TR("просмотров лендинга доходят до середины — главное (форма, цена, пример) поставьте выше");
+    case "landFormLow": return TR("просмотров лендинга заканчиваются выбором файла — форма не заметна или не вызывает доверия");
+    case "landFormErr": return TR("попыток формы на лендинге закончились ошибкой — сделайте ошибку невозможной (язык по умолчанию, понятный потолок размера)");
+    case "landHandoff": return TR("раз файл с лендинга не доехал в приложение — проверьте передачу в Safari и на телефоне");
+    case "landToSignup": return TR("ушедших с формы лендинга зарегистрировались — регистрация между формой и переводом теряет людей");
     default: return s.code;
   }
 }
@@ -1368,6 +1405,119 @@ function MetBehaviour({ m }) {
       : React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Кликов за период не записано.")));
 }
 
+/* ---------- Где затрудняются, лендинг, чего не хватает ----------
+   Рейтинг кнопок считает сервер (`_friction_top`): отказ ×3, «нервный» ×2,
+   без отклика ×1, всё — СЕССИЯМИ. Лендинг — числа «примерно»: дверь
+   публичная. Идеи — то, что человек написал сам; удалить — по его просьбе. */
+function metStatusText(st) {
+  switch (String(st)) {
+    case "402": return TR("кончились деньги или страницы");
+    case "403": return TR("не хватило прав");
+    case "404": return TR("не нашли");
+    case "409": return TR("занято или уже есть");
+    case "413": return TR("файл больше потолка");
+    case "415": return TR("формат не читаем");
+    case "400": case "422": return TR("запрос не понят");
+    default: return TR("ошибка сервера");
+  }
+}
+
+function MetFriction({ m }) {
+  const rows = m.friction || [];
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Где затрудняются — кнопки")),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "0 0 8px" } },
+      TR("Сессиями, а не кликами: «отказ» — нажали и получили ошибку сервера, «нервно» — жали по три раза, «без отклика» — на экране ничего не изменилось. Сверху — самое тяжёлое.")),
+    rows.length === 0
+      ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Затруднений с кнопками за период не записано."))
+      : React.createElement("div", { style: { overflowX: "auto" } },
+        React.createElement("table", { className: "tbl" },
+          React.createElement("thead", null, React.createElement("tr", null,
+            [TR("Кнопка"), TR("Экран"), TR("Отказ"), TR("Нервно"), TR("Без отклика"), TR("Нажимали"), TR("Доля")]
+              .map((h, i) => React.createElement("th", { key: i }, h)))),
+          React.createElement("tbody", null, rows.map((r, i) => React.createElement("tr", { key: i },
+            React.createElement("td", null, TR(r.label)),
+            React.createElement("td", { className: "dim" }, metTabName(r.tab)),
+            React.createElement("td", { className: r.fail ? "bad" : "dim",
+                                        title: Object.keys(r.statuses || {}).map(s => s + " — " + metStatusText(s)).join("; ") },
+              r.fail || "—"),
+            React.createElement("td", { className: r.rage ? "bad" : "dim" }, r.rage || "—"),
+            React.createElement("td", { className: "dim" }, r.dead || "—"),
+            React.createElement("td", { className: "dim" }, r.clicks || "—"),
+            React.createElement("td", null, r.share == null ? "—" : Math.round(r.share * 100) + "%")))))));
+}
+
+function MetLanding({ m }) {
+  const lv = m.landing || {};
+  if (!lv.total) return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } }, TR("Лендинг")),
+    React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Просмотров лендинга за период не записано.")));
+  const f = lv.form || {};
+  const pct = (n) => Math.round((n || 0) / lv.total * 100) + "%";
+  const ctaName = {
+    "nav-open": TR("«Открыть сервис» в шапке"), "demo-upload": TR("«Загрузить свой документ»"),
+    "demo-calc": TR("«Рассчитать стоимость»"), "price-start": TR("тариф «Старт»"), "price-pro": TR("тариф «Профи»"),
+    "price-volume": TR("«Обсудить объём»"), "contact-upload": TR("«Загрузить первый документ»"),
+    login: TR("«Войти»"), app: TR("другие ссылки в сервис"), anchor: TR("переходы по странице"),
+  };
+  const leaveNo = (lv.leave || []).filter(x => !x.sub);
+  const leaveAll = leaveNo.reduce((a, x) => a + x.n, 0);
+  const signups = Object.keys(lv.signupFrom || {}).filter(k => k !== "direct")
+    .reduce((a, k) => a + lv.signupFrom[k], 0);
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } }, TR("Лендинг")),
+    React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "0 0 8px" } },
+      TR("Числа примерные: адрес приёма открыт всем. Подробные записи посещений — в Вебвизоре Яндекс.Метрики.")),
+    React.createElement("p", { style: { margin: "0 0 4px" } },
+      React.createElement("b", null, TR("Просмотров: ")), lv.total, " · ",
+      Object.keys(lv.views || {}).map(k => k + " " + lv.views[k]).join(" · ")),
+    React.createElement("p", { style: { margin: "0 0 4px" } },
+      React.createElement("b", null, TR("Дочитали: ")),
+      (lv.scroll || []).map(x => x.m + "% — " + pct(x.n)).join(" · ")),
+    React.createElement("p", { style: { margin: "0 0 4px" } },
+      React.createElement("b", null, TR("Форма: ")),
+      TR("выбрали файл ") + (f.file || 0) + " · " + TR("нажали «Перевести» ") + (f.submit || 0) +
+      " · " + TR("файл доехал ") + (f.handoffOk || 0) + " / " + TR("не доехал ") + (f.handoffFail || 0) +
+      " · " + TR("ошибки ") + Object.keys(f.errors || {}).map(k => k + " " + f.errors[k]).join(", ")),
+    React.createElement("p", { style: { margin: "0 0 4px" } },
+      React.createElement("b", null, TR("В приложение: ")),
+      TR("пришли ") + Object.keys(lv.entry || {}).reduce((a, k) => a + lv.entry[k], 0) +
+      " · " + TR("зарегистрировались ") + signups),
+    leaveAll ? React.createElement("p", { style: { margin: "0 0 4px" } },
+      React.createElement("b", null, TR("Ушли, не отправив форму: ")),
+      leaveNo.map(x => TR("дочитав до ") + x.m + "% — " + x.n).join(" · ")) : null,
+    (lv.cta || []).length ? React.createElement("div", { style: { overflowX: "auto", marginTop: 6 } },
+      React.createElement("table", { className: "tbl" },
+        React.createElement("tbody", null, lv.cta.map(r => React.createElement("tr", { key: r.code },
+          React.createElement("td", null, ctaName[r.code] || r.code),
+          React.createElement("td", null, r.n)))))) : null,
+    (lv.faq || []).length ? React.createElement("p", { className: "dim", style: { fontSize: 12, margin: "6px 0 0" } },
+      TR("Открывали вопросы FAQ: ") + lv.faq.map(x => "№" + x.q + " — " + x.n).join(", ")) : null);
+}
+
+function MetIdeas({ m, toast }) {
+  const [gone, setGone] = useState({});
+  const rows = (m.ideas || []).filter(r => !gone[r.id]);
+  const del = (id) => window.API.adminFeedbackDelete(id)
+    .then(() => setGone(g => Object.assign({}, g, { [id]: 1 })))
+    .catch(e => toast && toast(e.message, "err"));
+  return React.createElement("div", { className: "card card-pad" },
+    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 8px" } },
+      TR("Чего не хватает — написали сами") + " · " + rows.length),
+    rows.length === 0
+      ? React.createElement("p", { className: "dim", style: { margin: 0 } },
+        TR("Предложений за период нет. Кнопка «Чего не хватает?» стоит в меню и в окне поддержки."))
+      : React.createElement("ul", { className: "met-list" }, rows.map(r =>
+        React.createElement("li", { key: r.id, className: "met-hint" },
+          React.createElement("span", { className: "dim" },
+            r.at + " · " + (r.tenantName || r.tenant) + (r.screen ? " · " + metTabName(r.screen) : "") + " — "),
+          React.createElement("span", null, r.text),
+          " ",
+          React.createElement("button", { className: "linkbtn", type: "button", onClick: () => del(r.id) },
+            TR("удалить"))))));
+}
+
 function TabMetrics({ toast }) {
   const [days, setDays] = useState(7);
   const [m, setM] = useState(null);
@@ -1393,7 +1543,10 @@ function TabMetrics({ toast }) {
     !m && React.createElement("div", { className: "dim" }, TR("Считаем…")),
     m && React.createElement(MetHints, { m }),
     m && React.createElement(MetSuggest, { m }),
+    m && React.createElement(MetFriction, { m }),
+    m && React.createElement(MetIdeas, { m, toast }),
     m && React.createElement(MetPath, { m }),
+    m && React.createElement(MetLanding, { m }),
     m && React.createElement(MetBehaviour, { m }),
     m && React.createElement(MetBrowser, { m }),
     m && React.createElement(MetTenants, { m }),

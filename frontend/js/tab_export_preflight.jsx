@@ -966,6 +966,9 @@ function TabExport({ store, toast }) {
       } catch (e) {
         toast.error(TR("Файл не скачан"), String((e && e.message) || e));
       }
+      /* Перевод получен: уход со страницы после этого — успех, а не брошенная
+         работа (telemetry.js, `exit.*.ok`). */
+      if (window.TELEMETRY && window.TELEMETRY.success) window.TELEMETRY.success();
       if (store.setExportHistory) {
         store.setExportHistory(h => [{ project: project.id, file: result.file, when: new Date().toISOString().slice(0,16).replace("T"," "), size: result.size || "" }, ...h]);
       }

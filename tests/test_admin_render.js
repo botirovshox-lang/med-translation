@@ -402,6 +402,39 @@ check(!!notSuper && !notSuper.includes("Пополнить"), "не суперп
         "нервные клики и клик без надписи названы");
   check(!!metRender(Object.assign({}, MET, { suggest: [] })).includes("Поведенческих находок за период нет"),
         "нет предложений — это ответ, а не пустой экран");
+
+  /* Где затрудняются, лендинг, идеи, удержание — форма `_friction_top`,
+     `_landing_view`, `_feedback_recent`, `retention` когорты
+     (tests/test_metrics.py, разделы 14–14в). */
+  const FR = Object.assign({}, BEH, {
+    friction: [{ tab: "editor", label: "Обновить", clicks: 6, fail: 5, rage: 1, dead: 0,
+                 statuses: { "402": 5 }, score: 17, share: 1.0 }],
+    landing: { views: { index: 30, start: 10 }, total: 40,
+               scroll: [{ m: 25, n: 30, share: 0.75 }, { m: 50, n: 12, share: 0.3 },
+                        { m: 75, n: 5, share: 0.125 }, { m: 100, n: 2, share: 0.05 }],
+               cta: [{ code: "price-pro", n: 4 }], faq: [{ q: 2, n: 3 }], tabs: [],
+               form: { file: 6, submit: 4, handoffOk: 3, handoffFail: 1, errors: { tgt: 2 } },
+               leave: [{ m: 25, sub: false, n: 20 }], perf: {}, entry: { start: 3 },
+               signupFrom: { start: 1, direct: 5 } },
+    ideas: [{ id: "abc", at: "2026-10-17 10:00:00", tenant: "acme", tenantName: "Акме",
+              screen: "import", text: "Хочу загрузить 10 файлов сразу" }],
+    cohort: Object.assign({}, PATH.cohort, {
+      retention: { d1: 2, d1Of: 4, d7: 0, d7Of: 0, file2: 1, fileOf: 2 },
+      bySource: [{ src: "direct", steps: [{ code: "signup", n: 3 }] },
+                 { src: "start", steps: [{ code: "signup", n: 1 }, { code: "upload", n: 1 }] }] }),
+  });
+  const fr = metRender(FR);
+  check(!!fr && fr.includes("Где затрудняются — кнопки") && fr.includes("Обновить") && fr.includes("100%"),
+        "рейтинг затруднений: кнопка и доля");
+  check(!!fr && fr.includes("Лендинг") && fr.includes("50% — 30%") && fr.includes("тариф «Профи»"),
+        "лендинг: дочитали и кнопки — словами");
+  check(!!fr && fr.includes("зарегистрировались 1"), "с лендинга до регистрации посчитано");
+  check(!!fr && fr.includes("Хочу загрузить 10 файлов сразу") && fr.includes("Акме") && fr.includes("удалить"),
+        "идеи видны с организацией и кнопкой удаления");
+  check(!!fr && fr.includes("Удержание:") && fr.includes("2/4 (50%)") && fr.includes("нет данных"),
+        "удержание долей, а без знаменателя — «нет данных», а не ноль");
+  check(!!fr && fr.includes("лендинг /start/"), "источник регистрации назван словами");
+  check(!!fr && !/\bprice-pro\b|\bsignupFrom\b/.test(fr), "коды лендинга на экран не выходят");
 }
 
 /* ---------- Вкладка «Возможности» ----------

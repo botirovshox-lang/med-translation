@@ -54,6 +54,7 @@
 
   function flush() {
     timer = null;
+    exitSettle();
     stopDwell(); startDwell();
     var dw = null;
     for (var k in dwell) { if (dwell[k] > 500) { dw = dw || {}; dw[k] = Math.round(dwell[k]); } }
@@ -150,27 +151,157 @@
     push(text.replace(/\d+/g, " "));
     return out.slice(0, 4);
   }
-  var last = { el: null, n: 0, at: 0, raged: false };
+  /* Сигнал по кнопке — ОДИН раз за сессию страницы на (экран, надпись, вид):
+     счёт «сессиями», а не кликами одного раздражённого человека
+     (рейтинг затруднений на сервере делит именно сессии). */
+  var once = {};
+  function push1(kind, tab, c, extra) {
+    var key = kind + (extra && extra.rage ? "!" : "") + "|" + tab + "|" + (c[0] || "") + "|" + ((extra && extra.s) || "");
+    if (once[key] || clicksSeen >= MAX_CLICKS_PAGE) return;
+    once[key] = 1; clicksSeen++;
+    var rec = { t: tab, c: c };
+    if (kind !== "click") rec.kind = kind;
+    if (extra) for (var k in extra) rec[k] = extra[k];
+    q.clicks.push(rec);
+    schedule();
+  }
+
+  /* «Нервный» клик — как у PostHog: 3 нажатия за 1 с в пределах 30 px.
+     Кнопки листания и счётчики «+/−» жмут подряд законно — не считаем. */
+  var RAGE_IGNORE = /^(Далее|Назад|Вперёд|Ещё|Следующая|Предыдущая|[+−\-‹›«»<>]|\d+)$/;
+  var burst = [];
+
+  /* Клик без отклика: за 1 с после нажатия на экране ничего не изменилось
+     (ни DOM, ни прокрутки, ни фокуса) и запроса к серверу не было.
+     Наблюдатель включается ТОЛЬКО на эту секунду: на таблице в 2700 строк
+     постоянный наблюдатель стоил бы тысяч вызовов. Не считаем то, что
+     законно не меняет экран: выбор файла, скачивание, новая вкладка,
+     переход по ссылке, раскрывашки, погашенные кнопки, поля. */
+  var lastClick = null;          // для привязки отказа сервера к нажатию
+  function quiet(el) {
+    if (!el || !el.matches) return true;
+    if (el.disabled || el.getAttribute("aria-disabled") === "true") return true;
+    if (el.matches("input, select, textarea, label, a[target], a[download], [aria-haspopup], summary")) return true;
+    if (el.closest && el.closest("label")) return true;
+    var href = el.getAttribute && el.getAttribute("href");
+    if (href && href.charAt(0) !== "#") return true;
+    return false;
+  }
+  function watchDead(el, tab, c) {
+    if (!window.MutationObserver || quiet(el) || !c.length) return;
+    var alive = false, mo = null;
+    var sy = window.scrollY, act = document.activeElement;
+    var mark = function () { alive = true; if (mo) { mo.disconnect(); mo = null; } };
+    try {
+      mo = new window.MutationObserver(mark);
+      mo.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+    } catch (e) { return; }
+    lastClick.mark = mark;
+    setTimeout(function () {
+      if (mo) { mo.disconnect(); mo = null; }
+      if (!alive && window.scrollY === sy && document.activeElement === act) push1("dead", tab, c);
+    }, 1000);
+  }
+
   document.addEventListener("click", function (ev) {
     try {
       var el = ev.target && ev.target.closest &&
         ev.target.closest("button, a, [role=button], [role=tab], summary, .navi");
-      if (!el || clicksSeen >= MAX_CLICKS_PAGE) return;
-      var t = now();
-      if (last.el === el && t - last.at < 1200) { last.n++; } else { last = { el: el, n: 1, at: t, raged: false }; }
-      last.at = t;
+      if (!el) return;
       var tab = screen();
       if (!tab) return;
       var c = cands(el);
-      var rage = last.n >= 3 && !last.raged;
-      if (rage) last.raged = true;
-      /* Повторные клики пачки рисуем одним «нервным», а не тремя обычными. */
-      if (last.n > 1 && !rage) return;
-      clicksSeen++;
-      q.clicks.push({ t: tab, c: c, rage: rage });
-      schedule();
+      var t = now(), x = ev.clientX || 0, y = ev.clientY || 0;
+      /* Серия — по одному и тому же элементу: соседняя кнопка в 30 px
+         серию не продолжает, иначе быстрые нажатия по разным кнопкам
+         пропадали бы как «повторы». */
+      burst = burst.filter(function (b) {
+        return b.el === el && t - b.at < 1000 && Math.abs(b.x - x) <= 30 && Math.abs(b.y - y) <= 30;
+      });
+      burst.push({ at: t, x: x, y: y, el: el });
+      lastClick = { at: t, tab: tab, c: c };
+      if (burst.length >= 3 && c.length && !RAGE_IGNORE.test(c[0])) {
+        push1("click", tab, c, { rage: true });
+        burst = [];
+        return;
+      }
+      if (burst.length > 1) return;   // повторы серии — не новые нажатия
+      push1("click", tab, c);
+      watchDead(el, tab, c);
     } catch (e) { /* учёт не вправе ломать нажатие */ }
   }, true);
+
+  /* Отказ сервера, привязанный к нажатию. api.js спрашивает `claim()` в
+     момент СТАРТА запроса: привязываем только запросы, начатые в первые
+     300 мс после клика, — фоновые опросы (задачи, разбор) стартуют по
+     таймеру и к нажатию не прилипают. Запрос сам по себе — уже отклик:
+     клик с запросом «без отклика» не бывает. */
+  function claim() {
+    var lc = lastClick;
+    if (!lc || now() - lc.at > 300) return null;
+    if (lc.mark) lc.mark();
+    return lc;
+  }
+  function failed(ctx, status) {
+    if (!ctx || status === 401 || status === 429) return;
+    push1("fail", ctx.tab, ctx.c, { s: status });
+  }
+
+  /* Уход со страницы — с какой вкладки и успел ли человек получить перевод
+     (`exit.<вкладка>.ok|none`). На телефоне `pagehide` ненадёжен, а
+     «скрыта» бывает и на минуту (переключился в другое приложение), поэтому
+     уход откладывается в localStorage и считается, только если человек
+     не вернулся за 30 минут (сессия Mixpanel/Amplitude): при следующем
+     заходе или возврате отложенный уход либо уходит, либо снимается. */
+  var EXIT_KEY = "mct-exit", SESSION_MS = 30 * 60 * 1000, gotValue = false;
+  try { gotValue = sessionStorage.getItem("mct-got") === "1"; } catch (e) { /* приватное окно */ }
+  function exitCode() {
+    var tb = window._mcat_tab;
+    return tb && token() ? "exit." + tb + "." + (gotValue ? "ok" : "none") : "";
+  }
+  function exitPark() {
+    var c = exitCode();
+    if (!c) return;
+    /* Номер пользователя — чтобы уход засчитался ТОМУ ЖЕ человеку: на общем
+       компьютере следующий вошедший — другой. Токен не годится: он живёт
+       в sessionStorage и после закрытия вкладки новый. */
+    var u = window._mcat_uid;
+    if (!u) return;
+    try { localStorage.setItem(EXIT_KEY, JSON.stringify({ c: c, at: now(), u: String(u) })); } catch (e) { /* приватное окно */ }
+  }
+  /* Разбирается, когда известно, кто сейчас вошёл (`_mcat_uid` ставит
+     приложение после /auth/me), — до этого отложенный уход ждёт. */
+  function exitSettle() {
+    try {
+      var p = JSON.parse(localStorage.getItem(EXIT_KEY) || "null");
+      if (!p) return;
+      var me = window._mcat_uid;
+      if (now() - p.at < SESSION_MS) {
+        if (visible()) localStorage.removeItem(EXIT_KEY);   // вернулся — не уход
+        return;
+      }
+      if (!me || !token()) return;                           // ещё не знаем, кто вошёл
+      localStorage.removeItem(EXIT_KEY);
+      if (p.c && p.u === String(me)) { lastUi = ""; ui(p.c); }
+    } catch (e) { /* приватное окно */ }
+  }
+
+  /* Откуда пришли: страница лендинга из `?from=` или переход с лендинга. */
+  /* Метка живёт в sessionStorage: между приходом и регистрацией человек
+     переключает экраны входа, а регистрация уносит её на сервер
+     (`srcPage`). Событие прихода — только в момент самого прихода. */
+  var entry = "", arrived = false;
+  try {
+    var fq = new URLSearchParams(location.search || "").get("from");
+    if (fq) { entry = /^(index|uz|en|start)$/.test(fq) ? fq : "other"; arrived = true; }
+    else if (/^https:\/\/click\.simpletranslate\.me/.test(document.referrer || "")) { entry = "landing"; arrived = true; }
+    /* Перезагрузка (смена языка, F5) с тем же `?from=` — не новый приход. */
+    if (arrived && sessionStorage.getItem("mct-entry-sent")) arrived = false;
+    if (entry) sessionStorage.setItem("mct-entry", entry);
+    else entry = sessionStorage.getItem("mct-entry") || "";
+    if (arrived) sessionStorage.setItem("mct-entry-sent", "1");
+  } catch (e) { /* приватное окно */ }
+  if (arrived) setTimeout(function () { lastUi = ""; ui("entry." + entry); }, 0);
 
   /* Скорость загрузки, устройство и язык — один раз на страницу. */
   window.addEventListener("load", function () {
@@ -186,9 +317,9 @@
     lastUi = "";
   });
 
-  window.addEventListener("pagehide", flush);
+  window.addEventListener("pagehide", function () { exitPark(); flush(); });
   document.addEventListener("visibilitychange", function () {
-    if (!visible()) { stopDwell(); flush(); } else { startDwell(); }
+    if (!visible()) { stopDwell(); exitPark(); flush(); } else { startDwell(); exitSettle(); }
   });
 
   window.TELEMETRY = {
@@ -202,5 +333,15 @@
              (err && err.message) || String(err), stack);
     },
     flush: flush,
+    /* api.js: привязка отказа к нажатию (см. claim/failed выше). */
+    claim: claim,
+    failed: failed,
+    /* Человек получил ценность (скачал перевод): уход после этого — успех. */
+    success: function () {
+      gotValue = true;
+      try { sessionStorage.setItem("mct-got", "1"); } catch (e) { /* приватное окно */ }
+    },
+    /* Откуда пришёл — регистрация уносит это на сервер. */
+    entry: function () { return entry; },
   };
 })();

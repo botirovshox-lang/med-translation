@@ -528,7 +528,7 @@ check(c.post("/api/client/beacon", content=b"not json",
              headers={"Content-Type": "application/json"}).status_code == 400,
       "мусор вместо JSON — 400, а не 500")
 main._BEACON_HITS.clear()
-codes = [c.post("/api/client/beacon", json={}).status_code for _ in range(main.BEACON_PER_MIN + 1)]
+codes = [c.post("/api/client/beacon", json={"ui": ["env.phone"]}).status_code for _ in range(main.BEACON_PER_MIN + 1)]
 check(codes[-1] == 429 and codes[0] == 200, "потолок запросов в минуту с сети работает")
 main._BEACON_HITS.clear()
 
@@ -625,7 +625,7 @@ c.post("/api/client/beacon", json={
 evc = main._metrics_events(main._events_rows(day, day))
 byc = {(r["tab"], r["h"]): r for r in evc["clicks"]}
 h = main._label_hash(lab)
-check(byc.get(("editor", h), {}).get("n") == 2 and byc[("editor", h)]["label"] == lab,
+check(byc.get(("editor", h), {}).get("n") == 1 and byc[("editor", h)]["label"] == lab,
       "клик назван надписью из словаря (кандидат с числом пропущен): " + str(evc["clicks"]))
 check(byc.get(("editor", "_"), {}).get("n") == 1,
       "надпись не из словаря — клик без имени: текст документа в учёт не попал")
@@ -633,7 +633,8 @@ check(not any("Каримов" in json.dumps(r, ensure_ascii=False) for r in evc
       "ни буквы текста клиента в счётчиках")
 check(("auth", h) in byc and byc[("auth", h)]["n"] == 1,
       "до входа принимается только экран входа")
-check(sum(r["n"] for r in evc["clicks"]) == 4, "чужой экран и анонимный клик по вкладке отброшены")
+check(sum(r["n"] for r in evc["clicks"]) == 3,
+      "чужой экран и анонимный клик по вкладке отброшены, «нервная» запись в знаменатель второй раз не идёт")
 check([(r["tab"], r["n"]) for r in evc["rage"]] == [("editor", 1)], "«нервный» клик посчитан отдельно")
 dw = {d["tab"]: d for d in evc["dwell"]}
 check(set(dw) == {"editor", "glossary"} and dw["editor"]["n"] == 1 and dw["editor"]["avgSec"] == 90.0,
@@ -693,6 +694,116 @@ check("ЧТО УЛУЧШИТЬ" in d4 and "ИНТЕРФЕЙС" in d4 and "ДЕН
 check("Что улучшить: поведенческих находок" in main._metrics_digest_text(dict(m4, suggest=[])),
       "нет находок — сказано словами, а не пустотой")
 main._BEACON_HITS.clear()
+
+print("=== 14. Лендинг: закрытые коды, свой Origin, своя квота, своя организация ===")
+main.metrics_mod.reset()
+main.STATE[main.EVENTS_KEY] = {}
+main._BEACON_HITS.clear()
+LO = {"Origin": main.LANDING_ORIGINS[0], "Content-Type": "text/plain"}
+body = json.dumps({"land": ["view:index", "scroll:25", "scroll:50", "cta:price-pro", "form.file",
+                            "form.submit", "form.err:tgt", "leave:50:nosub", "faq:3",
+                            "evil:<script>", "cta:anything", "view:index"]})
+check(c.post("/api/client/beacon", content=body, headers=LO).status_code == 200,
+      "лендинг шлёт text/plain — без предварительного запроса")
+c.post("/api/client/beacon", content=json.dumps({"land": ["view:uz"]}),
+       headers={"Origin": "https://evil.example", "Content-Type": "text/plain"})
+c.post("/api/client/beacon", content=json.dumps({"land": ["view:en"]}),
+       headers={"Content-Type": "text/plain"})
+evl2 = main._metrics_events(main._events_rows(day, day))
+L = evl2["land"]
+check(L.get("view:index") == 2 and "view:uz" not in L and "view:en" not in L,
+      "чужой Origin и запрос без Origin — выброшены: " + str(L))
+check("evil:<script>" not in json.dumps(L) and "cta:anything" not in L,
+      "коды лендинга — только из закрытого списка")
+rows14 = main._events_rows(day, day)
+check(all(r["tenant"] == main.LAND_TENANT for r in rows14 if r["code"].startswith("land.")),
+      "события лендинга — своей «организацией», не вперемешку с ошибками приложения")
+lv = main._landing_view(evl2)
+check(lv["total"] == 2 and lv["form"]["file"] == 1 and lv["form"]["errors"] == {"tgt": 1},
+      "сводка лендинга: просмотры, форма, ошибки")
+check([x["share"] for x in lv["scroll"]][:2] == [0.5, 0.5], "глубина прокрутки — долей просмотров")
+main._BEACON_HITS.clear()
+codes14 = [c.post("/api/client/beacon", content=json.dumps({"land": ["view:start"]}), headers=LO).status_code
+           for _ in range(main.LAND_PER_MIN + 3)]
+evl3 = main._metrics_events(main._events_rows(day, day))
+check(evl3["land"].get("view:start") == main.LAND_PER_MIN,
+      "у лендинга своя квота частоты: сверх неё события не пишутся")
+main._BEACON_HITS.clear()
+
+print("=== 14а. Кнопки: отказ после нажатия и нажатие без отклика ===")
+main.metrics_mod.reset()
+main.STATE[main.EVENTS_KEY] = {}
+lab2 = "Обновить"
+c.post("/api/client/beacon", headers=H(O2), json={"clicks": [
+    {"t": "editor", "c": [lab2]},
+    {"t": "editor", "c": [lab2], "kind": "fail", "s": 402},
+    {"t": "editor", "c": [lab2], "kind": "fail", "s": 401},
+    {"t": "editor", "c": [lab2], "kind": "fail", "s": 999},
+    {"t": "editor", "c": [lab2], "kind": "dead"},
+    {"t": "editor", "c": ["Пациент Каримов"], "kind": "dead"}]})
+evk = main._metrics_events(main._events_rows(day, day))
+check([(r["label"], r["status"], r["n"]) for r in evk["failClicks"]] == [(lab2, 402, 1)],
+      "отказ привязан к кнопке; истёкшая сессия и чужой статус — нет: " + str(evk["failClicks"]))
+check([(r["label"], r["n"]) for r in evk["deadClicks"]] == [(lab2, 1)],
+      "без отклика — только по надписи словаря")
+check(sum(r["n"] for r in evk["clicks"]) == 1, "отказ и «без отклика» не считаются лишними нажатиями")
+check(not evk["dead"], "«без отклика» не уезжает в тупики (`dead.` — их префикс): " + str(evk["dead"]))
+fr14 = main._friction_top(evk)
+check(fr14 and fr14[0]["label"] == lab2 and fr14[0]["score"] == 4 and fr14[0]["share"] == 1.0,
+      "рейтинг затруднений: отказ ×3 + без отклика ×1, доля от нажимавших: " + str(fr14))
+
+print("=== 14б. «Чего не хватает?»: за входом, не в STATE, удаляется ===")
+tmpfb = os.path.join(os.environ.get("TEMP", "/tmp"), "mct_fb_test.jsonl")
+main._feedback_path = lambda: main.Path(tmpfb)
+if os.path.exists(tmpfb):
+    os.remove(tmpfb)
+sent_tg = []
+if main.tg_mod:
+    main.tg_mod.notify_admin_async = lambda text, *a, **k: sent_tg.append(text)
+check(c.post("/api/feedback", json={"text": "хочу пачку файлов"}).status_code == 401,
+      "без входа — нельзя: это не вторая анонимная запись")
+snap2 = json.dumps({k: v for k, v in main.STATE.items() if k != main.EVENTS_KEY},
+                   ensure_ascii=False, default=str, sort_keys=True)
+r1 = c.post("/api/feedback", headers=H(O2), json={"text": "Хочу загрузить 10 файлов\x07 сразу" + "я" * 2000,
+                                                  "screen": "import"})
+check(r1.status_code == 200, "идея принята: " + r1.text[:80])
+check(json.dumps({k: v for k, v in main.STATE.items() if k != main.EVENTS_KEY},
+                 ensure_ascii=False, default=str, sort_keys=True) == snap2,
+      "в STATE не записано ничего — свой файл")
+fb = main._feedback_read()
+check(len(fb) == 1 and len(fb[0]["text"]) == main.FEEDBACK_MAX_CHARS and "\x07" not in fb[0]["text"]
+      and fb[0]["screen"] == "import" and fb[0]["tenant"] == "acme",
+      "текст обрезан, управляющие символы сняты, экран и организация на месте")
+check(not main.tg_mod or (sent_tg and len(sent_tg[-1]) < 420),
+      "владельцу в Telegram — обрезанным")
+check(c.post("/api/feedback", headers=H(O2), json={"text": "a"}).status_code == 400, "пустое — 400")
+m5 = c.get("/api/admin/metrics?days=7", headers=H(S)).json()
+check(m5["ideas"] and m5["ideas"][0]["tenantName"] == "Акме", "суперу идеи видны с названием организации")
+check(c.delete("/api/admin/feedback/" + fb[0]["id"], headers=H(O2)).status_code == 403,
+      "удалить может только суперпользователь")
+check(c.delete("/api/admin/feedback/" + fb[0]["id"], headers=H(S)).status_code == 200
+      and main._feedback_read() == [], "удаление по просьбе человека работает")
+main._FEEDBACK_HITS.clear()
+
+print("=== 14в. Источник регистрации и удержание ===")
+main.STATE["tenants"].append({"id": "fromland", "name": "С лендинга", "created": today,
+                              "active": True, "signup": True, "from": "start"})
+main.STATE["tenants"].append({"id": "weekold", "name": "Неделя", "created": today,
+                              "active": True, "signup": True, "filesSeen": ["a", "b"]})
+old_reg = time.time() - 8 * 86400
+main.STATE["users"] += [
+    {"id": 903, "tenant": "fromland", "login": "f@x", "emailVerified": True, "registeredAt": time.time()},
+    {"id": 904, "tenant": "weekold", "login": "w@x", "emailVerified": True, "registeredAt": old_reg,
+     "lastLogin": time.strftime("%Y-%m-%d %H:%M:%S")}]
+co2 = main._metrics_cohort(today, today)
+ret = co2["retention"]
+check(ret["d7Of"] == 1 and ret["d7"] == 1 and ret["d1Of"] >= 1,
+      "через неделю спрашивают только тех, кому неделя прошла: " + str(ret))
+check(ret["file2"] >= 1, "второй файл посчитан")
+srcs = {b["src"] for b in co2["bySource"]}
+check({"start", "direct"} <= srcs, "регистрации разложены по источнику: " + str(srcs))
+check(main.RegisterRequest(email="a@b.c", password="x", srcPage="start").srcPage == "start",
+      "регистрация принимает страницу-источник")
 
 
 print()

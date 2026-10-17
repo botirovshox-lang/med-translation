@@ -473,5 +473,8 @@
   ") разобраны на обычные страницы: ": ") were split into ordinary pages: ",
   " Страниц, лежавших боком, поставлено прямо: ": " Pages that lay sideways turned upright: ",
   " Страниц, собранных из листа целиком: ": " Pages built from the whole sheet: ",
-  "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "The file is being re-read with improved parsing rules — this takes a minute or two. Press «Translate» a little later"
+  "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "The file is being re-read with improved parsing rules — this takes a minute or two. Press «Translate» a little later",
+  "Напишите хотя бы пару слов": "Write at least a couple of words",
+  "Слишком много сообщений за час — попробуйте позже": "Too many messages this hour — try later",
+  "Не удалось сохранить сообщение — попробуйте ещё раз": "Could not save the message — try again"
 }

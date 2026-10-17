@@ -117,5 +117,81 @@ Date.now = realNow;
 const dw = sent[sent.length - 1].body.dwell || {};
 check(dw.glossary >= 65000 && dw.glossary < 66000, "время на вкладке посчитано: " + JSON.stringify(dw));
 
+console.log("=== 7. Без отклика, отказ после нажатия, уход ===");
+const observers = [];
+win.MutationObserver = function (cb) { this.cb = cb; observers.push(this); };
+win.MutationObserver.prototype.observe = function () {};
+win.MutationObserver.prototype.disconnect = function () {};
+ctx.document.body = {};
+const mkBtn = (label, match) => ({ textContent: label, getAttribute: () => null, disabled: false,
+                                   matches: () => !!match, closest: () => null });
+const allClicks = () => sent.reduce((a, x) => a.concat(x.body.clicks || []), []);
+const before7 = allClicks().length;
+clickOn(mkBtn("Сохранить"));
+tick(); tick();
+check(allClicks().slice(before7).some(r => r.kind === "dead" && r.c[0] === "Сохранить"),
+      "нажатие, после которого за секунду ничего не изменилось, — «без отклика»");
+const b2n = allClicks().length;
+clickOn(mkBtn("Применить"));
+observers[observers.length - 1].cb([]);
+tick(); tick();
+check(!allClicks().slice(b2n).some(r => r.kind === "dead"), "экран изменился — отклик был");
+const b3n = allClicks().length;
+clickOn(mkBtn("Выбрать файл", true));
+tick(); tick();
+check(!allClicks().slice(b3n).some(r => r.kind === "dead"), "выбор файла и поля законно не меняют экран — не считаем");
+clickOn(mkBtn("Перевести"));
+const cx = win.TELEMETRY.claim();
+check(cx && cx.c[0] === "Перевести", "запрос, начатый сразу после нажатия, привязан к кнопке");
+win.TELEMETRY.failed(cx, 402);
+win.TELEMETRY.failed(cx, 401);
+tick(); tick();
+const fl = allClicks().filter(r => r.kind === "fail");
+check(fl.length === 1 && fl[0].s === 402, "отказ 402 записан, истёкшая сессия — нет");
+check(!allClicks().some(r => r.kind === "dead" && r.c[0] === "Перевести"), "клик с запросом — не «без отклика»");
+const realNow2 = Date.now;
+let fk = realNow2();
+Date.now = () => fk;
+clickOn(mkBtn("Обновить"));
+fk += 1500;
+check(win.TELEMETRY.claim() === null, "фоновый запрос через 1,5 с к нажатию не прилипает");
+Date.now = realNow2;
+
+console.log("=== 8. Уход: отложен, тому же человеку, после 30 минут ===");
+const ls = {};
+win.localStorage = { getItem: k => (k in ls ? ls[k] : null), setItem: (k, v) => { ls[k] = String(v); },
+                     removeItem: k => { delete ls[k]; } };
+ctx.localStorage = win.localStorage;
+win._mcat_uid = 7; win._mcat_tab = "export";
+const realNow3 = Date.now;
+let t3 = realNow3();
+Date.now = () => t3;
+ctx.document.visibilityState = "hidden";
+(docListeners.visibilitychange || []).forEach(f => f());
+check(ls["mct-exit"] && JSON.parse(ls["mct-exit"]).c === "exit.export.none",
+      "ушёл, не получив перевода, — уход отложен: " + ls["mct-exit"]);
+ctx.document.visibilityState = "visible";
+t3 += 60000;
+(docListeners.visibilitychange || []).forEach(f => f());
+check(!ls["mct-exit"], "вернулся через минуту — это не уход");
+ctx.document.visibilityState = "hidden";
+(docListeners.visibilitychange || []).forEach(f => f());
+t3 += 31 * 60000;
+win._mcat_uid = 8;
+const nx = sent.length;
+win.TELEMETRY.flush();
+check(!sent.slice(nx).some(x => (x.body.ui || []).some(c => c.indexOf("exit.") === 0)),
+      "за компьютером другой человек — чужой уход ему не засчитан");
+ctx.document.visibilityState = "hidden";
+win._mcat_uid = 7;
+(docListeners.visibilitychange || []).forEach(f => f());
+t3 += 31 * 60000;
+ctx.document.visibilityState = "visible";
+win.TELEMETRY.success();
+win.TELEMETRY.flush(); tick();
+check(sent.slice(nx).some(x => (x.body.ui || []).indexOf("exit.export.none") >= 0),
+      "тот же человек не вернулся за полчаса — уход засчитан");
+Date.now = realNow3;
+
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВСЁ ПРОШЛО");
 process.exit(fail.length ? 1 : 0);

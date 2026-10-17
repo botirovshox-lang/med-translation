@@ -6332,6 +6332,9 @@ class RegisterRequest(BaseModel):
     # Неизвестный код молча игнорируется — чужая или устаревшая ссылка
     # не должна закрывать регистрацию.
     ref: str = ""
+    # С какой страницы лендинга пришли (`?from=` → telemetry.js). Закрытый
+    # список LAND_PAGES; чужое — «direct». Это метка для когорты, а не дверь.
+    srcPage: str = ""
 
 
 class CodeRequest(BaseModel):
@@ -6454,6 +6457,9 @@ def register(req: RegisterRequest, request: Request):
     today = datetime.now().strftime("%Y-%m-%d")
     tenant = {"id": tid, "name": (req.org or "").strip() or email.split("@")[0],
               "created": today, "active": True, "signup": True}
+    _src = (req.srcPage or "").strip().lower()
+    if _src in LAND_PAGES or _src == "landing":
+        tenant["from"] = _src
     # Метка происхождения пишется СРАЗУ и один раз, а платим по ней
     # только после подтверждения почты (`_referral_on_verified`): организация
     # заводится до письма, и начисление здесь раздавало бы страницы за адрес,
@@ -6532,6 +6538,7 @@ def register(req: RegisterRequest, request: Request):
         CURRENT_SESSION.reset(tok)
     # Верх воронки ДО первого файла (инвариант 34, «путь с регистрации»).
     _ev("funnel.signup", tid)
+    _ev("funnel.signupFrom:" + (tenant.get("from") or "direct"), tid)
     save_state(STATE)
     # Письмо — из фонового потока, как у /resend и /forgot. `mailSent` теперь
     # значит «почта настроена, письмо поставлено»: сбой самой отправки уходит
@@ -8295,6 +8302,7 @@ def _metrics_events(rows: list) -> dict:
     routes, errs, caps, waste, prov = {}, {}, {}, {}, {}
     dead, funnel, js, ui = {}, {}, {}, {}
     clicks, rage, dwell, perf = {}, {}, {}, {}
+    deadc, failc, landc, voc = {}, {}, {}, {}
     by_tenant_caps, by_tenant_dead, by_tenant_funnel = {}, {}, {}
     for r in rows:
         code, n = r["code"], r.get("n") or 0
@@ -8351,7 +8359,15 @@ def _metrics_events(rows: list) -> dict:
             k, _, b = code[5:].partition(":")
             perf.setdefault(k, {})
             perf[k][b] = perf[k].get(b, 0) + n
-    labels = _ui_labels() if (clicks or rage) else {}
+        elif code.startswith("nores."):
+            deadc[code[6:]] = deadc.get(code[6:], 0) + n
+        elif code.startswith("fail."):
+            failc[code[5:]] = failc.get(code[5:], 0) + n
+        elif code.startswith("land."):
+            landc[code[5:]] = landc.get(code[5:], 0) + n
+        elif code.startswith("voc."):
+            voc[code[4:]] = voc.get(code[4:], 0) + n
+    labels = _ui_labels() if (clicks or rage or deadc or failc) else {}
 
     def _click_rows(src, top):
         out = []
@@ -8385,12 +8401,22 @@ def _metrics_events(rows: list) -> dict:
             "ui": sorted([{"code": k, "n": v} for k, v in ui.items()],
                          key=lambda d: (-d["n"], d["code"])),
             "clicks": _click_rows(clicks, 40), "rage": _click_rows(rage, 20),
+            # Знаменатель рейтинга затруднений — ВСЕ кнопки, а не верхние 40:
+            # иначе у кнопки вне верха доля пропадала бы, а отказы читались
+            # бы как «100% неудач».
+            "clicksAll": _click_rows(clicks, 10 ** 6),
             "clicksByTab": {t: sum(v for k, v in clicks.items() if k.split(":", 1)[0] == t)
                             for t in sorted({k.split(":", 1)[0] for k in clicks})},
             "dwell": sorted([{"tab": t, "n": v[0], "avgSec": round(v[1] / v[0] / 1000.0, 1) if v[0] else 0.0,
                               "totalMin": round(v[1] / 60000.0, 1)} for t, v in dwell.items()],
                             key=lambda d: -d["totalMin"]),
-            "perf": perf}
+            "perf": perf,
+            "deadClicks": _click_rows(deadc, 30),
+            "failClicks": [dict(r, status=int(r["h"].rsplit(":", 1)[1]) if ":" in r["h"] else 0,
+                                h=r["h"].rsplit(":", 1)[0],
+                                label=labels.get(r["h"].rsplit(":", 1)[0], ""))
+                           for r in _click_rows(failc, 30)],
+            "land": landc, "voc": voc}
 
 
 # Порог «организация молчит»: дней без единого прогона при живом остатке
@@ -8588,6 +8614,208 @@ SUGGEST_AREAS = (("ux", "ИНТЕРФЕЙС (UX/UI)"), ("speed", "СКОРОСТ
                  ("money", "ДЕНЬГИ (монетизация)"))
 
 
+# ─── Где затрудняются: один рейтинг по кнопкам ──────────────────────
+# Три сигнала по кнопке (каждый — сессиями, а не кликами): «нервный» клик,
+# клик без отклика и клик, закончившийся отказом сервера. Вес — по тяжести:
+# отказ (человек сделал всё, а мы не дали) 3, нервный 2, без отклика 1.
+# Доля — от сессий, нажимавших эту кнопку: 5 отказов из 6 нажатий и 5 из 500 —
+# разные беды.
+FRICTION_WEIGHT = {"fail": 3, "rage": 2, "dead": 1}
+
+
+def _friction_top(ev: dict, n: int = 15) -> list:
+    rows = {}
+
+    def put(r, kind, k=1):
+        key = (r["tab"], r["h"])
+        d = rows.setdefault(key, {"tab": r["tab"], "label": r.get("label") or "", "clicks": 0,
+                                  "fail": 0, "rage": 0, "dead": 0, "statuses": {}})
+        d[kind] += r["n"] * k
+        if kind == "fail":
+            d["statuses"][str(r.get("status"))] = d["statuses"].get(str(r.get("status")), 0) + r["n"]
+    for r in ev.get("failClicks") or []:
+        put(r, "fail")
+    for r in ev.get("rage") or []:
+        put(r, "rage")
+    for r in ev.get("deadClicks") or []:
+        put(r, "dead")
+    for r in ev.get("clicksAll") or ev.get("clicks") or []:
+        d = rows.get((r["tab"], r["h"]))
+        if d is not None:
+            d["clicks"] += r["n"]
+    out = []
+    for d in rows.values():
+        if not d["label"]:
+            continue
+        d["score"] = sum(d[k] * w for k, w in FRICTION_WEIGHT.items())
+        bad = d["fail"] + d["rage"] + d["dead"]
+        d["share"] = round(min(1.0, bad / d["clicks"]), 2) if d["clicks"] else None
+        out.append(d)
+    out.sort(key=lambda d: (-d["score"], d["tab"], d["label"]))
+    return out[:n]
+
+
+def _landing_view(ev: dict) -> dict:
+    """Лендинг словами-числами: просмотры по страницам, докуда дочитывают,
+    что нажимают, воронка формы, где уходят и сколько дошло до приложения."""
+    L = ev.get("land") or {}
+    ui = {d["code"]: d["n"] for d in ev.get("ui") or []}
+    fr = ev.get("funnelRaw") or {}
+    views = {p: L.get("view:" + p, 0) for p in LAND_PAGES if L.get("view:" + p)}
+    v = sum(views.values())
+
+    def pct(x):
+        return round(x / v, 3) if v else None
+    return {
+        "views": views, "total": v,
+        "scroll": [{"m": m, "n": L.get("scroll:%d" % m, 0), "share": pct(L.get("scroll:%d" % m, 0))}
+                   for m in (25, 50, 75, 100)],
+        "cta": sorted([{"code": k[4:], "n": c} for k, c in L.items() if k.startswith("cta:")],
+                      key=lambda d: (-d["n"], d["code"])),
+        "faq": sorted([{"q": int(k[4:]), "n": c} for k, c in L.items() if k.startswith("faq:")],
+                      key=lambda d: (-d["n"], d["q"])),
+        "tabs": sorted([{"code": k[4:], "n": c} for k, c in L.items() if k.startswith("tab:")],
+                       key=lambda d: -d["n"]),
+        "form": {"file": L.get("form.file", 0), "submit": L.get("form.submit", 0),
+                 "handoffOk": L.get("form.handoff_ok", 0), "handoffFail": L.get("form.handoff_fail", 0),
+                 "errors": {k[9:]: c for k, c in L.items() if k.startswith("form.err:")}},
+        "leave": sorted([{"m": int(k.split(":")[1]), "sub": k.split(":")[2] == "sub", "n": c}
+                         for k, c in L.items() if k.startswith("leave:")],
+                        key=lambda d: (d["sub"], d["m"])),
+        "perf": {k[5:]: c for k, c in L.items() if k.startswith("perf:")},
+        # Дошли до приложения и зарегистрировались — по меткам источника.
+        "entry": {k[6:]: c for k, c in ui.items() if k.startswith("entry.")},
+        "signupFrom": {k[11:]: c for k, c in fr.items() if k.startswith("signupFrom:")},
+    }
+
+
+# ─── «Чего не хватает?»: голос клиента (HEART, Happiness) ──────────
+# Свободный текст человека — НЕ в STATE: `state.json` переписывается целиком
+# на каждое сохранение (инвариант 2), и кольцо идей на сотни килобайт было бы
+# платой на каждую правку строки. Лежит строками JSON в своём файле в data/
+# (пишет только API, под локом, файл подрезается), суперпользователю — экраном,
+# владельцу сервиса — в Telegram обрезанным. Кода события из текста нет: только
+# `voc.idea`.
+FEEDBACK_MAX_CHARS = 1000
+FEEDBACK_KEEP = 1000
+FEEDBACK_PER_HOUR = 10
+_FEEDBACK_LOCK = threading.Lock()
+_FEEDBACK_HITS: dict = {}
+_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _feedback_path():
+    return Path(DATA_DIR) / "feedback.jsonl"
+
+
+def _feedback_read() -> list:
+    try:
+        with _FEEDBACK_LOCK:
+            lines = _feedback_path().read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        print("[feedback] не прочитан: %s" % e, file=sys.stderr)
+        return []
+    out = []
+    for ln in lines:
+        try:
+            out.append(json.loads(ln))
+        except Exception:
+            continue
+    return out
+
+
+def _feedback_write_all(rows: list) -> None:
+    p = _feedback_path()
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in rows), encoding="utf-8")
+    os.replace(tmp, p)
+
+
+class FeedbackRequest(BaseModel):
+    text: str
+    screen: str = ""
+
+
+@app.post("/api/feedback")
+def feedback_send(req: FeedbackRequest, request: Request):
+    """«Чего не хватает?» — идея человека. За входом, потолок на человека,
+    без вызова модели. Бесплатно и на исчерпанном лимите (инвариант 15)."""
+    me = _current_user(request)
+    text = _CTRL_RE.sub("", req.text or "").strip()[:FEEDBACK_MAX_CHARS]
+    if len(text) < 3:
+        raise HTTPException(400, "Напишите хотя бы пару слов")
+    now = time.time()
+    key = str(me.get("id"))
+    with _FEEDBACK_LOCK:
+        hits = [x for x in _FEEDBACK_HITS.get(key, []) if now - x < 3600]
+        if len(hits) >= FEEDBACK_PER_HOUR:
+            raise HTTPException(429, "Слишком много сообщений за час — попробуйте позже")
+        hits.append(now)
+        _FEEDBACK_HITS[key] = hits
+    scr = req.screen if req.screen in _UI_TABS else ""
+    tenant = _current_tenant()
+    rec = {"id": secrets.token_hex(6), "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+           "tenant": tenant, "user": me.get("id"), "screen": scr, "text": text}
+    try:
+        with _FEEDBACK_LOCK:
+            p = _feedback_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            # Подрезка — изредка, когда файл заметно перерос потолок.
+            if p.stat().st_size > FEEDBACK_KEEP * 1500:
+                rows = []
+                for ln in p.read_text(encoding="utf-8").splitlines()[-FEEDBACK_KEEP:]:
+                    try:
+                        rows.append(json.loads(ln))
+                    except Exception:
+                        pass
+                _feedback_write_all(rows)
+    except Exception as e:
+        print("[feedback] не записан: %s" % e, file=sys.stderr)
+        raise HTTPException(503, "Не удалось сохранить сообщение — попробуйте ещё раз")
+    _ev("voc.idea", tenant)
+    if tg_mod:
+        org = (_tenant_rec(tenant) or {}).get("name") or tenant
+        tg_mod.notify_admin_async("💡 Чего не хватает — «%s»%s:\n%s" % (
+            org, (", экран " + scr) if scr else "", text[:300] + ("…" if len(text) > 300 else "")))
+    return {"ok": True}
+
+
+def _feedback_recent(day_from: str, n: int = 50) -> list:
+    rows = [r for r in _feedback_read() if (r.get("at") or "")[:10] >= day_from]
+    names = {t["id"]: t.get("name") or t["id"] for t in _tenants()}
+    out = []
+    for r in reversed(rows[-n:]):
+        out.append(dict(r, tenantName=names.get(r.get("tenant"), r.get("tenant"))))
+    return out
+
+
+@app.delete("/api/admin/feedback/{fid}")
+def admin_feedback_delete(fid: str, request: Request):
+    """Удалить сообщение (по просьбе человека — политика, п. 6.3)."""
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Только суперпользователю")
+    with _FEEDBACK_LOCK:
+        rows = []
+        try:
+            for ln in _feedback_path().read_text(encoding="utf-8").splitlines():
+                try:
+                    rows.append(json.loads(ln))
+                except Exception:
+                    pass
+        except FileNotFoundError:
+            pass
+        keep = [r for r in rows if r.get("id") != fid]
+        if len(keep) == len(rows):
+            raise HTTPException(404, "Нет такого сообщения")
+        _feedback_write_all(keep)
+    return {"ok": True}
+
+
 def _metrics_suggest(ev: dict, cohort: Optional[dict] = None) -> list:
     out = []
     ui = {d["code"]: d["n"] for d in ev.get("ui") or []}
@@ -8674,6 +8902,63 @@ def _metrics_suggest(ev: dict, cohort: Optional[dict] = None) -> list:
         st = {d["code"]: d["n"] for d in cohort.get("steps") or []}
         if st.get("export", 0) >= 3 and not st.get("paid"):
             out.append({"area": "money", "code": "exportNoPay", "n": st["export"]})
+
+    # ── Где затрудняются: рейтинг кнопок (`_friction_top`) ──
+    for d in _friction_top(ev, 5):
+        if d["fail"] >= 3:
+            st = max(d["statuses"].items(), key=lambda kv: kv[1])[0] if d["statuses"] else "?"
+            out.append({"area": "ux", "code": "failClick", "n": d["fail"], "of": d["clicks"] or d["fail"],
+                        "label": d["label"], "tab": d["tab"], "status": st})
+        elif d["dead"] >= SUGGEST_MIN and d["share"] is not None and d["share"] >= 0.3:
+            out.append({"area": "ux", "code": "deadClick", "n": d["dead"], "of": d["clicks"],
+                        "label": d["label"], "tab": d["tab"]})
+    # Уход со страницы, НЕ получив перевода: с какой вкладки чаще всего.
+    exits = {}
+    for c, v in ui.items():
+        if c.startswith("exit."):
+            _, t, r = c.split(".")
+            e = exits.setdefault(t, {"ok": 0, "none": 0})
+            e[r] += v
+    tot_none = sum(e["none"] for e in exits.values())
+    tot_all = sum(e["none"] + e["ok"] for e in exits.values())
+    if tot_all >= 20 and exits:
+        t, e = max(exits.items(), key=lambda kv: (kv[1]["none"], kv[0]))
+        if tot_none and e["none"] >= max(1, SUGGEST_MIN) and e["none"] / tot_none >= 0.4:
+            out.append({"area": "ux", "code": "exitNoValue", "n": e["none"], "of": tot_none, "tab": t})
+    # Удержание (HEART, Retention).
+    if cohort:
+        ret = cohort.get("retention") or {}
+        if ret.get("d7Of", 0) >= 10 and ret["d7"] / ret["d7Of"] < 0.2:
+            out.append({"area": "money", "code": "retentionLow", "n": ret["d7"], "of": ret["d7Of"]})
+        if ret.get("fileOf", 0) >= 10 and ret["file2"] / ret["fileOf"] < 0.3:
+            out.append({"area": "money", "code": "secondFileLow", "n": ret["file2"], "of": ret["fileOf"]})
+    # Голос клиента: идеи надо ЧИТАТЬ — правило лишь напоминает, что они есть.
+    voc = int((ev.get("voc") or {}).get("idea") or 0)
+    if voc:
+        out.append({"area": "ux", "code": "ideas", "n": voc})
+
+    # ── Лендинг (числа «примерно»: дверь публичная) ──
+    lv = _landing_view(ev)
+    lvt = lv["total"]
+    if lvt >= 30:
+        half = next((x["n"] for x in lv["scroll"] if x["m"] == 50), 0)
+        if half / lvt < 0.4:
+            out.append({"area": "ux", "code": "landScroll", "n": half, "of": lvt})
+        f = lv["form"]
+        if f["file"] / lvt < 0.05:
+            out.append({"area": "money", "code": "landFormLow", "n": f["file"], "of": lvt})
+    f = lv["form"]
+    errs = sum(f["errors"].values())
+    if f["submit"] + errs >= SUGGEST_MIN and errs / (f["submit"] + errs) >= 0.3:
+        top = max(f["errors"].items(), key=lambda kv: kv[1])[0]
+        out.append({"area": "ux", "code": "landFormErr", "n": errs, "of": f["submit"] + errs, "name": top})
+    ho = f["handoffOk"] + f["handoffFail"]
+    if ho >= SUGGEST_MIN and f["handoffFail"] / ho >= 0.2:
+        out.append({"area": "speed", "code": "landHandoff", "n": f["handoffFail"], "of": ho})
+    land_sub = f["submit"]
+    land_signup = sum(v for k, v in lv["signupFrom"].items() if k != "direct")
+    if land_sub >= 10 and land_signup / land_sub < 0.3:
+        out.append({"area": "money", "code": "landToSignup", "n": land_signup, "of": land_sub})
     return out
 
 
@@ -8719,6 +9004,30 @@ METRICS_SUGGEST_TEXT = {
     "bigTier": "Файл не взяли из-за размера %(n)d раз — заведите тариф для больших документов.",
     "exportNoPay": "%(n)d новых клиентов уже скачали перевод и ни разу не платили. "
                    "Это время предложить пакет: ценность они увидели.",
+    "failClick": "«%(label)s» (экран %(tab)s): %(n)d сессий нажали и получили отказ "
+                 "(чаще всего %(status)s) из %(of)d нажимавших. Человек сделал всё правильно, "
+                 "а мы не дали: объясните причину до нажатия или уберите преграду.",
+    "deadClick": "«%(label)s» (экран %(tab)s): в %(n)d сессиях из %(of)d нажатие ничего не "
+                 "изменило на экране. Кнопка выглядит рабочей, но не отвечает — дайте видимый отклик.",
+    "exitNoValue": "Чаще всего уходят, не получив перевода, с экрана %(tab)s: %(n)d из %(of)d "
+                   "таких уходов. Посмотрите этот экран глазами новичка: что на нём неясно?",
+    "retentionLow": "Через неделю вернулись %(n)d из %(of)d зарегистрировавшихся. Напомните о "
+                    "себе письмом с готовым переводом и предложением следующего файла.",
+    "secondFileLow": "Второй файл принесли %(n)d из %(of)d принёсших первый. Первый результат "
+                     "не убедил — спросите их, что было не так, и проверьте качество первых переводов.",
+    "ideas": "Пришло предложений «Чего не хватает?»: %(n)d. Прочтите их на вкладке «Метрики» — "
+             "это прямой список того, за что готовы платить.",
+    "landScroll": "Лендинг: до середины страницы доходят %(n)d из %(of)d просмотров. "
+                  "Главное (форма, цена, пример) должно стоять выше.",
+    "landFormLow": "Лендинг: файл в форму выбрали %(n)d раз на %(of)d просмотров. Форма не "
+                   "заметна или не вызывает доверия: поднимите её, добавьте «первая страница бесплатно».",
+    "landFormErr": "Лендинг: форма отказала %(n)d раз из %(of)d попыток (чаще всего «%(name)s»). "
+                   "Сделайте ошибку невозможной: язык перевода по умолчанию, понятный потолок размера.",
+    "landHandoff": "Лендинг: файл не доехал в приложение %(n)d раз из %(of)d — человек выбирает "
+                   "файл заново. Проверьте передачу (фрейм /handoff) в Safari и на телефоне.",
+    "landToSignup": "С формы лендинга ушли в приложение %(of)d раз, зарегистрировались %(n)d. "
+                    "Регистрация между формой и переводом теряет людей: упростите её или дайте "
+                    "перевести первую страницу до регистрации.",
 }
 
 
@@ -9013,6 +9322,8 @@ def _metrics_cohort(day_from: str, day_to: str) -> dict:
     counts = dict.fromkeys(COHORT_STEPS, 0)
     waits = {"upload": [], "run": [], "export": [], "paid": []}
     rows = []
+    ret = {"d1": 0, "d1Of": 0, "d7": 0, "d7Of": 0, "file2": 0, "fileOf": 0}
+    by_src = {}
     for t in tens:
         u = owner.get(t["id"]) or {}
         fa = t.get("firstAt") or {}
@@ -9033,11 +9344,39 @@ def _metrics_cohort(day_from: str, day_to: str) -> dict:
         for c in waits:
             if reg and fa.get(c):
                 waits[c].append(max(0.0, (fa[c] - reg) / 3600.0))
+        # Удержание (HEART, Retention): вернулся ли человек через день и через
+        # неделю. Мера — последний вход ПОЗЖЕ регистрации на сутки/неделю;
+        # «через неделю» спрашивается только у тех, кому неделя уже прошла,
+        # иначе свежие регистрации тянули бы долю к нулю.
+        last = None
+        try:
+            if u.get("lastLogin"):
+                last = datetime.strptime(u["lastLogin"], "%Y-%m-%d %H:%M:%S").timestamp()
+        except Exception:
+            last = None
+        if reg:
+            age = time.time() - reg
+            if age >= 86400:
+                ret["d1Of"] += 1
+                ret["d1"] += 1 if (last and last - reg >= 86400) else 0
+            if age >= 7 * 86400:
+                ret["d7Of"] += 1
+                ret["d7"] += 1 if (last and last - reg >= 7 * 86400) else 0
+        # Второй файл — главный признак «ценность получена» (первый файл
+        # приносят и из любопытства).
+        if got["upload"]:
+            ret["fileOf"] += 1
+            ret["file2"] += 1 if (len(ps) >= 2 or len(t.get("filesSeen") or []) >= 2) else 0
+        src = t.get("from") or "direct"
+        b = by_src.setdefault(src, dict.fromkeys(COHORT_STEPS, 0))
+        for c in COHORT_STEPS:
+            b[c] += 1 if got[c] else 0
         rows.append({"tenant": t["id"], "name": t.get("name") or t["id"],
                      "login": u.get("login") or "", "created": t.get("created") or "",
                      "stage": [c for c in COHORT_STEPS if got[c]][-1],
                      "steps": [c for c in COHORT_STEPS if got[c]],
-                     "lastLogin": u.get("lastLogin"), "active": t.get("active", True)})
+                     "lastLogin": u.get("lastLogin"), "active": t.get("active", True),
+                     "from": t.get("from") or "direct"})
     rows.sort(key=lambda r: (r["created"], r["tenant"]), reverse=True)
 
     def med(v):
@@ -9046,6 +9385,9 @@ def _metrics_cohort(day_from: str, day_to: str) -> dict:
     return {"n": len(tens),
             "steps": [{"code": c, "n": counts[c]} for c in COHORT_STEPS],
             "medianHours": {c: med(v) for c, v in waits.items()},
+            "retention": ret,
+            "bySource": [{"src": k, "steps": [{"code": c, "n": v[c]} for c in COHORT_STEPS]}
+                         for k, v in sorted(by_src.items(), key=lambda kv: (-kv[1]["signup"], kv[0]))],
             "rows": rows[:COHORT_ROWS]}
 
 
@@ -9092,10 +9434,55 @@ UI_EVENTS = frozenset(
     + ["support.open." + t for t in _UI_TABS]
     + ["auth." + m for m in _AUTH_MODES]
     + ["env.phone", "env.tablet", "env.desktop"]
-    + ["lang." + c for c in UI_LANGS])
-# До входа экранов нет, но есть ДВЕРЬ: какой экран входа открыт, устройство
-# и язык. Только эти коды принимаются без сессии.
-UI_ANON = frozenset(c for c in UI_EVENTS if c.split(".", 1)[0] in ("auth", "env", "lang"))
+    + ["lang." + c for c in UI_LANGS]
+    # Откуда пришли: страница лендинга (`?from=`) или просто переход с него.
+    + ["entry." + p for p in ("index", "uz", "en", "start", "other", "landing")]
+    # Уход со страницы: с какой вкладки и успел ли получить перевод.
+    + ["exit.%s.%s" % (t, r) for t in _UI_TABS for r in ("ok", "none")])
+# До входа экранов нет, но есть ДВЕРЬ: какой экран входа открыт, устройство,
+# язык и откуда пришли. Только эти коды принимаются без сессии.
+UI_ANON = frozenset(c for c in UI_EVENTS
+                    if c.split(".", 1)[0] in ("auth", "env", "lang", "entry"))
+# Страницы лендинга — источник регистрации (`RegisterRequest.srcPage`).
+LAND_PAGES = ("index", "uz", "en", "start", "other")
+# ─── Лендинг (инвариант 34, п. 19): закрытый список, свой потолок ───
+# Шлёт `landing/track.js` через nginx лендинга (тот же адрес, без CORS).
+# Коды перечислены ЗДЕСЬ, а не выводятся из присланного: посторонний не может
+# завести строку в таблице событий. Числа лендинга можно накрутить (дверь
+# публичная) — на экране они названы «примерно», и денежных решений по ним
+# машина не принимает.
+LAND_CTAS = ("nav-open", "demo-upload", "demo-calc", "price-start", "price-pro",
+             "price-volume", "contact-upload", "login", "app", "anchor")
+LAND_EVENTS = frozenset(
+    ["view:" + p for p in LAND_PAGES]
+    + ["perf:" + b for b in ("lt1", "1to3", "3to7", "gt7")]
+    + ["scroll:%d" % m for m in (25, 50, 75, 100)]
+    + ["cta:" + c for c in LAND_CTAS]
+    + ["faq:%d" % i for i in range(1, 21)]
+    + ["tab:" + k for k in ("book", "paper", "video", "scan")]
+    + ["lens:%d" % i for i in range(10)]
+    + ["lang:" + c for c in UI_LANGS]
+    + ["form.file", "form.submit", "form.handoff_ok", "form.handoff_fail"]
+    + ["form.err:" + k for k in ("big", "tgt", "same", "other")]
+    + ["leave:%d:%s" % (m, s) for m in (0, 25, 50, 75, 100) for s in ("sub", "nosub")])
+LAND_PER_MIN = int(os.environ.get("BEACON_LAND_PER_MIN", "60"))
+BEACON_MAX_LAND = 30
+# Организация, под которой лежат события лендинга: у посетителя её нет,
+# а пустая строка смешала бы их с анонимными ошибками приложения.
+LAND_TENANT = "landing"
+# Статусы отказа, которые привязываются к нажатию (`fail.*`). 401 — истёкшая
+# сессия, 429 — частота: это не «кнопка не сработала».
+FAIL_STATUSES = frozenset((400, 402, 403, 404, 409, 413, 415, 422, 500, 502, 503, 504, 507))
+
+
+def _landing_origin_ok(request: Request) -> bool:
+    """Слабый фильтр, а не защита: Origin/Referer подделывает любой скрипт
+    вне браузера. Отсекает только случайный мусор и чужие страницы."""
+    o = (request.headers.get("origin") or "").rstrip("/")
+    if o:
+        return o in LANDING_ORIGINS
+    ref = request.headers.get("referer") or ""
+    return any(ref.startswith(x + "/") or ref == x for x in LANDING_ORIGINS)
 # Куда клик может прийтись. «auth» — экран входа (до сессии).
 _CLICK_TABS = frozenset(_UI_TABS + ("auth",))
 BEACON_MAX_CLICKS = 30
@@ -9173,7 +9560,8 @@ def _js_file_code(raw) -> str:
     return name if name in _JS_FILE_SET else "other"
 
 
-def _beacon_allowed(ip: str) -> bool:
+def _beacon_allowed(ip: str, limit: Optional[int] = None) -> bool:
+    limit = limit or BEACON_PER_MIN
     now = time.time()
     with _BEACON_LOCK:
         if ip not in _BEACON_HITS and len(_BEACON_HITS) >= BEACON_IPS_MAX:
@@ -9187,7 +9575,7 @@ def _beacon_allowed(ip: str) -> bool:
             if len(_BEACON_HITS) >= BEACON_IPS_MAX:
                 return False
         hits = [x for x in _BEACON_HITS.get(ip, []) if now - x < 60]
-        if len(hits) >= BEACON_PER_MIN:
+        if len(hits) >= limit:
             _BEACON_HITS[ip] = hits
             return False
         hits.append(now)
@@ -9206,8 +9594,6 @@ async def client_beacon(request: Request):
     Порядок несущий: частота и объявленный размер — ДО чтения тела, а тело
     читается потоком с обрывом на потолке. Иначе аноним заставлял бы
     единственный воркер держать в памяти тела до потолка nginx (50 МБ)."""
-    if not _beacon_allowed(_rate_ip(request)):
-        return JSONResponse({"ok": False}, status_code=429)
     try:
         if int(request.headers.get("content-length") or 0) > BEACON_MAX_BYTES:
             return JSONResponse({"ok": False}, status_code=413)
@@ -9225,6 +9611,14 @@ async def client_beacon(request: Request):
         return JSONResponse({"ok": False}, status_code=400)
     if not isinstance(body, dict):
         return JSONResponse({"ok": False}, status_code=400)
+    # Квоты РАЗДЕЛЬНЫЕ: тело лендинга тратит только квоту лендинга, тело
+    # приложения — только общую. Общая на всех съедала бы ошибки приложения
+    # трафиком лендинга (и наоборот) за одним NAT мобильного оператора.
+    # Частота проверяется до разбора по частям, но после чтения тела —
+    # тело уже ограничено потолком байт.
+    app_part = any(body.get(k) for k in ("errors", "ui", "clicks", "dwell", "perf"))
+    if app_part and not _beacon_allowed(_rate_ip(request)):
+        return JSONResponse({"ok": False}, status_code=429)
     auth = request.headers.get("authorization") or ""
     sess = _session_of(auth[7:].strip() if auth.lower().startswith("bearer ") else "")
     tenant = (sess or {}).get("tenant") or ""
@@ -9252,6 +9646,15 @@ async def client_beacon(request: Request):
         with _BEACON_LOCK:
             _CLIENT_ERRORS.append(rec)
             del _CLIENT_ERRORS[:-CLIENT_ERR_RING_MAX]
+    # Лендинг — своя квота частоты (его трафик больше, чем у приложения,
+    # и общая квота отнимала бы её у ошибок приложения), свой список кодов
+    # и своя «организация». Без своего Origin события молча выбрасываются.
+    land = body.get("land")
+    if isinstance(land, list) and land:
+        if _landing_origin_ok(request) and _beacon_allowed("L|" + _rate_ip(request), LAND_PER_MIN):
+            for c in land[:BEACON_MAX_LAND]:
+                if isinstance(c, str) and c in LAND_EVENTS:
+                    _ev("land." + c, LAND_TENANT)
     allowed = UI_EVENTS if sess else UI_ANON
     for c in (body.get("ui") or [])[:BEACON_MAX_UI]:
         if isinstance(c, str) and c in allowed:
@@ -9295,9 +9698,33 @@ async def client_beacon(request: Request):
                 if x in labels:
                     h = x
                     break
+        # Вид записи: обычное нажатие, «без отклика» (за секунду на экране
+        # ничего не изменилось и запроса не было) или «отказ» (запрос,
+        # начатый этим нажатием, получил ошибку сервера). Браузер шлёт
+        # каждое не чаще раза за сессию страницы на кнопку — счёт выходит
+        # «сессиями», а не кликами одного раздражённого человека.
+        kind = k.get("kind")
+        if kind == "dead":
+            if h != "_":
+                # `nores.`, а не `dead.`: тот префикс занят тупиками (код,
+                # которого у нас нет), и клик уехал бы в «Возможности».
+                _ev("nores.%s:%s" % (tab, h), tenant)
+            continue
+        if kind == "fail":
+            try:
+                st = int(k.get("s") or 0)
+            except (TypeError, ValueError):
+                st = 0
+            if h != "_" and st in FAIL_STATUSES:
+                _ev("fail.%s:%s:%d" % (tab, h, st), tenant)
+            continue
+        # «Нервная» запись приходит ПОСЛЕ обычной (первое нажатие серии),
+        # поэтому второй раз в знаменатель «нажимали» её не кладём.
+        if k.get("rage"):
+            if h != "_":
+                _ev("rage.%s:%s" % (tab, h), tenant)
+            continue
         _ev("click.%s:%s" % (tab, h), tenant)
-        if k.get("rage") and h != "_":
-            _ev("rage.%s:%s" % (tab, h), tenant)
     return {"ok": True, "errors": got}
 
 
@@ -9352,6 +9779,11 @@ def admin_metrics(request: Request, days: int = 7):
         "clicks": ev["clicks"], "rage": ev["rage"], "clicksByTab": ev["clicksByTab"],
         "dwell": ev["dwell"], "perf": ev["perf"],
         "suggest": _metrics_suggest(ev, cohort),
+        # Где затрудняются (кнопки), лендинг и голос клиента.
+        "friction": _friction_top(ev),
+        "deadClicks": ev["deadClicks"], "failClicks": ev["failClicks"],
+        "landing": _landing_view(ev),
+        "ideas": _feedback_recent(day_from),
         "hints": _metrics_hints(days, tenants, ev, quotes, cohort),
         "eventsPending": (metrics_mod.pending() if metrics_mod else 0),
         "store": STORE.kind,
@@ -9578,6 +10010,30 @@ def _metrics_digest_text(d: dict) -> str:
         L.append(title)
         for h in mine[:12]:
             L.append("• " + _hint_line(h))
+    # Где затрудняются — три верхние кнопки рейтинга; и голос клиента.
+    fr_top = [f for f in (d.get("friction") or [])[:3]]
+    if fr_top:
+        L.append("")
+        L.append("ГДЕ ЗАТРУДНЯЮТСЯ (кнопки, сессиями)")
+        for f in fr_top:
+            L.append("• «%s» (экран %s): отказ %d, нервные %d, без отклика %d из %d нажимавших."
+                     % (f["label"], f["tab"], f["fail"], f["rage"], f["dead"], f["clicks"]))
+    ideas = d.get("ideas") or []
+    if ideas:
+        L.append("")
+        L.append("ЧЕГО НЕ ХВАТАЕТ (сами написали): %d" % len(ideas))
+        for r in ideas[:5]:
+            t = " ".join((r.get("text") or "").split())
+            L.append("• «%s»: %s" % (r.get("tenantName") or r.get("tenant"), t[:160] + ("…" if len(t) > 160 else "")))
+    lv = d.get("landing") or {}
+    if lv.get("total"):
+        f = lv.get("form") or {}
+        half = next((x["n"] for x in lv.get("scroll") or [] if x["m"] == 50), 0)
+        L.append("")
+        L.append("Лендинг (примерно): просмотров %d, до середины %d, выбрали файл %d, "
+                 "нажали «Перевести» %d, регистраций с лендинга %d." % (
+                     lv["total"], half, f.get("file", 0), f.get("submit", 0),
+                     sum(v for k, v in (lv.get("signupFrom") or {}).items() if k != "direct")))
     # Предложения по поведению людей — отдельным разделом и по направлениям:
     # это не «что сломалось», а «что сделать на этой неделе».
     sug = d.get("suggest") or []

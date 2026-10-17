@@ -140,6 +140,10 @@ function onUnauthorized() {
     const seg = path.lastIndexOf("/segments/", 0) === 0
       && !(body && body.dry_run === true);
     if (seg) segStarted++;
+    /* Запрос, начатый нажатием, — его отказ привязывается к кнопке
+       (telemetry.js: «нажали и получили отказ»). Фоновые опросы стартуют
+       по таймеру и к нажатию не прилипают (окно 300 мс). */
+    const tctx = (window.TELEMETRY && window.TELEMETRY.claim) ? window.TELEMETRY.claim() : null;
     try {
       const init = { method, headers: authHeaders({}) };
       if (body !== undefined) {
@@ -148,6 +152,7 @@ function onUnauthorized() {
       }
       const r = await fetch(BASE + path, init);
       if (r.status === 401 && path !== "/auth/login") onUnauthorized();
+      if (!r.ok && tctx) { try { window.TELEMETRY.failed(tctx, r.status); } catch (e) { /* учёт не мешает */ } }
       if (!r.ok) {
         const text = await r.text().catch(() => "");
         /* Граница показа ответа сервера — единственное место, где работает
@@ -278,7 +283,11 @@ function onUnauthorized() {
     /* Язык экрана уходит с каждым запросом кода: письмо идёт мимо браузера,
        и перевести его на границе показа некому — язык выбирает сервер,
        и выбирать ему не из чего, кроме того, что мы пришлём. */
-    register:      (body)                   => call("POST",   "/auth/register", Object.assign({ uiLang: uiLangNow() }, body)),
+    feedbackSend:  (text, screen)           => call("POST",   "/feedback", { text, screen: screen || "" }),
+    adminFeedbackDelete: (id)               => call("DELETE", "/admin/feedback/" + encodeURIComponent(id)),
+    register:      (body)                   => call("POST",   "/auth/register", Object.assign({ uiLang: uiLangNow(),
+                                                  // Страница лендинга, с которой пришли (когорта по источнику).
+                                                  srcPage: (window.TELEMETRY && window.TELEMETRY.entry && window.TELEMETRY.entry()) || "" }, body)),
     resendCode:    (email)                  => call("POST",   "/auth/resend", { email, uiLang: uiLangNow() }),
     forgotPassword:(email)                  => call("POST",   "/auth/forgot", { email, uiLang: uiLangNow() }),
     /* Эти две двери — тоже вход, и язык экрана до них уже доехал своим

@@ -8,7 +8,7 @@
       <a href="#contact">Контакты</a>
     </nav>
     __LANGS__
-    <a class="btn btn-primary" href="https://simpletranslate.me" target="_blank" rel="noopener">Открыть сервис</a>
+    <a data-cta="nav-open" class="btn btn-primary" href="https://simpletranslate.me" target="_blank" rel="noopener">Открыть сервис</a>
   </div>
 </header>
 
@@ -126,8 +126,8 @@
       <div class="after-demo">
         <p>Четыре шага, и все четыре делает сервис: <strong>загрузка</strong> файла и смета, <strong>перевод</strong> моделью с вашим глоссарием, <strong>проверки</strong> каждой строки, <strong>готовый файл</strong> в исходном формате.</p>
         <div class="hero-cta">
-          <a class="btn btn-primary" href="https://simpletranslate.me" target="_blank" rel="noopener">Загрузить свой документ</a>
-          <a class="btn btn-ghost" href="#calc">Рассчитать стоимость</a>
+          <a data-cta="demo-upload" class="btn btn-primary" href="https://simpletranslate.me" target="_blank" rel="noopener">Загрузить свой документ</a>
+          <a data-cta="demo-calc" class="btn btn-ghost" href="#calc">Рассчитать стоимость</a>
         </div>
       </div>
     </div>
@@ -204,7 +204,7 @@
             <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Оплата только за объём, без подписки</li>
             <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Один пользователь</li>
           </ul>
-          <a class="btn btn-ghost" href="https://simpletranslate.me" target="_blank" rel="noopener">Начать со «Старта»</a>
+          <a data-cta="price-start" class="btn btn-ghost" href="https://simpletranslate.me" target="_blank" rel="noopener">Начать со «Старта»</a>
         </article>
 
         <article class="tier hot">
@@ -221,7 +221,7 @@
             <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Команда до 5 человек с ролями</li>
             <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Приоритетная очередь</li>
           </ul>
-          <a class="btn btn-primary" href="https://simpletranslate.me" target="_blank" rel="noopener">Выбрать «Профи»</a>
+          <a data-cta="price-pro" class="btn btn-primary" href="https://simpletranslate.me" target="_blank" rel="noopener">Выбрать «Профи»</a>
         </article>
 
         <article class="tier">
@@ -237,7 +237,7 @@
             <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Счёт на организацию, закрывающие документы</li>
             <li><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg>Персональный менеджер</li>
           </ul>
-          <a class="btn btn-ghost" href="#contact">Обсудить объём</a>
+          <a data-cta="price-volume" class="btn btn-ghost" href="#contact">Обсудить объём</a>
         </article>
       </div>
 
@@ -356,7 +356,7 @@
       <div class="final">
         <h2>Первый документ — прямо сейчас</h2>
         <p>Смета появится до оплаты: страницы, цена, итог. Загрузка, один клик, готовый файл в том же формате.</p>
-        <a class="btn btn-primary btn-lg" href="https://simpletranslate.me" target="_blank" rel="noopener">Загрузить первый документ</a>
+        <a data-cta="contact-upload" class="btn btn-primary btn-lg" href="https://simpletranslate.me" target="_blank" rel="noopener">Загрузить первый документ</a>
       </div>
     </div>
   </section>
@@ -392,7 +392,10 @@
   var srcSel = document.getElementById("tr-src"), tgtSel = document.getElementById("tr-tgt");
   var errEl = document.getElementById("tr-err"), goBtn = document.getElementById("tr-go");
   var picked = null, frame = null, frameReady = null;
-  function goal(name) { try { if (window.ym && window.METRIKA_ID) window.ym(window.METRIKA_ID, "reachGoal", name); } catch (e) { /* счётчик не загрузился */ } }
+  function goal(name) {
+    try { if (window.ym && window.METRIKA_ID) window.ym(window.METRIKA_ID, "reachGoal", name); } catch (e) { /* счётчик не загрузился */ }
+    try { if (window.LANDTRACK) window.LANDTRACK.goal(name); } catch (e) { /* учёт не вправе мешать форме */ }
+  }
   function say(key) {
     if (!key) { errEl.hidden = true; errEl.textContent = ""; return; }
     errEl.textContent = errEl.getAttribute("data-" + key) || ""; errEl.hidden = false;
@@ -470,6 +473,9 @@
     var q = new URLSearchParams(window.location.search);
     q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt);
     q.set("lang", document.documentElement.lang || "ru");
+    /* С какой страницы лендинга пришли — приложение назовёт это источником
+       регистрации (`ui.entry.*`, `tenant.from`). Код из закрытого списка. */
+    q.set("from", (window.LANDTRACK && window.LANDTRACK.page) || "index");
     var url = APP + "/?" + q.toString();
     if (!picked) { window.location.href = url; return; }
     goBtn.disabled = true; say("busy");

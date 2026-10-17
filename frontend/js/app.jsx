@@ -323,6 +323,9 @@ function useStore(authed) {
      а не обёрткой над `go`: вкладку меняют и прямые `setTab` из полудюжины
      мест. Хук сюда не добавляем намеренно — тесты рендера считают хуки по
      порядку. Повтор той же вкладки не шлётся (глобальная отметка). */
+  /* Кто вошёл — для отложенного «ухода» (telemetry.js): уход засчитывается
+     тому же человеку, а не следующему за этим компьютером. */
+  if (authed && me && me.id) window._mcat_uid = me.id;
   if (authed && window._mcat_tab !== tab) {
     window._mcat_tab = tab;
     if (window.TELEMETRY) window.TELEMETRY.ui("tab." + tab);
@@ -858,6 +861,11 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
               { className: "navi-n" + (b.todo ? " todo" : "") }, b.todo ? b.n : b));
         }));
     }),
+    /* «Чего не хватает?» — всегда под рукой: идея приходит посреди работы,
+       а не тогда, когда человек ищет, куда её написать. */
+    React.createElement("button", { className: "side-idea", type: "button",
+                                    onClick: () => window.dispatchEvent(new Event("mct-idea-open")) },
+      React.createElement(Icon, { name: "message", size: 15 }), " ", TR("Чего не хватает?")),
     limited && React.createElement("div", { className: "side-foot" },
       React.createElement("div", { className: "sf-row" },
         React.createElement("span", null, TR("Страницы")),

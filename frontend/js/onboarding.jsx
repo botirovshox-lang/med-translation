@@ -145,7 +145,10 @@ function SupportWidget({ store, toast }) {
           icon: "close", label: TR("Закрыть"), sm: true, onClick: () => setOpen(false) })),
       React.createElement("div", { className: "sup-body", ref: bodyRef },
         msgs.length === 0 && React.createElement("p", { className: "sup-empty" },
-          TR("Напишите, что не получается. Мы читаем каждое сообщение.")),
+          TR("Напишите, что не получается. Мы читаем каждое сообщение."),
+          React.createElement("button", { type: "button", className: "linkbtn", style: { display: "block", marginTop: 8 },
+                                          onClick: () => window.dispatchEvent(new Event("mct-idea-open")) },
+            TR("Не хватает функции? Предложите её"))),
         msgs.map((m, i) => React.createElement("div", {
           key: i, className: "sup-msg " + (m.by === "user" ? "mine" : "theirs"),
         },
@@ -168,6 +171,53 @@ function SupportWidget({ store, toast }) {
           className: "btn btn-primary", type: "submit", disabled: busy || !text.trim(),
           "aria-label": TR("Отправить"),
         }, React.createElement(Icon, { name: "send", size: 16 })))));
+}
+
+/* ─── «Чего не хватает?» ───────────────────────────────────────────
+   Голос клиента: то, чего человеку не хватило, его словами. Это не
+   поддержка (там диалог «не получается»), а идея: ответа она не ждёт,
+   поэтому окно короткое — одно поле и одна кнопка (инвариант 32).
+   Открывается событием `mct-idea-open` из меню и из поддержки. Текст
+   уходит владельцу сервиса (POST /api/feedback); просьба не вставлять
+   текст документов стоит прямо над полем — его читают в Telegram. */
+function IdeaBox({ toast }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const h = () => setOpen(true);
+    window.addEventListener("mct-idea-open", h);
+    return () => window.removeEventListener("mct-idea-open", h);
+  }, []);
+  if (!open) return null;
+  const send = () => {
+    const t = text.trim();
+    if (t.length < 3 || busy) return;
+    setBusy(true);
+    window.API.feedbackSend(t, window._mcat_tab || "").then(() => {
+      setBusy(false); setText(""); setOpen(false);
+      toast && toast.success(TR("Спасибо!"), TR("Мы читаем каждое предложение."));
+    }, (e) => {
+      setBusy(false);
+      toast && toast.error(TR("Не отправилось"), (e && e.message) || TR("Попробуйте ещё раз."));
+    });
+  };
+  return React.createElement("div", { className: "idea-veil", role: "dialog", "aria-modal": "true",
+                                      "aria-label": TR("Чего не хватает?"),
+                                      onClick: (e) => { if (e.target === e.currentTarget) setOpen(false); } },
+    React.createElement("form", { className: "idea-card card card-pad",
+                                  onSubmit: (e) => { e.preventDefault(); send(); } },
+      React.createElement("h3", { style: { margin: "0 0 6px" } }, TR("Чего не хватает?")),
+      React.createElement("p", { className: "dim", style: { margin: "0 0 10px", fontSize: 13 } },
+        TR("Что вы хотели сделать и не смогли? Какой функции не хватило? Не вставляйте текст документов.")),
+      React.createElement("textarea", { value: text, rows: 4, maxLength: 1000, autoFocus: true,
+                                        placeholder: TR("Например: хочу загрузить сразу 10 файлов"),
+                                        onChange: (e) => setText(e.target.value), style: { width: "100%" } }),
+      React.createElement("div", { className: "row", style: { gap: 8, marginTop: 10, justifyContent: "flex-end" } },
+        React.createElement("button", { type: "button", className: "btn btn-ghost", onClick: () => setOpen(false) },
+          TR("Закрыть")),
+        React.createElement("button", { type: "submit", className: "btn btn-primary",
+                                        disabled: busy || text.trim().length < 3 }, TR("Отправить")))));
 }
 
 /* ─── Знакомство ───────────────────────────────────────────────────── */
@@ -333,5 +383,6 @@ function OnboardingLayer({ store, toast }) {
 
   return React.createElement(React.Fragment, null,
     show && React.createElement(WelcomeTour, { store, onDone: finish }),
-    React.createElement(SupportWidget, { store, toast }));
+    React.createElement(SupportWidget, { store, toast }),
+    React.createElement(IdeaBox, { toast }));
 }

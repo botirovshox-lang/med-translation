@@ -1561,6 +1561,7 @@ def font_stem(path: str) -> float:
 # Noto на треть, а по отношению к строчным — 0.18 против 0.17), и обводка
 # делала буквы тяжелее оригинала.
 XH_LOWER = float(os.environ.get("PAINT_XH_LOWER", "0.6"))
+XH_SHRINK_ONLY = os.environ.get("PAINT_XH_SHRINK_ONLY", "1") == "1"
 _XH_CACHE: dict = {}
 
 
@@ -1591,9 +1592,16 @@ def font_xh(path: str) -> float:
     if path not in _XH_CACHE:
         v = 0.0
         try:
-            from PIL import ImageFont
-            bb = ImageFont.truetype(path, 200).getbbox("x")
-            v = (bb[3] - bb[1]) / 200.0
+            # Тем же замером, что у оригинала (`x_height` — размах профиля
+            # строки): рамка «x» и профиль строки расходились на точку,
+            # и кегль по строчным перелетал.
+            from PIL import Image, ImageDraw, ImageFont
+            f = ImageFont.truetype(path, 200)
+            txt = "minimum examen ovum annex"
+            im = Image.new("L", (int(f.getlength(txt)) + 40, 400), 0)
+            dr = ImageDraw.Draw(im)
+            dr.text((20, 60), txt, font=f, fill=255)
+            v = x_height(np.asarray(im) > 127, [list(dr.textbbox((20, 60), txt, font=f))]) / 200.0
         except Exception:
             v = 0.0
         _XH_CACHE[path] = v
@@ -1610,7 +1618,7 @@ def em_by_xheight(em: float, xh_src: float, path: str, src: str) -> float:
     fx = font_xh(path)
     if not (em > 0 and xh_src > 0 and fx > 0) or lower_share(src) < XH_LOWER:
         return em
-    return min(em, xh_src / fx)
+    return min(em, xh_src / fx) if XH_SHRINK_ONLY else xh_src / fx
 
 
 # Х11. «Полужирный» снимается площадью краски. Полужирный решает толщина
@@ -1661,23 +1669,24 @@ def bold_by_area(mask, line_boxes, src: str, em: float, reg_path: str, bold_path
     return abs(math.log(area / ab)) <= abs(math.log(area / ar))
 
 
-# Х12. Вес штриха — по середине тона. Маска букв берёт всё, что заметно
-# темнее бумаги, и размытие скана раздувает по ней штрих — поэтому вес
-# по маске не мерили (Х10, Х11). На уровне ровно посередине между бумагой
-# и краской край штриха при симметричном размытии остаётся на месте:
-# толщина вертикального штриха (медиана горизонтальных серий в полосе
-# строчных) от размытия почти не зависит (Old Standard 40 px: 0.16 без
-# размытия, 0.18 при 1.5 px). Книга 1886 г.: 0.19 высоты строчной против
-# 0.16 у нашего перевода — перевод был на треть светлее (доля тёмного
-# 0.097 против 0.144). Штрих оригинала толще шрифта при этом кегле в
-# `WEIGHT_X` раз и больше — дотягивается дробной обводкой (слой рисуется
-# крупнее, `image_text._paint_put`), не больше `STROKE_MAX` кегля; тоньше —
-# не трогаем (полужирный решают Х11 и `BOLD_STEM`).
-WEIGHT_X = float(os.environ.get("PAINT_WEIGHT_X", "1.12"))
+# Х12–Х13. Вес, цвет и плотность набора — по середине тона. Маска букв
+# берёт всё, что заметно темнее бумаги, и размытие раздувает по ней штрих.
+# На уровне посередине между бумагой и краской край штриха при симметричном
+# размытии стоит на месте (`stem_mid`: Old Standard 48 px — 3.43 без
+# размытия, 3.49 при 1.5 px). По этой маске: ось штриха — цвет краски
+# (`core_ink`), доля краски в полосе строчных — плотность набора
+# (`band_density`), а обводка перевода подбирается так, чтобы ЕГО плотность
+# (тем же шрифтом, кеглем и сжатием, `sample_density`) сравнялась
+# с оригиналом (`weight_by_density`). Не толщина штриха в точках: у перевода,
+# сжатого по ширине, тот же штрих на узкой букве читается жирнее (заголовок
+# статьи, Noto Serif сжат до 0.78). Книга 1886 г.: доля тёмного 0.141
+# против 0.144 (было 0.097), краска 22 против 16 (было 29).
 # Тоньше этого (в точках снимка) штрих сравним с размытием, и середина тона
 # его не держит: аннотация статьи (штрих 2 точки) по ней «жирнее» шрифта,
 # и обводка делала её темнее оригинала (доля тёмного 0.163 против 0.14).
 WEIGHT_MIN_PX = float(os.environ.get("PAINT_WEIGHT_MIN_PX", "3"))
+CORE_MIN = int(os.environ.get("PAINT_CORE_MIN", "40"))
+DENS_TOL = float(os.environ.get("PAINT_DENS_TOL", "0.04"))
 
 
 def stem_mid(rgb, line_boxes, bg, ink) -> float:
@@ -1729,41 +1738,96 @@ def stem_mid(rgb, line_boxes, bg, ink) -> float:
     return float(np.median(runs))
 
 
-_STEM_MID_CACHE: dict = {}
+def core_ink(rgb, mask, bg, ink, stem: float):
+    """Цвет краски — по ОСИ штриха (Х13) или None.
+
+    Прежний цвет — медиана самой тёмной трети точек маски; у штриха в 3–4
+    точки половина её — края, размытые к бумаге, и перевод книги 1886 г.
+    печатался краской 28 при самых тёмных точках оригинала 16. На оси
+    штриха (точки маски середины тона не ближе половины толщины штриха
+    к её краю) краска не смешана с бумагой при любом размытии. Штрих
+    тоньше `WEIGHT_MIN_PX` оси не имеет — None, прежний цвет."""
+    if cv2 is None or np is None or rgb is None or mask is None or stem < WEIGHT_MIN_PX:
+        return None
+    g = rgb[..., :3].astype(np.float32).mean(axis=2)
+    pb, pi = float(np.mean(bg)), float(np.mean(ink))
+    if abs(pb - pi) < 2 * INK_DIFF / 3:
+        return None
+    mid = ((g < (pb + pi) / 2.0) if pi < pb else (g > (pb + pi) / 2.0)) & mask.astype(bool)
+    dt = cv2.distanceTransform(mid.astype(np.uint8), cv2.DIST_L2, 3)
+    core = dt >= max(1.0, 0.5 * stem)
+    if core.sum() < CORE_MIN:
+        return None
+    return tuple(int(v) for v in np.median(rgb[..., :3][core], axis=0))
 
 
-def font_stem_mid(path: str, caps: bool = False) -> float:
-    """Штрих шрифта на единицу кегля, тем же замером (`stem_mid`). `caps` —
-    по прописным: у них штрих толще, и заголовок прописными, сравненный со
-    строчными шрифта, получал лишний вес."""
-    if not path:
+def band_density(rgb, line_boxes, bg, ink) -> float:
+    """Плотность набора (Х13): доля краски (середина тона) в полосе строчных
+    между первой и последней краской строки; медиана по строкам, или 0."""
+    if np is None or rgb is None or not line_boxes:
         return 0.0
-    key = (path, caps)
-    if key not in _STEM_MID_CACHE:
-        v = 0.0
-        try:
-            from PIL import Image, ImageDraw, ImageFont
-            f = ImageFont.truetype(path, 100)
-            im = Image.new("RGB", (1400, 160), (255, 255, 255))
-            dr = ImageDraw.Draw(im)
-            txt = "HINMULEHIDNM" if caps else "nmuhlinmnuhdbpq"
-            dr.text((10, 10), txt, font=f, fill=(0, 0, 0))
-            v = stem_mid(np.asarray(im), [list(dr.textbbox((10, 10), txt, font=f))],
-                         (255, 255, 255), (0, 0, 0)) / 100.0
-        except Exception:
-            v = 0.0
-        _STEM_MID_CACHE[key] = v
-    return _STEM_MID_CACHE[key]
-
-
-def weight_stroke(stem_src: float, path: str, size: float, src: str = "") -> float:
-    """Обводка с каждой стороны (дробная) до штриха оригинала или 0 (Х12).
-    Эталон шрифта — из тех же букв, что оригинал (прописные или строчные)."""
-    caps = bool(src) and lower_share(src) < XH_LOWER
-    fs = (font_stem_mid(path, caps) or font_stem(path)) * size
-    if not (stem_src >= WEIGHT_MIN_PX and fs > 0) or stem_src < WEIGHT_X * fs:
+    g = rgb[..., :3].astype(np.float32).mean(axis=2) if rgb.ndim == 3 else rgb.astype(np.float32)
+    pb, pi = float(np.mean(bg)), float(np.mean(ink))
+    if abs(pb - pi) < 2 * INK_DIFF / 3:
         return 0.0
-    return min((stem_src - fs) / 2.0, STROKE_MAX * size)
+    m = (g < (pb + pi) / 2.0) if pi < pb else (g > (pb + pi) / 2.0)
+    H, W = m.shape
+    vals = []
+    for lb in line_boxes:
+        a, b = max(0, int(lb[1])), min(H, int(math.ceil(lb[3])))
+        c, d = max(0, int(lb[0])), min(W, int(math.ceil(lb[2])))
+        if b - a < 6 or d - c < 6:
+            continue
+        mm = m[a:b, c:d]
+        prof = mm.sum(axis=1)
+        if not prof.max():
+            continue
+        core = np.nonzero(prof >= 0.5 * prof.max())[0]
+        cols = np.nonzero(mm.any(axis=0))[0]
+        band = mm[core[0]:core[-1] + 1, cols[0]:cols[-1] + 1]
+        if band.size:
+            vals.append(float(band.mean()))
+    return float(np.median(vals)) if vals else 0.0
+
+
+def sample_density(font_path: str, text: str, size_px: float, h0: float, ink, bg,
+                   stroke_px: float = 0.0, sup: int = 4) -> float:
+    """Плотность набора строки `text` шрифтом `font_path` (Х13): рисуется
+    в `sup` раз крупнее с обводкой `stroke_px`, сжимается по ширине `h0`
+    и мерится `band_density`. Один код у картинки и у PDF."""
+    from PIL import Image, ImageDraw, ImageFont
+    fb = ImageFont.truetype(font_path, max(4, int(round(size_px * sup))))
+    swb = int(round(stroke_px * sup))
+    bb = fb.getbbox(text, stroke_width=swb)
+    wb = bb[2] - min(0, bb[0]) + 4 * sup + swb
+    hb = int(size_px * 1.6 * sup) + 2 * swb
+    ink = tuple(int(v) for v in ink)
+    bg = tuple(int(v) for v in bg)
+    im = Image.new("RGB", (max(sup, wb), max(sup, hb)), bg)
+    ImageDraw.Draw(im).text((2 * sup, swb), text, font=fb, fill=ink, stroke_width=swb, stroke_fill=ink)
+    im = im.resize((max(1, int(im.width / sup * h0)), max(1, int(im.height / sup))), Image.LANCZOS)
+    return band_density(np.asarray(im), [[0, 0, im.width, im.height]], bg, ink)
+
+
+def weight_by_density(target: float, render, smax: float) -> float:
+    """Обводка (с каждой стороны), при которой плотность набора перевода
+    равна `target` (Х13). `render(s)` — плотность строки при обводке s.
+    Без обводки уже не светлее — 0: истончать шрифт нечем."""
+    if not (target > 0 and smax > 0):
+        return 0.0
+    d0 = render(0.0)
+    if d0 <= 0 or d0 >= target * (1.0 - DENS_TOL):
+        return 0.0
+    lo, hi = 0.0, smax
+    if render(hi) < target:
+        return hi
+    for _ in range(7):
+        mid = (lo + hi) / 2.0
+        if render(mid) < target:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
 
 
 # ── Раздел Х: машинопись, выключка, абзацы внутри блока (16.10.2026) ─────

@@ -1913,12 +1913,21 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         em, h0 = tp.calibrate(em, inkw, ours, hand=(fam == "hand" and geo is not None), hmin=0.74)
     # Толщина штриха (Ф7) — у почерка и у машинописи: шрифт тоньше ручки
     # и удара литеры.
-    stem = tp._stem(m["mask"]) * k if fam in ("hand", "type") else 0.0
+    # Ф7 — только у рукописи (перо); машинопись — плотностью набора (Х13):
+    # штрих по маске размытие раздувает, и перевод машинописи выходил
+    # жирнее оригинала (плотность 0.449 против 0.31).
+    stem = tp._stem(m["mask"]) * k if fam == "hand" else 0.0
     stem_mid = 0.0
-    if fam not in ("hand", "type") and not m["angle"] and not m.get("arc") and lbs:
+    dens = 0.0
+    if fam != "hand" and not m["angle"] and not m.get("arc") and lbs:
         # Х12: вес — по середине тона между бумагой и краской.
         stem_mid = tp.stem_mid(rgb, [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs],
                                m.get("bg") or (255, 255, 255), m["ink"]) * k
+        dens = tp.band_density(rgb, [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs],
+                               m.get("bg") or (255, 255, 255), m["ink"])
+        ci = tp.core_ink(rgb, m["mask"], m.get("bg") or (255, 255, 255), m["ink"], stem_mid / k)
+        if ci is not None:
+            m["ink"] = ci                   # Х13: цвет — по оси штриха
     # Х2: выключка — по краям строк оригинала, если они её говорят.
     align = (geo or {}).get("align") or it.get("align") or "left"
     if fam == "hand" and align == "justify":
@@ -1926,7 +1935,7 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     return {"m": m, "erased": erased, "alpha": alpha, "fpath": fpath, "font_at": font_at,
             "em": em, "h0": h0, "geo": geo, "k": k, "pbox": pbox, "it": it, "fam": fam,
             "align": align,
-            "ink": m["ink"], "stem": stem, "stemMid": stem_mid,
+            "ink": m["ink"], "stem": stem, "stemMid": stem_mid, "dens": dens,
             "handFallback": fam == "hand" and fpath not in _pf().hand_font_files()}
 
 
@@ -2038,11 +2047,20 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
     stroke_f = 0.0
     if pm.get("stem") and not m.get("arc") and not m["angle"]:
         stroke = tp.stroke_for(pm["stem"], tp.font_stem(pm["fpath"]), size)
-    elif pm.get("stemMid") and not m.get("arc") and not m["angle"]:
-        # Х12: штрих — в долях кегля оригинала: перевод встал мельче —
-        # тоньше и штрих (жирность — свойство шрифта, а не точек).
-        stroke_f = tp.weight_stroke(pm["stemMid"] * size / max(1e-6, pm["em"]), pm["fpath"], size,
-                                    it.get("src") or "")
+    elif ((pm.get("stemMid") or 0) >= tp.WEIGHT_MIN_PX * k and pm.get("dens") and lines
+          and not m.get("arc") and not m["angle"]):
+        # Х13: обводка — до ПЛОТНОСТИ набора оригинала (доля краски в полосе
+        # строчных): толщина штриха в точках у перевода, сжатого по ширине,
+        # читается жирнее — краски на узкой букве больше. Пробная строка
+        # перевода рисуется тем же шрифтом, кеглем, сжатием и краской.
+        bg_ = tuple(int(v) for v in (m.get("bg") or (255, 255, 255)))
+        ink_ = tuple(int(v) for v in (pm.get("ink") or m["ink"]))
+        sample = max(lines, key=len)
+        fpth = getattr(font_at(size), "path", None) or pm["fpath"]
+
+        def dens_at(sf):
+            return tp.sample_density(fpth, sample, size, h0, ink_, bg_, sf)
+        stroke_f = tp.weight_by_density(pm["dens"], dens_at, tp.STROKE_MAX * size)
     return {"pbox": pm["pbox"], "stroke": stroke, "strokeF": stroke_f, "erased": pm["erased"],
             "dash": pm.get("fam") == "hand" and _short_hyphen(pm["fpath"]),
             "alpha": pm["alpha"], "m": m, "lines": lines, "size": size, "step": step_, "h0": h0, "font": font_at(size),

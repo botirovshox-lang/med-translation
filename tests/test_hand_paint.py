@@ -18,7 +18,8 @@
   Х9. засечки определяются по буквам, когда чтение о них не сказало;
   Х10. дореформенная печать — старой антиквой, кегль — по строчным;
   Х11. полужирный от размытия снимается площадью краски;
-  Х12. вес штриха — по середине тона, в долях кегля.
+  Х12. замер штриха — по середине тона;
+  Х13. цвет краски — по оси штриха, обводка — до плотности набора; PDF — те же правила.
 Без сети и без вызовов модели.
 """
 import io
@@ -471,7 +472,7 @@ for fn, want in (("NotoSans-Regular.ttf", False), ("NotoSans-Bold.ttf", True)):
                             SUB + "NotoSans-Regular.ttf", SUB + "NotoSans-Bold.ttf")
     check(got11 == want, "%s: жирный=%s по площади" % (fn, got11))
 
-print("\n── Х12. вес штриха по середине тона ──")
+print("\n── Х12. штрих по середине тона ──")
 def page12(fn, lines, size, blur=0.0, stroke=0):
     f_ = ImageFont.truetype(SUB + fn, size)
     im_ = Image.new("RGB", (1300, int(size * 1.6) * len(lines) + 40), (238, 236, 230))
@@ -488,21 +489,35 @@ LW = ["one fine evening an equally fine government clerk", "was sitting in the s
 st0 = tp.stem_mid(*page12("OldStandard-Regular.ttf", LW, 48), (238, 236, 230), (25, 25, 25))
 st1 = tp.stem_mid(*page12("OldStandard-Regular.ttf", LW, 48, 1.5), (238, 236, 230), (25, 25, 25))
 check(st0 > 0 and abs(st1 - st0) <= 0.2 * st0, "штрих по середине тона от размытия почти не зависит: %.2f / %.2f" % (st0, st1))
-fs12 = tp.font_stem_mid(SUB + "OldStandard-Regular.ttf") * 48
-check(abs(st0 - fs12) <= 0.15 * fs12, "замер страницы и эталон шрифта — одна мера: %.2f / %.2f" % (st0, fs12))
-check(tp.weight_stroke(st1, SUB + "OldStandard-Regular.ttf", 48, " ".join(LW)) == 0.0,
-      "оригинал тем же шрифтом — обводки нет")
-sth = tp.stem_mid(*page12("OldStandard-Regular.ttf", LW, 48, 1.0, 1), (238, 236, 230), (25, 25, 25))
-w12 = tp.weight_stroke(sth, SUB + "OldStandard-Regular.ttf", 48, " ".join(LW))
-check(0.5 <= w12 <= 1.5, "оригинал жирнее на точку с каждой стороны — обводка ~1: %.2f" % w12)
-w12s = tp.weight_stroke(sth * 0.75, SUB + "OldStandard-Regular.ttf", 36, " ".join(LW))
-check(abs(w12s - 0.75 * w12) <= 0.05, "вес в долях кегля: мельче в 0.75 — обводка в 0.75 (%.2f / %.2f)" % (w12s, w12))
-check(tp.weight_stroke(2.4, SUB + "OldStandard-Regular.ttf", 20, " ".join(LW)) == 0.0,
-      "штрих тоньше WEIGHT_MIN_PX — не дотягиваем (размытие его не отпускает)")
-CAPS = ["THE DEATH OF A CIVIL SERVANT", "SMERT CHINOVNIKA HINMU"]
-stc = tp.stem_mid(*page12("OldStandard-Regular.ttf", CAPS, 48, 1.0), (238, 236, 230), (25, 25, 25))
-check(tp.weight_stroke(stc, SUB + "OldStandard-Regular.ttf", 48, " ".join(CAPS)) == 0.0,
-      "прописные сравниваются с прописными шрифта — лишнего веса нет (%.2f)" % stc)
+check(tp.stem_mid(*page12("OldStandard-Regular.ttf", LW, 48, 1.0, 1), (238, 236, 230), (25, 25, 25)) > st0 + 1.2,
+      "штрих толще на точку с каждой стороны — замер это видит")
+
+print("\n── Х13. цвет по оси штриха, плотность набора, путь PDF ──")
+rgb13, lb13 = page12("OldStandard-Regular.ttf", LW, 48, 1.4, 1)
+m13 = tp.measure(rgb13, " ".join(LW), 2, 77, inner=[min(b[0] for b in lb13), min(b[1] for b in lb13),
+                                                    max(b[2] for b in lb13), max(b[3] for b in lb13)])
+st13 = tp.stem_mid(rgb13, lb13, m13["bg"], m13["ink"])
+ci13 = tp.core_ink(rgb13, m13["mask"], m13["bg"], m13["ink"], st13)
+check(ci13 is not None and max(ci13) <= max(m13["ink"]) and max(ci13) <= 45,
+      "цвет по оси штриха ближе к настоящей краске (25): ось %s, прежний %s" % (ci13, m13["ink"]))
+check(tp.core_ink(rgb13, m13["mask"], m13["bg"], m13["ink"], 2.0) is None, "у тонкого штриха оси нет — прежний цвет")
+d13 = tp.band_density(rgb13, lb13, m13["bg"], m13["ink"])
+TR13 = "One fine evening an equally fine government clerk"
+fp13 = SUB + "OldStandard-Regular.ttf"
+s13 = tp.weight_by_density(d13, lambda sf: tp.sample_density(fp13, TR13, 48, 1.0, (25, 25, 25), (238, 236, 230), sf),
+                           tp.STROKE_MAX * 48)
+got13 = tp.sample_density(fp13, TR13, 48, 1.0, (25, 25, 25), (238, 236, 230), s13)
+check(s13 > 0.3 and abs(got13 - d13) <= 0.1 * d13,
+      "обводка доводит плотность перевода до оригинала: %.2f → %.3f / %.3f" % (s13, got13, d13))
+d0_13 = tp.band_density(*page12("OldStandard-Regular.ttf", LW, 48, 1.4), (238, 236, 230), (25, 25, 25))
+check(tp.weight_by_density(d0_13, lambda sf: tp.sample_density(fp13, TR13, 48, 1.0, (25, 25, 25),
+                                                               (238, 236, 230), sf), tp.STROKE_MAX * 48) < 0.25,
+      "оригинал тем же шрифтом — обводки (почти) нет")
+check(tp.weight_by_density(0.1, lambda sf: tp.sample_density(fp13, TR13, 48, 0.8, (25, 25, 25),
+                                                             (238, 236, 230), sf), tp.STROKE_MAX * 48) == 0.0,
+      "перевод уже плотнее оригинала (сжат по ширине) — обводки нет")
+check(all(k_ in lps for k_ in ("tp.core_ink(", "tp.band_density(", "tp.weight_by_density(", "tp.bold_by_area(")),
+      "путь PDF зовёт те же правила Х11–Х13")
 
 print()
 if fail:

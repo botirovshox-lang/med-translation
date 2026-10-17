@@ -3425,6 +3425,28 @@ def _paint_measure(sampler, b: dict) -> bool:
         b["fam"] = tp.serif_fam(m["mask"], loc9, b.get("fam") or "", "sans")
         if b["fam"] == "" and _print_fonts().pre_reform(b.get("src") or ""):
             b["fam"] = "old"                # Х10: дореформенная печать
+    if lns and b.get("fam") != "hand" and not m["angle"] and not m.get("arc"):
+        # Х11–Х13 — те же правила, что у перерисовки картинки
+        # (`image_text._paint_measure`): ось штриха — цвет краски, плотность
+        # набора — цель обводки, ложный «полужирный» снимается площадью.
+        locw = [[(l_[0] - cx0) * scale, (cy1 - l_[1]) * scale, (l_[2] - cx0) * scale,
+                 (cy1 - l_[3]) * scale] for l_ in lns]
+        bgc = m.get("bg") or (255, 255, 255)
+        rgb3 = rgb[..., :3]
+        smid = tp.stem_mid(rgb3, locw, bgc, m["ink"])
+        b["_paint"]["stemMid"] = smid / scale
+        b["_paint"]["scale"] = scale
+        b["_paint"]["dens"] = tp.band_density(rgb3, locw, bgc, m["ink"])
+        b["_paint"]["bg"] = tuple(int(v) for v in bgc)
+        ci = tp.core_ink(rgb3, m["mask"], bgc, m["ink"], smid)
+        if ci is not None:
+            b["_paint"]["ink"] = tuple(v / 255.0 for v in ci)
+        if m["bold"]:
+            src_ = " ".join((b.get("src") or "").split())
+            fam_ = b.get("fam") or ""
+            if not tp.bold_by_area(m["mask"], locw, src_, float(m["em"]),
+                                   font_path("", fam_, src_), font_path("b", fam_, src_)):
+                b["_paint"]["bold"] = False
     if not m["angle"] and not m.get("arc") and rows >= 2 and len(lns) == rows:
         loc = [[(l_[0] - cx0) * scale, (cy1 - l_[1]) * scale, (l_[2] - cx0) * scale,
                 (cy1 - l_[3]) * scale] for l_ in lns]
@@ -3445,7 +3467,8 @@ def _paint_measure(sampler, b: dict) -> bool:
                                   "align": g.get("align"), "heads": g.get("heads") or [],
                                   "shares": g.get("shares") or []}
             b["_paint"]["inkw"] = iw
-    if b.get("fam") in ("hand", "type"):
+    if b.get("fam") == "hand":
+        # Ф7 — перо рукописи; машинопись — плотностью набора (Х13).
         b["_paint"]["stem"] = tp._stem(m["mask"]) / scale
     arc = m.get("arc")
     if arc:
@@ -3543,6 +3566,18 @@ def _paint_plan(b: dict, text: str, fonts: dict, sw, hyph) -> "dict | None":
             if pt.get("stem"):
                 stroke = tp.stroke_for(pt["stem"], tp.font_stem(_font_file(font)), size,
                                        whole=False)
+            elif (pt.get("dens") and (pt.get("stemMid") or 0) * pt.get("scale", 1.0) >= tp.WEIGHT_MIN_PX
+                  and _font_file(font)):
+                # Х13: обводка — до плотности набора оригинала (в точках
+                # вырезки, где она мерилась, и обратно в точки страницы).
+                sc_ = pt["scale"]
+                ink_ = tuple(int(v * 255) for v in pt["ink"])
+                sample_ = max(lines, key=len)
+                ff_ = _font_file(font)
+                stroke = tp.weight_by_density(
+                    pt["dens"], lambda sf: tp.sample_density(ff_, sample_, size * sc_, h0, ink_,
+                                                             pt.get("bg") or (255, 255, 255), sf * sc_),
+                    tp.STROKE_MAX * size)
             return {"b": b, "font": font, "size": size, "step": step, "lines": lines, "h0": h0,
                 "f": size / max(1e-6, em), "over": over, "align": align, "em": em,
                     "parts": [{"bases": [geo["base0"] - i * step for i in range(len(lines))],

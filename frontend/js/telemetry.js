@@ -33,7 +33,9 @@
   function flush() {
     timer = null;
     if (!q.errors.length && !q.ui.length) return;
-    var body = JSON.stringify({ errors: q.errors.splice(0, 10), ui: q.ui.splice(0, 40) });
+    /* Пять ошибок на пачку — тело с запасом укладывается в потолок сервера
+       (BEACON_MAX_BYTES): отвергнутая пачка пропала бы целиком. */
+    var body = JSON.stringify({ errors: q.errors.splice(0, 5), ui: q.ui.splice(0, 40) });
     var h = { "Content-Type": "application/json" };
     var t = token();
     if (t) h["Authorization"] = "Bearer " + t;
@@ -51,7 +53,7 @@
     seen[key] = 1; sent++;
     q.errors.push({
       kind: kind, file: file, line: line || 0, col: col || 0,
-      msg: String(msg || "").slice(0, 300), stack: String(stack || "").slice(0, 1200),
+      msg: String(msg || "").slice(0, 300), stack: String(stack || "").slice(0, 800),
       screen: window._mcat_tab || "", ver: (window.BOOT && window.BOOT.v) || "",
     });
     schedule();

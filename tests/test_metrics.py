@@ -517,7 +517,11 @@ check(len(rec) == 3 and rec[0]["tenant"] == "acme" and rec[-1]["tenant"] == "",
 check(len(rec[-1]["msg"]) == 300 and rec[-1]["screen"] == "editor",
       "сообщение обрезано, экран из списка вкладок")
 check(rec[1]["screen"] == "" and rec[1]["file"] == "other", "чужой экран не принят")
-check(c.post("/api/client/beacon", content=b"{" + b" " * 20000 + b"}",
+big = {"errors": [{"kind": "error", "file": "app.jsx", "msg": "ж" * 300, "stack": "ш" * 800,
+                   "screen": "editor"} for _ in range(5)]}
+check(c.post("/api/client/beacon", json=big).status_code == 200,
+      "полная пачка браузера (5 ошибок, кириллица) влезает в потолок — иначе пропала бы целиком")
+check(c.post("/api/client/beacon", content=b"{" + b" " * 60000 + b"}",
              headers={"Content-Type": "application/json"}).status_code == 413,
       "тело больше потолка — отказ")
 check(c.post("/api/client/beacon", content=b"not json",
@@ -575,6 +579,9 @@ check(st2["upload"] == 2 and st2["run"] == 1,
 main.STATE["projects"].pop()
 
 print("=== 12б. Подсказки и сводка про браузер и регистрации ===")
+check(not any(h["code"] == "jsErrors" for h in main._metrics_hints(
+      7, [], {"js": [{"code": "error:other", "n": 50}]}, {})),
+      "ошибки чужих скриптов (расширения) подсказку не зажигают")
 hj = main._metrics_hints(7, [], {"js": [{"code": "error:app.jsx", "n": 4}]}, {})
 check(any(h["code"] == "jsErrors" and h["n"] == 4 and h["name"] == "error:app.jsx" for h in hj),
       "ошибки браузера стали подсказкой с числом и местом")

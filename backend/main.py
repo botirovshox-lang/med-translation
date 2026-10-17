@@ -8529,7 +8529,9 @@ def _metrics_hints(days: int, tenants: list, ev: dict, quotes: dict,
     # Ошибки в БРАУЗЕРЕ. Сервер про них не знает ничего (ответ 200, а экран
     # белый), поэтому строка обязана быть: иначе их видно только в отдельной
     # карточке, куда смотрят, когда уже ищут.
-    js = ev.get("js") or []
+    # Без `other`: так приходят ошибки ЧУЖИХ скриптов (расширения браузера,
+    # переводчик страницы) — повод чинить их у нас нет. В карточке они видны.
+    js = [d for d in (ev.get("js") or []) if not d["code"].endswith(":other")]
     js_n = sum(d["n"] for d in js)
     if js_n >= METRICS_JS_HINT_MIN:
         out.append({"kind": "fix", "code": "jsErrors", "n": js_n, "name": js[0]["code"]})
@@ -8900,7 +8902,10 @@ UI_EVENTS = frozenset(
     ["tab." + t for t in _UI_TABS]
     + ["tour.step%d" % i for i in range(1, 13)]
     + ["tour.done", "tour.skip", "tour.open", "support.open"])
-BEACON_MAX_BYTES = 16384
+# Пачка браузера — до 5 ошибок со стеком до 800 знаков; кириллица — два
+# байта на знак. Потолок с запасом, но ниже 64 КБ `keepalive`.
+BEACON_MAX_BYTES = 49152
+BEACON_IPS_MAX = 5000
 BEACON_MAX_ERRORS = 10
 BEACON_MAX_UI = 40
 BEACON_PER_MIN = int(os.environ.get("BEACON_PER_MIN", "30"))
@@ -8908,6 +8913,7 @@ CLIENT_ERR_RING_MAX = 300
 _CLIENT_ERRORS: list = []
 _BEACON_HITS: dict = {}
 _BEACON_LOCK = threading.Lock()
+_BEACON_PRUNED = [0.0]
 _JS_FILE_SET: Optional[frozenset] = None
 
 
@@ -8929,9 +8935,16 @@ def _js_file_code(raw) -> str:
 def _beacon_allowed(ip: str) -> bool:
     now = time.time()
     with _BEACON_LOCK:
-        if len(_BEACON_HITS) > 5000:
-            for k in [k for k, v in _BEACON_HITS.items() if not v or now - v[-1] > 60]:
-                _BEACON_HITS.pop(k, None)
+        if ip not in _BEACON_HITS and len(_BEACON_HITS) >= BEACON_IPS_MAX:
+            # Чистка — не чаще раза в 10 с: иначе при полной таблице КАЖДЫЙ
+            # запрос проходил бы её целиком на цикле событий. Не помогло —
+            # новая сеть получает отказ: потолок памяти жёсткий.
+            if now - _BEACON_PRUNED[0] > 10:
+                _BEACON_PRUNED[0] = now
+                for k in [k for k, v in _BEACON_HITS.items() if not v or now - v[-1] > 60]:
+                    _BEACON_HITS.pop(k, None)
+            if len(_BEACON_HITS) >= BEACON_IPS_MAX:
+                return False
         hits = [x for x in _BEACON_HITS.get(ip, []) if now - x < 60]
         if len(hits) >= BEACON_PER_MIN:
             _BEACON_HITS[ip] = hits
@@ -8947,12 +8960,24 @@ def _clip(v, n: int) -> str:
 
 @app.post("/api/client/beacon")
 async def client_beacon(request: Request):
-    """Ошибки JS и открытые экраны от браузера. Ни STATE, ни модели."""
-    raw = await request.body()
-    if len(raw) > BEACON_MAX_BYTES:
-        return JSONResponse({"ok": False}, status_code=413)
+    """Ошибки JS и открытые экраны от браузера. Ни STATE, ни модели.
+
+    Порядок несущий: частота и объявленный размер — ДО чтения тела, а тело
+    читается потоком с обрывом на потолке. Иначе аноним заставлял бы
+    единственный воркер держать в памяти тела до потолка nginx (50 МБ)."""
     if not _beacon_allowed(_rate_ip(request)):
         return JSONResponse({"ok": False}, status_code=429)
+    try:
+        if int(request.headers.get("content-length") or 0) > BEACON_MAX_BYTES:
+            return JSONResponse({"ok": False}, status_code=413)
+    except ValueError:
+        return JSONResponse({"ok": False}, status_code=400)
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf.extend(chunk)
+        if len(buf) > BEACON_MAX_BYTES:
+            return JSONResponse({"ok": False}, status_code=413)
+    raw = bytes(buf)
     try:
         body = json.loads(raw.decode("utf-8") or "{}")
     except Exception:

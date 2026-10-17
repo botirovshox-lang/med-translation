@@ -66,7 +66,7 @@ for (let i = 0; i < 100; i++) fire("error", { filename: "a.js", lineno: i + 2, m
 for (let i = 0; i < 20; i++) tick();
 const total = sent.slice(2).reduce((s, x) => s + x.body.errors.length, 0);
 check(total + 3 <= 30, "за страницу не больше потолка ошибок: " + (total + 3));
-check(sent.slice(2).every(x => x.body.errors.length <= 10), "пачка не больше десяти");
+check(sent.slice(2).every(x => x.body.errors.length <= 5), "пачка не больше пяти — влезает в потолок сервера");
 
 console.log("=== 4. Экраны ===");
 const n0 = sent.length;

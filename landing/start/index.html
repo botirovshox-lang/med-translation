@@ -656,9 +656,9 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     <div class="wrap">
       <h2 class="h2 rv" data-t="whatH">Что переводим</h2>
       <div class="tiles">
-        <article class="tile rv" data-tile="book" data-src="RU">
+        <article class="tile rv" data-tile="book" data-src="RU" data-img="ph-book-">
           <div class="stage shot ts" aria-hidden="true" style="--ar:1000/564">
-            <img class="ts-o" src="media/tile-book-ru.webp" width="1000" height="564" alt="" loading="lazy" decoding="async">
+            <img class="ts-o" src="media/ph-book-ru.webp" width="1000" height="564" alt="" loading="lazy" decoding="async">
             <img class="ts-n" width="1000" height="564" alt="" decoding="async">
             <span class="ts-beam" aria-hidden="true"></span>
           </div>
@@ -684,9 +684,9 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
           <h3 data-t="t3">Видео</h3><p data-t="t3s">С готовыми субтитрами</p>
           <div class="tl-langs" role="group" aria-label="Перевод на:" data-ta="aria-label:langInto"></div>
         </article>
-        <article class="tile rv" data-tile="scan" data-src="RU" style="--d:.08s">
+        <article class="tile rv" data-tile="scan" data-src="RU" data-img="ph-typed-" style="--d:.08s">
           <div class="stage shot ts" aria-hidden="true" style="--ar:1000/456">
-            <img class="ts-o" src="media/tile-scan-ru.webp" width="1000" height="456" alt="" loading="lazy" decoding="async">
+            <img class="ts-o" src="media/ph-typed-ru.webp" width="1000" height="456" alt="" loading="lazy" decoding="async">
             <img class="ts-n" width="1000" height="456" alt="" decoding="async">
             <span class="ts-beam" aria-hidden="true"></span>
           </div>
@@ -1635,9 +1635,13 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
 
   /* ---------- Плитки «Что переводим»: кнопки языков и «сканирование» ----------
      Картинки перевода — выгрузка «в исходном виде» самой системы
-     (tools/landing_tiles.py): та же вёрстка, текст перерисован на месте. */
+     (tools/landing_tiles.py): та же вёрстка, текст перерисован на месте.
+     Плитка, чьи проекты есть и в карусели «Фото», берёт ЕЁ картинки
+     (`data-img` — префикс слайда, tools/landing_photo.py): один перевод —
+     одна картинка. Вторая копия собиралась отдельно и отставала от правил
+     перерисовки (буквица Чехова с завитком осталась на плитке, Х8). */
   var TL_LANGS = ["EN", "UZ", "ZH", "KK", "AR"], TL_DUR = 1250;
-  function tlUrl(k, c) { return "media/tile-" + k + "-" + c.toLowerCase() + ".webp"; }
+  function tlUrl(T, c) { return "media/" + (T.img || "tile-" + T.k + "-") + c.toLowerCase() + ".webp"; }
   function tlReady(img) {
     if (img.complete && img.naturalWidth) return Promise.resolve();
     return new Promise(function (ok) {
@@ -1652,7 +1656,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   }
   var tiles = [].slice.call(document.querySelectorAll("[data-tile]")).map(function (el, n) {
     var st = el.querySelector(".ts");
-    var T = { n: n, k: el.getAttribute("data-tile"), src: el.getAttribute("data-src"), el: el, st: st,
+    var T = { n: n, k: el.getAttribute("data-tile"), img: el.getAttribute("data-img"), src: el.getAttribute("data-src"), el: el, st: st,
       o: st.querySelector(".ts-o"), nw: st.querySelector(".ts-n"), sub: st.querySelector(".ts-sub"), subBox: st.querySelector(".subt"),
       want: null, timers: [], touched: false, visible: false, btns: {} };
     T.cur = T.want = T.src;
@@ -1695,7 +1699,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       T.timers.push(setTimeout(function () { T.st.classList.remove("ts-run"); }, TL_DUR + 50));
       return;
     }
-    var url = tlUrl(T.k, c);
+    var url = tlUrl(T, c);
     if (still) { T.o.src = url; T.cur = c; return; }
     T.st.classList.remove("ts-run");
     T.nw.src = url;
@@ -1717,7 +1721,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   /* Пока плитка на экране и её не трогали, языки меняются сами — по очереди
      с соседями, чтобы сканы не шли все разом. Следующая картинка грузится заранее. */
   function tlNext(T) { return T.codes[(T.codes.indexOf(T.want) + 1) % T.codes.length]; }
-  function tlPreload(T) { if (T.k !== "video") { var im = new Image(); im.src = tlUrl(T.k, tlNext(T)); } }
+  function tlPreload(T) { if (T.k !== "video") { var im = new Image(); im.src = tlUrl(T, tlNext(T)); } }
   var tlTick = 0;
   if ("IntersectionObserver" in window) {
     var tlOb = new IntersectionObserver(function (es) {

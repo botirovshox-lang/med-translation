@@ -306,6 +306,36 @@ check((ROOT / "landing" / (lb.INDEXNOW_KEY + ".txt")).read_text(encoding="utf-8"
       "файл ключа IndexNow не совпадает с ключом")
 
 
+# ─── 13. /start/: плитки и карусель — одна картинка на перевод ──────
+# Плитки «Что переводим» и карусель «Фото» показывают переводы одних
+# и тех же проектов. Своя копия у плитки собиралась отдельно и отставала
+# от правил перерисовки: буквица Чехова с завитком (Х8) осталась на
+# плитке, когда в карусели её уже стёрли. Плитка берёт картинки слайда
+# (`data-img`), а копии в media/ быть не должно.
+st = (ROOT / "landing" / "start" / "index.html").read_text(encoding="utf-8")
+media = ROOT / "landing" / "start" / "media"
+tl_langs = re.search(r'var TL_LANGS = \[([^\]]*)\]', st)
+check(bool(tl_langs), "/start/: не нашёл TL_LANGS")
+tl_codes = re.findall(r'"([A-Z]{2})"', tl_langs.group(1)) if tl_langs else []
+slides = dict(re.findall(r'\{ k: "(\w+)", f: "([\w-]+)"', st))
+borrowed = set()
+for m in re.finditer(r'<article class="tile[^"]*" data-tile="(\w+)" data-src="(\w+)"([^>]*)>', st):
+    k, src, rest = m.groups()
+    if k == "video":
+        continue
+    img = re.search(r'data-img="([\w-]+)"', rest)
+    pref = img.group(1) if img else "tile-%s-" % k
+    if img:
+        borrowed.add(k)
+        check(pref in slides.values(), f"/start/: плитка {k} ссылается на {pref}, а слайда с ним нет")
+    for c in [src] + [c for c in tl_codes if c != src]:
+        check((media / (pref + c.lower() + ".webp")).exists(), f"/start/: нет картинки плитки {k}: {pref}{c.lower()}.webp")
+for f in media.glob("tile-*.webp"):
+    k = f.stem.split("-")[1]
+    check(k not in slides and k not in borrowed,
+          f"/start/: {f.name} — копия картинки карусели, плитка обязана брать её (data-img)")
+
+
 if FAILS:
     for f in FAILS:
         print("FAIL:", f)

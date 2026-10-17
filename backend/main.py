@@ -12456,6 +12456,12 @@ def _book_image_pages(project: dict) -> None:
 @app.get("/api/projects/{pid}")
 def get_project_detail(pid: int):
     t0 = time.time()
+    # Прогон идёт ОТДЕЛЬНЫМ процессом: экран забирает проект сразу, как увидел
+    # «прогон завершён», а мидлварь сверяет эпохи не чаще SYNC_EVERY. Без
+    # сверки здесь браузер получал допрогонную копию и больше не переспрашивал:
+    # таблица и «Скачать» показывали «не переведено» до перезагрузки страницы.
+    if EXTERNAL_WORKER and not IS_WORKER:
+        _sync_shared(force=True)
     project = get_project(pid)
     _media_status_fix(project)
     _book_image_pages(project)
@@ -38932,6 +38938,14 @@ _JOBS_REFRESH = {"t": 0.0}
 
 
 def _job_persist(job: dict) -> None:
+    # Воркер объявляет прогон завершённым ТОЛЬКО после того, как поднял эпоху
+    # документа проекта: увидев «done», экран сразу забирает проект, и API
+    # обязан уже знать, что его копия устарела (иначе отдаст допрогонную).
+    if IS_WORKER and job.get("status") in ("done", "stopped", "error") and job.get("project") is not None:
+        try:
+            STORE.bump_epoch("doc:projects:%d" % int(job["project"]))
+        except Exception as e:
+            print(f"[backend] эпоха проекта не поднята перед концом прогона: {e}", file=sys.stderr)
     try:
         STORE.save_job(job)
     except Exception as e:

@@ -17,7 +17,8 @@
   Ф1/общий шрифт: рукописный список один на оба пути печати;
   Х9. засечки определяются по буквам, когда чтение о них не сказало;
   Х10. дореформенная печать — старой антиквой, кегль — по строчным;
-  Х11. полужирный от размытия снимается площадью краски.
+  Х11. полужирный от размытия снимается площадью краски;
+  Х12. вес штриха — по середине тона, в долях кегля.
 Без сети и без вызовов модели.
 """
 import io
@@ -469,6 +470,39 @@ for fn, want in (("NotoSans-Regular.ttf", False), ("NotoSans-Bold.ttf", True)):
     got11 = tp.bold_by_area(m11["mask"], lb11, " ".join(TX9[:2]), float(m11["em"]),
                             SUB + "NotoSans-Regular.ttf", SUB + "NotoSans-Bold.ttf")
     check(got11 == want, "%s: жирный=%s по площади" % (fn, got11))
+
+print("\n── Х12. вес штриха по середине тона ──")
+def page12(fn, lines, size, blur=0.0, stroke=0):
+    f_ = ImageFont.truetype(SUB + fn, size)
+    im_ = Image.new("RGB", (1300, int(size * 1.6) * len(lines) + 40), (238, 236, 230))
+    d_ = ImageDraw.Draw(im_)
+    lb_ = []
+    for k_, t_ in enumerate(lines):
+        y_ = 20 + k_ * int(size * 1.6)
+        d_.text((30, y_), t_, font=f_, fill=(25, 25, 25), stroke_width=stroke, stroke_fill=(25, 25, 25))
+        lb_.append(list(d_.textbbox((30, y_), t_, font=f_, stroke_width=stroke)))
+    if blur:
+        im_ = im_.filter(ImageFilter.GaussianBlur(blur))
+    return np.asarray(im_).copy(), lb_
+LW = ["one fine evening an equally fine government clerk", "was sitting in the second row of stalls and"]
+st0 = tp.stem_mid(*page12("OldStandard-Regular.ttf", LW, 48), (238, 236, 230), (25, 25, 25))
+st1 = tp.stem_mid(*page12("OldStandard-Regular.ttf", LW, 48, 1.5), (238, 236, 230), (25, 25, 25))
+check(st0 > 0 and abs(st1 - st0) <= 0.2 * st0, "штрих по середине тона от размытия почти не зависит: %.2f / %.2f" % (st0, st1))
+fs12 = tp.font_stem_mid(SUB + "OldStandard-Regular.ttf") * 48
+check(abs(st0 - fs12) <= 0.15 * fs12, "замер страницы и эталон шрифта — одна мера: %.2f / %.2f" % (st0, fs12))
+check(tp.weight_stroke(st1, SUB + "OldStandard-Regular.ttf", 48, " ".join(LW)) == 0.0,
+      "оригинал тем же шрифтом — обводки нет")
+sth = tp.stem_mid(*page12("OldStandard-Regular.ttf", LW, 48, 1.0, 1), (238, 236, 230), (25, 25, 25))
+w12 = tp.weight_stroke(sth, SUB + "OldStandard-Regular.ttf", 48, " ".join(LW))
+check(0.5 <= w12 <= 1.5, "оригинал жирнее на точку с каждой стороны — обводка ~1: %.2f" % w12)
+w12s = tp.weight_stroke(sth * 0.75, SUB + "OldStandard-Regular.ttf", 36, " ".join(LW))
+check(abs(w12s - 0.75 * w12) <= 0.05, "вес в долях кегля: мельче в 0.75 — обводка в 0.75 (%.2f / %.2f)" % (w12s, w12))
+check(tp.weight_stroke(2.4, SUB + "OldStandard-Regular.ttf", 20, " ".join(LW)) == 0.0,
+      "штрих тоньше WEIGHT_MIN_PX — не дотягиваем (размытие его не отпускает)")
+CAPS = ["THE DEATH OF A CIVIL SERVANT", "SMERT CHINOVNIKA HINMU"]
+stc = tp.stem_mid(*page12("OldStandard-Regular.ttf", CAPS, 48, 1.0), (238, 236, 230), (25, 25, 25))
+check(tp.weight_stroke(stc, SUB + "OldStandard-Regular.ttf", 48, " ".join(CAPS)) == 0.0,
+      "прописные сравниваются с прописными шрифта — лишнего веса нет (%.2f)" % stc)
 
 print()
 if fail:

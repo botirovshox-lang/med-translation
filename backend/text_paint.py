@@ -1661,6 +1661,111 @@ def bold_by_area(mask, line_boxes, src: str, em: float, reg_path: str, bold_path
     return abs(math.log(area / ab)) <= abs(math.log(area / ar))
 
 
+# Х12. Вес штриха — по середине тона. Маска букв берёт всё, что заметно
+# темнее бумаги, и размытие скана раздувает по ней штрих — поэтому вес
+# по маске не мерили (Х10, Х11). На уровне ровно посередине между бумагой
+# и краской край штриха при симметричном размытии остаётся на месте:
+# толщина вертикального штриха (медиана горизонтальных серий в полосе
+# строчных) от размытия почти не зависит (Old Standard 40 px: 0.16 без
+# размытия, 0.18 при 1.5 px). Книга 1886 г.: 0.19 высоты строчной против
+# 0.16 у нашего перевода — перевод был на треть светлее (доля тёмного
+# 0.097 против 0.144). Штрих оригинала толще шрифта при этом кегле в
+# `WEIGHT_X` раз и больше — дотягивается дробной обводкой (слой рисуется
+# крупнее, `image_text._paint_put`), не больше `STROKE_MAX` кегля; тоньше —
+# не трогаем (полужирный решают Х11 и `BOLD_STEM`).
+WEIGHT_X = float(os.environ.get("PAINT_WEIGHT_X", "1.12"))
+# Тоньше этого (в точках снимка) штрих сравним с размытием, и середина тона
+# его не держит: аннотация статьи (штрих 2 точки) по ней «жирнее» шрифта,
+# и обводка делала её темнее оригинала (доля тёмного 0.163 против 0.14).
+WEIGHT_MIN_PX = float(os.environ.get("PAINT_WEIGHT_MIN_PX", "3"))
+
+
+def stem_mid(rgb, line_boxes, bg, ink) -> float:
+    """Толщина вертикального штриха на середине тона, в точках снимка, или 0.
+    Край штриха — там, где тон пересекает середину, с интерполяцией между
+    точками: у тонкого штриха (3–4 точки) счёт целыми точками давал шум
+    в треть толщины."""
+    if np is None or rgb is None or not line_boxes:
+        return 0.0
+    g = rgb[..., :3].astype(np.float32).mean(axis=2)
+    pb, pi = float(np.mean(bg)), float(np.mean(ink))
+    if abs(pb - pi) < 2 * INK_DIFF / 3:
+        return 0.0
+    thr = (pb + pi) / 2.0
+    d_all = (thr - g) if pi < pb else (g - thr)          # > 0 — краска
+    H, W = g.shape
+    runs = []
+    for lb in line_boxes:
+        a, b = max(0, int(lb[1])), min(H, int(math.ceil(lb[3])))
+        c, d = max(0, int(lb[0])), min(W, int(math.ceil(lb[2])))
+        if b - a < 6 or d - c < 6:
+            continue
+        dd = d_all[a:b, c:d]
+        mm = dd > 0
+        prof = mm.sum(axis=1)
+        if not prof.max():
+            continue
+        core = np.nonzero(prof >= 0.5 * prof.max())[0]
+        top, bot = int(core[0]), int(core[-1])
+        xh = bot - top + 1
+        for y in range(top + xh // 4, bot - xh // 4 + 1):
+            row = dd[y]
+            sg = row > 0
+            dif = np.diff(sg.astype(np.int8))
+            ups, downs = np.nonzero(dif == 1)[0], np.nonzero(dif == -1)[0]
+            for u in ups:
+                nx = downs[downs > u]
+                if not len(nx):
+                    break
+                v = int(nx[0])
+                # Край: u→u+1 (вход в краску), v→v+1 (выход), линейно.
+                xa = u + row[u] / (row[u] - row[u + 1]) if row[u] != row[u + 1] else u + 0.5
+                xb = v + row[v] / (row[v] - row[v + 1]) if row[v] != row[v + 1] else v + 0.5
+                w_ = xb - xa
+                if 0 < w_ < 0.5 * xh:
+                    runs.append(w_)
+    if len(runs) < 20:
+        return 0.0
+    return float(np.median(runs))
+
+
+_STEM_MID_CACHE: dict = {}
+
+
+def font_stem_mid(path: str, caps: bool = False) -> float:
+    """Штрих шрифта на единицу кегля, тем же замером (`stem_mid`). `caps` —
+    по прописным: у них штрих толще, и заголовок прописными, сравненный со
+    строчными шрифта, получал лишний вес."""
+    if not path:
+        return 0.0
+    key = (path, caps)
+    if key not in _STEM_MID_CACHE:
+        v = 0.0
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            f = ImageFont.truetype(path, 100)
+            im = Image.new("RGB", (1400, 160), (255, 255, 255))
+            dr = ImageDraw.Draw(im)
+            txt = "HINMULEHIDNM" if caps else "nmuhlinmnuhdbpq"
+            dr.text((10, 10), txt, font=f, fill=(0, 0, 0))
+            v = stem_mid(np.asarray(im), [list(dr.textbbox((10, 10), txt, font=f))],
+                         (255, 255, 255), (0, 0, 0)) / 100.0
+        except Exception:
+            v = 0.0
+        _STEM_MID_CACHE[key] = v
+    return _STEM_MID_CACHE[key]
+
+
+def weight_stroke(stem_src: float, path: str, size: float, src: str = "") -> float:
+    """Обводка с каждой стороны (дробная) до штриха оригинала или 0 (Х12).
+    Эталон шрифта — из тех же букв, что оригинал (прописные или строчные)."""
+    caps = bool(src) and lower_share(src) < XH_LOWER
+    fs = (font_stem_mid(path, caps) or font_stem(path)) * size
+    if not (stem_src >= WEIGHT_MIN_PX and fs > 0) or stem_src < WEIGHT_X * fs:
+        return 0.0
+    return min((stem_src - fs) / 2.0, STROKE_MAX * size)
+
+
 # ── Раздел Х: машинопись, выключка, абзацы внутри блока (16.10.2026) ─────
 
 # Х1. Машинопись — шаг знака постоянный: середины букв строки ложатся на

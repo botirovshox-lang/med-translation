@@ -1914,6 +1914,11 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     # Толщина штриха (Ф7) — у почерка и у машинописи: шрифт тоньше ручки
     # и удара литеры.
     stem = tp._stem(m["mask"]) * k if fam in ("hand", "type") else 0.0
+    stem_mid = 0.0
+    if fam not in ("hand", "type") and not m["angle"] and not m.get("arc") and lbs:
+        # Х12: вес — по середине тона между бумагой и краской.
+        stem_mid = tp.stem_mid(rgb, [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs],
+                               m.get("bg") or (255, 255, 255), m["ink"]) * k
     # Х2: выключка — по краям строк оригинала, если они её говорят.
     align = (geo or {}).get("align") or it.get("align") or "left"
     if fam == "hand" and align == "justify":
@@ -1921,7 +1926,7 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     return {"m": m, "erased": erased, "alpha": alpha, "fpath": fpath, "font_at": font_at,
             "em": em, "h0": h0, "geo": geo, "k": k, "pbox": pbox, "it": it, "fam": fam,
             "align": align,
-            "ink": m["ink"], "stem": stem,
+            "ink": m["ink"], "stem": stem, "stemMid": stem_mid,
             "handFallback": fam == "hand" and fpath not in _pf().hand_font_files()}
 
 
@@ -2030,9 +2035,15 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
     if size < IMG_FONT_MIN_PX * k * 0.6:
         return None
     stroke = 0
+    stroke_f = 0.0
     if pm.get("stem") and not m.get("arc") and not m["angle"]:
         stroke = tp.stroke_for(pm["stem"], tp.font_stem(pm["fpath"]), size)
-    return {"pbox": pm["pbox"], "stroke": stroke, "erased": pm["erased"],
+    elif pm.get("stemMid") and not m.get("arc") and not m["angle"]:
+        # Х12: штрих — в долях кегля оригинала: перевод встал мельче —
+        # тоньше и штрих (жирность — свойство шрифта, а не точек).
+        stroke_f = tp.weight_stroke(pm["stemMid"] * size / max(1e-6, pm["em"]), pm["fpath"], size,
+                                    it.get("src") or "")
+    return {"pbox": pm["pbox"], "stroke": stroke, "strokeF": stroke_f, "erased": pm["erased"],
             "dash": pm.get("fam") == "hand" and _short_hyphen(pm["fpath"]),
             "alpha": pm["alpha"], "m": m, "lines": lines, "size": size, "step": step_, "h0": h0, "font": font_at(size),
             "k": k, "align": _start_align(pm.get("align") or it.get("align"), text), "parts": parts,
@@ -2190,6 +2201,20 @@ def _paint_put(big, p: dict) -> None:
         if p.get("dash"):
             # Х7: дефис рукописного шрифта слишком мал — тире (только печать).
             txt = txt.replace("-", "\u2013")
+        sf = float(p.get("strokeF") or 0.0)
+        if sf > 0 and not sw and getattr(f_, "path", None):
+            # Х12: дробная обводка — слой крупнее в SUP раз, затем вниз.
+            SUP = 4
+            fb = ImageFont.truetype(f_.path, max(4, int(round(f_.size * SUP))))
+            swb = max(1, int(round(sf * SUP)))
+            bb = fb.getbbox(txt, stroke_width=swb)
+            wb = max(SUP, bb[2] - min(0, bb[0]) + 2 * SUP + swb)
+            hb = max(SUP, int(s_ * 1.4 * SUP) + 2 * swb)
+            imb = Image.new("RGBA", (wb, hb), (0, 0, 0, 0))
+            ImageDraw.Draw(imb).text((SUP + swb, swb), txt, font=fb, fill=ink, stroke_width=swb,
+                                     stroke_fill=ink)
+            wl, hl = max(1, int(round(wb / SUP))), max(1, int(round(hb / SUP)))
+            return imb.resize((max(1, int(wl * h0)), hl), Image.LANCZOS)
         bb = f_.getbbox(txt, stroke_width=sw)
         wl, hl = max(1, bb[2] - min(0, bb[0]) + 2 + sw), max(1, int(s_ * 1.4) + 2 * sw)
         im = Image.new("RGBA", (wl, hl), (0, 0, 0, 0))

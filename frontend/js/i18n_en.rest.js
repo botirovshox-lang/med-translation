@@ -2848,6 +2848,7 @@ window.I18N.register("en", {
  "раз кончились выданные страницы — пора предлагать пакет": "times the granted pages ran out — time to offer a package",
  "раз кончились минуты видео — пора предлагать пакет минут": "times video minutes ran out — time to offer a minutes pack",
  "раз несли тот же файл второй раз: человек не нашёл свой же готовый проект": "times the same file was brought twice: the person did not find their own ready project",
+ "раз поставщик моделей отказал серверу по стране": "times the model provider refused the server by country",
  "раз поставщик не ответил: сеть или таймаут": "times the provider did not answer: network or timeout",
  "раз поставщик ответил «слишком часто» (rate limit)": "times the provider answered “too often” (rate limit)",
  "раз правка оригинала выросла больше потолка": "times a source edit grew past the ceiling",

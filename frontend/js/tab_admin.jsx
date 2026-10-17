@@ -927,6 +927,7 @@ function metHintText(code) {
     case "waste:jobStopped:fnlimit": return TR("прогонов остановлено правилом функции");
     case "waste:jobStopped:provider_quota": return TR("прогонов остановлено пустым счётом у поставщика");
     case "provider:quota": return TR("раз у поставщика моделей кончились деньги");
+    case "provider:region": return TR("раз поставщик моделей отказал серверу по стране");
     case "provider:rate": return TR("раз поставщик ответил «слишком часто» (rate limit)");
     case "provider:timeout": return TR("раз поставщик не ответил: сеть или таймаут");
     case "provider:other": return TR("прочих ошибок поставщика моделей");

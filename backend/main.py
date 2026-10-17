@@ -3751,8 +3751,19 @@ _QUOTA_MARKERS = ("insufficient_quota", "exceeded your current quota", "billing_
                   "billing hard limit", "account is not active", "check your plan and billing",
                   # Anthropic: «Your credit balance is too low to access the Anthropic API»
                   "credit balance is too low")
+# Отказ ПО СТРАНЕ (09.10.2026: OpenAI — 403 `unsupported_country_region_territory`,
+# Anthropic — 403 «Request not allowed» адресу сервера в РФ). По смыслу это
+# тот же класс, что пустой счёт: отказывает каждый вызов, ожидание не поможет,
+# повтор порции — деньги и минуты впустую. Поэтому путь остановки ОДИН
+# (`_is_quota_error` узнаёт оба, `stopReason: provider_quota`, человеку — та же
+# фраза), а различаются только слова владельцу: «пополните счёт» при отказе
+# по стране отправило бы его не туда — чинится это выходом через прокси.
+_REGION_MARKERS = ("unsupported_country_region_territory", "country, region, or territory not supported",
+                   "request not allowed")
 JOB_STOP_PROVIDER_QUOTA = ("У поставщика моделей закончился баланс сервиса: прогон остановлен, "
                            "сделанное сохранено")
+JOB_STOP_PROVIDER_REGION = ("Поставщик моделей отказал серверу по стране: прогон остановлен, "
+                            "сделанное сохранено. Проверьте выход через прокси")
 _PROVIDER_ERR = {"text": "", "at": 0.0}
 # Что видит человек вместо «нет баланса у поставщика» (решение владельца
 # 09.10.2026). Баланс у поставщика — устройство и деньги СЕРВИСА, а не
@@ -3767,14 +3778,20 @@ def _provider_fault_public(text):
     """Текст ошибки для НЕ-суперпользователя: пустой счёт поставщика —
     одной постоянной фразой (ключ `TRS()`), всё прочее — как было."""
     t = str(text or "")
-    if t == JOB_STOP_PROVIDER_QUOTA or _is_quota_error(t):
+    if t in (JOB_STOP_PROVIDER_QUOTA, JOB_STOP_PROVIDER_REGION) or _is_quota_error(t):
         return PROVIDER_FAULT_PUBLIC
     return text
 
 
-def _is_quota_error(text) -> bool:
+def _is_region_error(text) -> bool:
     t = str(text or "").lower()
-    return any(m in t for m in _QUOTA_MARKERS)
+    return any(m in t for m in _REGION_MARKERS)
+
+
+def _is_quota_error(text) -> bool:
+    """Вызов не пройдёт, сколько ни повторяй: пустой счёт ИЛИ отказ по стране."""
+    t = str(text or "").lower()
+    return any(m in t for m in _QUOTA_MARKERS) or _is_region_error(t)
 
 
 def _provider_err_kind(text: str) -> str:
@@ -3784,6 +3801,8 @@ def _provider_err_kind(text: str) -> str:
     `timeout` — сеть, `other` — всё прочее. Одной строкой «ошибка» они
     складывались бы в число, по которому нечего решать."""
     t = str(text or "").lower()
+    if _is_region_error(t):
+        return "region"
     if _is_quota_error(t):
         return "quota"
     if "rate limit" in t or "429" in t or "rate_limit" in t:
@@ -3834,13 +3853,21 @@ def _quota_recent(window: float = 120.0) -> bool:
     return (time.time() - _PROVIDER_ERR["at"] < window) and _is_quota_error(_PROVIDER_ERR["text"])
 
 
-def _job_quota_stop(job: dict) -> None:
+def _job_quota_stop(job: dict, why: str = "") -> None:
     job["status"] = "stopped"
     job["stopReason"] = "provider_quota"
     _ev("waste.jobStopped:provider_quota", _tenant_of(job))
-    job["error"] = JOB_STOP_PROVIDER_QUOTA
+    # Причина — из ошибки, остановившей ЭТОТ прогон; общее окно `_PROVIDER_ERR`
+    # — запасной ход (его перезаписывает последний писавший поток).
+    region = _is_region_error(why) if why else _is_region_error(_PROVIDER_ERR["text"])
+    job["error"] = JOB_STOP_PROVIDER_REGION if region else JOB_STOP_PROVIDER_QUOTA
     job["counters"]["quotaStop"] = 1
-    if tg_mod:
+    if tg_mod and region:
+        tg_mod.notify_admin_async(
+            "🔴 Поставщик моделей отказал серверу по стране: прогон №%s организации «%s» "
+            "остановлен на %s из %s. Проверьте прокси (HTTPS_PROXY в /etc/medcat/env, "
+            "tinyproxy на Vultr)." % (job.get("id"), _tenant_of(job), job.get("done"), job.get("total")))
+    elif tg_mod:
         tg_mod.notify_admin_async(
             "🔴 Кончился баланс у поставщика моделей: прогон №%s организации «%s» "
             "остановлен на %s из %s. Пополните счёт." % (job.get("id"), _tenant_of(job),
@@ -8858,7 +8885,8 @@ METRICS_WASTE_TEXT = {
 }
 METRICS_PROVIDER_TEXT = {
     "quota": "кончились деньги у поставщика",
-    "rate": "слишком часто просим (rate limit)",
+    "region": "отказ поставщика по стране",
+    "rate":"слишком часто просим (rate limit)",
     "timeout": "сеть/таймаут",
     "other": "прочие ошибки поставщика",
 }
@@ -37457,7 +37485,7 @@ def _job_run(job: dict):
         _brief_auto(job)
         chunk = ids[i:i + chunk_size]
         job["recent"] = chunk          # клиент подтянет только эти сегменты
-        last_err = None
+        last_err, quota_why = None, ""
         for attempt in range(JOB_CHUNK_RETRIES + 1):
             t_chunk = time.time()
             try:
@@ -37510,6 +37538,7 @@ def _job_run(job: dict):
                 # Пуст счёт у поставщика — ждать и повторять бессмысленно.
                 print(f"[backend] job#{job['id']} остановлен: баланс поставщика ({e})", file=sys.stderr)
                 last_err = "quota"
+                quota_why = str(e)
                 break
             except Exception as e:
                 last_err = str(e)
@@ -37517,7 +37546,7 @@ def _job_run(job: dict):
                 if attempt < JOB_CHUNK_RETRIES:
                     time.sleep(JOB_RETRY_PAUSE)
         if last_err == "quota":
-            _job_quota_stop(job)
+            _job_quota_stop(job, quota_why)
             break
         if last_err:
             job["status"] = "error"

@@ -484,6 +484,7 @@
   "раз просили формат, которого у нас нет — это список, какой импорт писать следующим": "times a format we do not have was asked for — this is the list of which import to write next",
   "раз пытались загрузить тот же файл второй раз": "times the same file was uploaded a second time",
   "раз у поставщика моделей кончились деньги": "times the model provider ran out of money",
+  "раз поставщик моделей отказал серверу по стране": "times the model provider refused the server by country",
   "раз упёрлись в потолок числа проектов": "times the project-count ceiling was hit",
   "раз файл не взяли — он толще потолка страниц. Это спрос на большие документы: потолок можно поднять платно": "times a file was refused — it is thicker than the page cap. That is demand for large documents: the cap can be raised for a fee",
   "раз файл не взяли — он тяжелее потолка в мегабайтах": "times a file was refused — it is heavier than the megabyte cap",

@@ -2848,6 +2848,7 @@ window.I18N.register("uz", {
  "раз кончились выданные страницы — пора предлагать пакет": "marta berilgan sahifalar tugadi — paket taklif qilish vaqti keldi",
  "раз кончились минуты видео — пора предлагать пакет минут": "marta video daqiqalari tugadi — daqiqalar paketini taklif qilish vaqti",
  "раз несли тот же файл второй раз: человек не нашёл свой же готовый проект": "marta o‘sha faylni ikkinchi marta olib kelishdi: odam o‘zining tayyor loyihasini topolmadi",
+ "раз поставщик моделей отказал серверу по стране": "marta model provayderi serverni mamlakat bo‘yicha rad etdi",
  "раз поставщик не ответил: сеть или таймаут": "marta provayder javob bermadi: tarmoq yoki taymaut",
  "раз поставщик ответил «слишком часто» (rate limit)": "marta provayder «juda tez-tez» deb javob berdi (rate limit)",
  "раз правка оригинала выросла больше потолка": "marta asl matn tahriri chegaradan oshib ketdi",

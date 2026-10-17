@@ -181,6 +181,38 @@ check(main._is_quota_error(QUOTA) and not main._is_quota_error("Connection reset
       and not main._is_quota_error("Rate limit reached for requests"),
       "пустой счёт отличается от сбоя сети и обычного ограничения частоты")
 
+print("=== 5а. Отказ поставщика по стране — тот же стоп, свои слова владельцу ===")
+REGION = ("Error code: 403 - {'error': {'code': 'unsupported_country_region_territory', "
+          "'message': 'Country, region, or territory not supported'}}")
+ANTH403 = "Error code: 403 - {'type': 'error', 'error': {'type': 'forbidden', 'message': 'Request not allowed'}}"
+calls.clear()
+_sent = []
+
+
+def _chunk_region(kind, p, chunk, params):
+    calls.append(list(chunk))
+    return {"done": 0, "errors": len(chunk), "why": REGION}
+
+
+main._job_chunk, main.time.sleep = _chunk_region, (lambda s: None)
+_tg = main.tg_mod
+main.tg_mod = type("T", (), {"notify_admin_async": staticmethod(lambda t: _sent.append(t))})
+main._PROVIDER_ERR["text"] = QUOTA          # чужая ошибка в общем окне не должна решать
+job = dict(job, id=992, status="queued", done=0, counters={}, error=None, cursor=0, stopReason=None)
+try:
+    main._job_execute(job)
+finally:
+    main._job_chunk, main.time.sleep, main.tg_mod = orig_chunk, orig_sleep, _tg
+check(job["status"] == "stopped" and job.get("stopReason") == "provider_quota" and len(calls) == 1,
+      "отказ по стране — стоп без повторов: %s, вызовов %d" % (job["status"], len(calls)))
+check(job["error"] == main.JOB_STOP_PROVIDER_REGION, "владельцу — причина «по стране», а не «пополните»")
+check(_sent and "прокси" in _sent[0] and "Пополните" not in _sent[0], "сообщение в Telegram про прокси")
+check(main._provider_fault_public(main.JOB_STOP_PROVIDER_REGION) == main.PROVIDER_FAULT_PUBLIC,
+      "человеку — та же фраза «ошибка на стороне провайдера»")
+check(main._is_quota_error(ANTH403) and main._provider_err_kind(ANTH403) == "region"
+      and main._provider_err_kind(QUOTA) == "quota", "Anthropic 403 узнаётся, классы не смешаны")
+check(not main._is_region_error("Error code: 403 - invalid api key"), "прочий 403 — не отказ по стране")
+
 # Ошибка номерами (перевод отдаёт в `errors` только id) — причина берётся
 # из последней ошибки поставщика.
 main._note_provider_error(Exception(QUOTA))

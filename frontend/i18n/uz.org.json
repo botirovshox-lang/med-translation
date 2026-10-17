@@ -484,6 +484,7 @@
   "раз просили формат, которого у нас нет — это список, какой импорт писать следующим": "marta bizda yo‘q formatni so‘rashdi — bu keyingi importni qaysi biri qilish ro‘yxati",
   "раз пытались загрузить тот же файл второй раз": "marta bir xil fayl ikkinchi marta yuklanmoqchi bo‘ldi",
   "раз у поставщика моделей кончились деньги": "marta model provayderida pul tugadi",
+  "раз поставщик моделей отказал серверу по стране": "marta model provayderi serverni mamlakat bo‘yicha rad etdi",
   "раз упёрлись в потолок числа проектов": "marta loyihalar soni chegarasiga urilishdi",
   "раз файл не взяли — он толще потолка страниц. Это спрос на большие документы: потолок можно поднять платно": "marta fayl qabul qilinmadi — u sahifa chegarasidan qalinroq. Bu katta hujjatlarga talab: chegarani pullik ko‘tarish mumkin",
   "раз файл не взяли — он тяжелее потолка в мегабайтах": "marta fayl qabul qilinmadi — u megabayt chegarasidan og‘irroq",

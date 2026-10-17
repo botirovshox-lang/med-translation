@@ -32,6 +32,7 @@
 from __future__ import annotations
 
 import math
+import re
 import os
 
 try:
@@ -673,6 +674,95 @@ def ink_lines(rgb, rows: int = 1, line_h: float = 0.0) -> list:
             prev = x
         out.append([start, a, prev + 1, b + 1])
     return out
+
+
+# Х14. Строка другого размера в конце блока — свой участок. Чтение склеило
+# две строки заголовка статьи (Times, полосы 50 и 40 точек) и строку
+# авторов (мелкий гротеск, 27): перевод один на блок и укладывался одним
+# кеглем — авторы размером заголовка, и всё сжималось до 0.78. Правило:
+# последняя настоящая полоса (не обрывок выносных: не ниже `SPLIT_FRAG`
+# высоты самой высокой) ниже медианы предыдущих в `SPLIT_SIZE` раз и больше —
+# отдельный участок, ЕСЛИ в переводе нашёлся хвост, перенесённый из
+# оригинала дословно (имена не переводятся), и он однозначен (`tail_anchor`).
+# Делить по доле длины нельзя: разрез посреди имени хуже общего кегля.
+# Порог по высоте — только для последней строки: буквица, индексы и
+# прописные дают рамки в 1.3–1.5 раза разные посреди обычного абзаца.
+SPLIT_SIZE = float(os.environ.get("PAINT_SPLIT_SIZE", "1.5"))
+SPLIT_FRAG = float(os.environ.get("PAINT_SPLIT_FRAG", "0.3"))
+TAIL_MIN = int(os.environ.get("PAINT_TAIL_MIN", "4"))
+TAIL_FOREIGN = float(os.environ.get("PAINT_TAIL_FOREIGN", "0.25"))
+
+
+def _tok_key(t: str) -> str:
+    return "".join(ch for ch in t if ch.isalnum()).lower()
+
+
+def tail_anchor(text: str, src: str) -> "tuple | None":
+    """(позиция в `text`, позиция в `src`), с которых начинается хвост,
+    перенесённый из `src` дословно (Х14), или None. Хвост: не меньше `TAIL_MIN` слов, чужих
+    (нет в оригинале) — не больше `TAIL_FOREIGN` доли, первое слово — из
+    оригинала, слово перед ним — нет; в оригинале слова хвоста идут в том
+    же порядке и заканчивают его."""
+    src_spans = [(mm.start(), mm.group()) for mm in re.finditer(r"\S+", src or "")]
+    src_toks = [_tok_key(t) for _, t in src_spans]
+    known = {t for t in src_toks if t}
+    spans = [(mm.start(), mm.group()) for mm in re.finditer(r"\S+", text or "")]
+    keys = [_tok_key(t) for _, t in spans]
+    n = len(keys)
+    best = None
+    foreign = 0
+    for i in range(n - 1, -1, -1):
+        if keys[i] and keys[i] not in known:
+            foreign += 1
+        size_ = n - i
+        if (size_ >= TAIL_MIN and keys[i] in known and foreign <= TAIL_FOREIGN * size_
+                and (i == 0 or (keys[i - 1] and keys[i - 1] not in known))):
+            best = i
+    if best is None or best == 0:
+        return None
+    # Хвост из чисел и сокращений («Table 1 … 2020 2021») — не имена:
+    # слов с буквами в нём не меньше половины.
+    if sum(1 for k_ in keys[best:] if any(ch.isalpha() for ch in k_)) * 2 < n - best:
+        return None
+    tail = [k_ for k_ in keys[best:] if k_ in known]
+    # Порядок в оригинале — подпоследовательность его хвоста.
+    j, hits, first = len(src_toks) - 1, 0, None
+    for k_ in reversed(tail):
+        while j >= 0 and src_toks[j] != k_:
+            j -= 1
+        if j < 0:
+            return None
+        hits += 1
+        first = j
+        j -= 1
+    if hits != len(tail) or first is None or first == 0:
+        return None
+    return spans[best][0], src_spans[first][0]
+
+
+def size_split(bands: list, text: str, src: str):
+    """(участки, куски перевода, куски оригинала, высоты полос участков)
+    для строки другого размера в конце блока (Х14) или None."""
+    if len(bands) < 2:
+        return None
+    hs = [b - a + 1 for a, b in bands]
+    big = max(hs)
+    real = [i for i, h_ in enumerate(hs) if h_ >= SPLIT_FRAG * big]
+    if len(real) < 2:
+        return None
+    last = real[-1]
+    prev = [hs[i] for i in real[:-1]]
+    if hs[last] * SPLIT_SIZE > float(np.median(prev)):
+        return None
+    cut = tail_anchor(text, src)
+    if cut is None:
+        return None
+    head, tail = text[:cut[0]].rstrip(), text[cut[0]:].strip()
+    s_head, s_tail = src[:cut[1]].rstrip(), src[cut[1]:].strip()
+    if not head or not tail or not s_head:
+        return None
+    return ([[0, last - 1], [last, len(bands) - 1]], [head, tail], [s_head, s_tail],
+            [float(np.median(prev)), float(hs[last])])
 
 
 def split_text(text: str, weights: list) -> list:

@@ -19,7 +19,9 @@
   Х10. дореформенная печать — старой антиквой, кегль — по строчным;
   Х11. полужирный от размытия снимается площадью краски;
   Х12. замер штриха — по середине тона;
-  Х13. цвет краски — по оси штриха, обводка — до плотности набора; PDF — те же правила.
+  Х13. цвет краски — по оси штриха, обводка — до плотности набора; PDF — те же правила;
+  Х14. строка другого размера в конце блока — свой участок по дословному хвосту;
+  Х15. машинопись уменьшается поровну кеглем и шириной.
 Без сети и без вызовов модели.
 """
 import io
@@ -518,6 +520,114 @@ check(tp.weight_by_density(0.1, lambda sf: tp.sample_density(fp13, TR13, 48, 0.8
       "перевод уже плотнее оригинала (сжат по ширине) — обводки нет")
 check(all(k_ in lps for k_ in ("tp.core_ink(", "tp.band_density(", "tp.weight_by_density(", "tp.bold_by_area(")),
       "путь PDF зовёт те же правила Х11–Х13")
+
+print("\n── Х14. строка другого размера в конце блока ──")
+SRC14 = ("Sleep quality, duration, and consistency are associated with better academic performance "
+         "in college students Kana Okano1, Jakub R. Kaczmarzyk1, Neha Dave2, John D. E. Gabrieli1 "
+         "and Jeffrey C. Grossman3")
+TR14 = ("Uyqu sifati, davomiyligi va muntazamligi kollej talabalarining oʻqishdagi yaxshiroq natijalari "
+        "bilan bogʻliq Kana Okano1, Jakub R. Kaczmarzyk1, Neha Dave2, John D. E. Gabrieli1 va Jeffrey C. Grossman3")
+c14 = tp.tail_anchor(TR14, SRC14)
+check(c14 is not None and TR14[c14[0]:].startswith("Kana") and SRC14[c14[1]:].startswith("Kana"),
+      "хвост с именами найден и в переводе, и в оригинале: %s" % (c14,))
+check(tp.tail_anchor("Ұйқы сапасы байланысты Кана Окано1, Якуб Р. Качмарчик1, Неха Даве2", SRC14) is None,
+      "имена транслитерированы — хвоста нет, блок не делится")
+check(tp.tail_anchor(SRC14, SRC14) is None, "перевод совпал с оригиналом целиком — делить нечем")
+check(tp.size_split([(0, 50), (60, 100), (110, 137)], TR14, SRC14) is not None,
+      "последняя строка ниже в 1.5 раза и хвост есть — делим")
+check(tp.size_split([(0, 50), (60, 100), (110, 150)], TR14, SRC14) is None, "строки одного размера — не делим")
+check(tp.size_split([(0, 50), (60, 80), (90, 140)], TR14, SRC14) is None,
+      "мелкая строка посередине (индексы, буквица) — не делим")
+check(tp.size_split([(0, 50), (60, 100), (102, 107), (110, 137)], TR14, SRC14) is not None,
+      "обрывок выносных между строками не мешает")
+pg14 = Image.new("RGB", (1500, 260), (250, 250, 250))
+d14 = ImageDraw.Draw(pg14)
+fT = ImageFont.truetype(SUB + "NotoSerif-Regular.ttf", 44)
+fA = ImageFont.truetype(SUB + "NotoSans-Regular.ttf", 22)
+L14 = ["Sleep quality, duration, and consistency are associated with",
+       "better academic performance in college students"]
+lb14 = []
+for k_, t_ in enumerate(L14):
+    d14.text((20, 10 + k_ * 60), t_, font=fT, fill=(30, 30, 30))
+    lb14.append(list(d14.textbbox((20, 10 + k_ * 60), t_, font=fT)))
+A14 = "Kana Okano1, Jakub R. Kaczmarzyk1, Neha Dave2, John D. E. Gabrieli1 and Jeffrey C. Grossman3"
+d14.text((20, 150), A14, font=fA, fill=(30, 30, 30))
+lb14.append(list(d14.textbbox((20, 150), A14, font=fA)))
+b14 = io.BytesIO()
+pg14.save(b14, "PNG")
+got14 = []
+_orig_l14 = it._paint_layout
+
+
+def _cap14(*a, **kw):
+    r_ = _orig_l14(*a, **kw)
+    if r_ is not None:
+        got14.append(r_)
+    return r_
+
+
+it._paint_layout = _cap14
+try:
+    box14 = [20, min(b[1] for b in lb14), max(b[2] for b in lb14), max(b[3] for b in lb14)]
+    _, r14 = it.render_target(b14.getvalue(), [{"box": box14, "text": TR14, "rows": 3, "lineH": 50,
+                                                "lineBoxes": lb14, "src": SRC14, "align": "left"}])
+finally:
+    it._paint_layout = _orig_l14
+pp14 = [g for g in got14 if len(g.get("parts") or []) == 2]
+check(r14 and r14[0].get("ok") and pp14, "блок разделён на два участка: %s" % r14)
+if pp14:
+    s0, s1 = pp14[-1]["parts"][0]["size"], pp14[-1]["parts"][1]["size"]
+    check(s1 < 0.7 * s0 and pp14[-1]["parts"][1]["lines"][0].startswith("Kana"),
+          "у авторов свой кегль (%.1f против %.1f), строка — имена" % (s1, s0))
+    check(pp14[-1]["h0"] >= 0.9, "заголовок не сжат авторами: h0 %.2f" % pp14[-1]["h0"])
+
+print("\n── Х15. машинопись: уменьшение — кеглем и шириной поровну ──")
+mono15 = print_fonts.family_files("type")[0]
+im15, lb15 = typed_page(mono15, TL + ["of other works."])
+b15 = io.BytesIO()
+im15.save(b15, "PNG")
+box15 = [min(b[0] for b in lb15), min(b[1] for b in lb15), max(b[2] for b in lb15), max(b[3] for b in lb15)]
+LONG15 = " ".join(["Rejada barcha pavilyonlarda shuvoq ishlari bajarilishi koʻzda tutilgan"] * 6)
+got15 = []
+_orig_l15 = it._paint_layout1
+
+
+def _cap15(pm, *a, **kw):
+    r_ = _orig_l15(pm, *a, **kw)
+    if r_ is not None:
+        got15.append((pm.get("fam"), pm["h0"], r_["size"]))
+    return r_
+
+
+it._paint_layout1 = _cap15
+try:
+    _, r15 = it.render_target(b15.getvalue(), [{"box": box15, "text": LONG15, "rows": len(lb15), "lineH": 30,
+                                                "lineBoxes": lb15, "src": " ".join(TL + ["of other works."]),
+                                                "align": "left"}])
+finally:
+    it._paint_layout1 = _orig_l15
+tys = [g for g in got15 if g[0] == "type"]
+check(r15 and r15[0].get("ok") and len(tys) >= 2 and tys[-1][2] > tys[0][2] and tys[-1][1] >= it.TYPE_HMIN - 1e-6,
+      "длинный перевод машинописи: кегль %s → %s при сжатии %.2f (не ниже %.2f)" % (
+          tys[0][2] if tys else None, tys[-1][2] if tys else None, tys[-1][1] if tys else -1, it.TYPE_HMIN))
+if tys:
+    fin15 = [g for g in got15 if g[0] == "type"][-1]
+    check(r15[0].get("over") is not True, "итог машинописи не вылез за место: %s" % r15)
+# Почерк и печать — один проход раскладки (Х15 их не трогает).
+for fam15 in ("hand", "serif", ""):
+    got15.clear()
+    it._paint_layout1 = _cap15
+    try:
+        it.render_target(b15.getvalue(), [{"box": box15, "text": LONG15, "rows": len(lb15), "lineH": 30,
+                                           "lineBoxes": lb15, "src": " ".join(TL), "align": "left",
+                                           "fam": fam15}])
+    finally:
+        it._paint_layout1 = _orig_l15
+    check(not any(g[1] < 0.8 and g[0] == fam15 and g[0] != "type" for g in got15) and
+          len({(g[0], round(g[1], 3)) for g in got15 if g[0] == fam15}) <= 1,
+          "«%s»: второго прохода со сжатием нет" % (fam15 or "печать"))
+check(tp.tail_anchor("Jadval 1 2020 2021 2022 3.4 5.6 7.8", "Table 1 2020 2021 2022 3.4 5.6 7.8") is None,
+      "хвост из чисел — не имена, не делим")
 
 print()
 if fail:

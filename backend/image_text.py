@@ -1939,10 +1939,43 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
             "handFallback": fam == "hand" and fpath not in _pf().hand_font_files()}
 
 
+# Х15. Машинопись, не влезшая в своё место, уменьшается поровну кеглем и
+# шириной. Английский перевод машинописи 1940 г. длиннее русского, и
+# раскладка (Ф3: свободные строки, потом мельче при том же шаге) уменьшала
+# только кегль: 30.5 при замеренных 43.4, строчные 16 против 23 — треть
+# высоты. У машинописи шаг знака и так задан шириной, и сжатие строки на
+# десятую часть заметно меньше, чем потеря трети высоты. Уменьшение f
+# делится на √f кеглем и √f шириной; общее сжатие (с калибровкой ширины)
+# не ниже `TYPE_HMIN`. Только машинопись: почерк по ширине не сжимается
+# (Ф2), а печатный набор держит порядок Ф3.
+TYPE_HMIN = float(os.environ.get("IMG_TYPE_HMIN", "0.8"))
+# Х14: кегль второго участка не мельче этой доли первого (шумная высота
+# строчных иначе дала бы крошечный кегль) — тогда отношение по полосам.
+SPLIT_EM_MIN = float(os.environ.get("IMG_SPLIT_EM_MIN", "0.4"))
+
+
 def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[float] = None,
                   extra: int = 0, fixed: bool = False) -> Optional[dict]:
     """Раскладка перевода по замеру `pm`. None — не влезло (дуга, наклон,
     блок без рамок строк): вызывающий идёт прежней дорогой."""
+    pl = _paint_layout1(pm, draw, em, step, extra, fixed)
+    if (pl is None or fixed or pm.get("fam") != "type" or pm["m"].get("arc") or pm["m"]["angle"]
+            or pl.get("split")):
+        return pl                   # у разделённого блока (Х14) сжатие посчитано по участку
+    em0 = em or pm["em"]
+    f = pl["size"] / max(1e-6, em0)
+    if f >= 0.97:
+        return pl
+    h0 = max(TYPE_HMIN, pm["h0"] * math.sqrt(f))
+    if h0 >= pm["h0"] - 0.01:
+        return pl
+    pl2 = _paint_layout1(dict(pm, h0=h0), draw, em, step, extra, fixed)
+    return pl2 if (pl2 is not None and pl2["size"] > pl["size"] and not pl2.get("over")) else pl
+
+
+def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[float] = None,
+                   extra: int = 0, fixed: bool = False) -> Optional[dict]:
+    """Одна раскладка при данном сжатии `pm["h0"]` (`_paint_layout`)."""
     tp = _tp()
     m, k, it = pm["m"], pm["k"], pm["it"]
     x0, y0, x1, y1 = pm["pbox"]
@@ -1956,6 +1989,35 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
     parts = None
     over = False
     geo = pm.get("geo")
+    split = (tp.size_split(m["bands"], text, it.get("src") or "")
+             if not m.get("arc") and not m["angle"] and len(m.get("areas") or []) <= 1 else None)
+    part_em = None
+    if split:
+        # Х14: строки разного размера — не ровный ритм; у участка свой кегль
+        # (по высоте его строк), сжатие — по первому участку: ширина его
+        # краски против его же части оригинала (весь блок мерил авторов
+        # кеглем заголовка и сжимал до 0.78).
+        geo = None
+        # Кегль участка — по высоте ЕГО строчных против первого (полоса
+        # заголовка с выносными q, y выше полосы авторов не в той же мере).
+        W_ = m["mask"].shape[1]
+        xhs = [tp.x_height(m["mask"], [[0, a_, W_, b_ + 1] for a_, b_ in m["bands"][p0:p1 + 1]])
+               for p0, p1 in split[0]]
+        ratio_b = split[3][1] / max(1e-6, split[3][0])
+        ratio = (xhs[1] / xhs[0]) if (xhs[0] > 0 and xhs[1] > 0) else ratio_b
+        if not (SPLIT_EM_MIN <= ratio <= 1.0):
+            ratio = min(1.0, max(SPLIT_EM_MIN, ratio_b))   # шумная оценка — по полосам
+        part_em = [em, em * ratio]
+        a0, a1 = split[0][0]
+        inkw0 = 0.0
+        for a_, b_ in m["bands"][a0:a1 + 1]:
+            cols = _np.nonzero(m["mask"][a_:b_ + 1].any(axis=0))[0]
+            if len(cols):
+                inkw0 += (cols[-1] - cols[0] + 1) * k
+        ours0 = draw.textlength(split[2][0], font=font_at(em))
+        if inkw0 > 0 and ours0 > 0 and pm.get("fam") != "hand":
+            h0 = tp.calibrate(em, inkw0, ours0,
+                              hmin=TYPE_HMIN if pm.get("fam") == "type" else 0.74)[1]
     if m.get("arc"):
         arc = m["arc"]
         rb = max(1.0, arc["r"] - arc["up"] * 0.36 * m["em"]) * k
@@ -2013,7 +2075,12 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
     else:
         bands = m["bands"]
         areas = m.get("areas") or []
-        if len(bands) >= 2 and len(areas) > 1:
+        if split:
+            # Х14: строка другого размера в конце блока (авторы под
+            # заголовком) — свой участок со своим кеглем.
+            spans = [(bands[a0][0] * k, (bands[a1][1] + 1) * k, a1 - a0 + 1) for a0, a1 in split[0]]
+            chunks = split[1]
+        elif len(bands) >= 2 and len(areas) > 1:
             weights = [float(m["mask"][bands[a0][0]:bands[a1][1] + 1].sum()) for a0, a1 in areas]
             chunks = tp.split_text(text, weights)
             spans = [(bands[a0][0] * k, (bands[a1][1] + 1) * k, a1 - a0 + 1) for a0, a1 in areas]
@@ -2022,23 +2089,26 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
             spans = [(bands[0][0] * k if bands else 0,
                       (bands[-1][1] + 1) * k if bands else (y1 - y0) * k, max(1, len(bands)))]
         parts = []
-        for (top, bot, rows_k), chunk in zip(spans, chunks):
-            height = max(bot - top, em)
-            pitch = max(m["pitch"] * k, em * 1.05)
+        for pi_, ((top, bot, rows_k), chunk) in enumerate(zip(spans, chunks)):
+            em_p = part_em[pi_] if part_em else em
+            height = max(bot - top, em_p)
+            pitch = max(m["pitch"] * k * em_p / em, em_p * 1.05)
             # Строк не больше, чем вместит место ПО ТОЙ ЖЕ мерке, которой
             # раскладку проверяют ниже (Ф1): лишние полосы маски (обрывки
             # выносных) разрешали `fit_lines` раскладку, которую проверка
             # тут же отвергала, и блок уходил на плашку.
-            cap = int((height + 0.6 * em - 0.95 * em) // max(pitch, 1e-6)) + 1
+            cap = int((height + 0.6 * em_p - 0.95 * em_p) // max(pitch, 1e-6)) + 1
             rows_k = max(1, min(rows_k, cap))
-            size, step_, lines = tp.fit_lines(chunk, w, height + 0.3 * em, em, pitch, mw,
+            size, step_, lines = tp.fit_lines(chunk, w, height + 0.3 * em_p, em_p, pitch, mw,
                                               lambda wd, room, sz: _split_cjk(lambda t: mw(t, sz), wd, room),
                                               0.45, rows_k)
-            if lines and (len(lines) - 1) * step_ + 0.95 * size > height + 0.6 * em:
+            if lines and (len(lines) - 1) * step_ + 0.95 * size > height + 0.6 * em_p:
                 return None             # не влезло и мельче — плашкой, прежней дорогой
             parts.append({"top": top, "bot": bot, "lines": lines, "size": size, "step": step_,
                           "font": font_at(size)})
-        size = min(p_["size"] for p_ in parts)
+        # Кегль раскладки — основного участка: мелкая строка авторов (Х14)
+        # не тянет вниз обводку и общий кегль страницы.
+        size = parts[0]["size"] if split else min(p_["size"] for p_ in parts)
         step_ = parts[0]["step"]
         lines = [ln for p_ in parts for ln in p_["lines"]]
     if size < IMG_FONT_MIN_PX * k * 0.6:
@@ -2065,7 +2135,7 @@ def _paint_layout(pm: dict, draw, em: Optional[float] = None, step: Optional[flo
             "dash": pm.get("fam") == "hand" and _short_hyphen(pm["fpath"]),
             "alpha": pm["alpha"], "m": m, "lines": lines, "size": size, "step": step_, "h0": h0, "font": font_at(size),
             "k": k, "align": _start_align(pm.get("align") or it.get("align"), text), "parts": parts,
-            "ink": pm.get("ink") or m["ink"], "over": bool(over)}
+            "ink": pm.get("ink") or m["ink"], "over": bool(over), "split": bool(split)}
 
 
 def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:

@@ -176,6 +176,14 @@ check(not main._layer_echo("SOCS5),", paras, (470.0, 300.0, 500.0, 310.0)), "в 
 check(not main._layer_echo("Optimize quality of life", [(1, (0, 0, 100, 100), [], "Optimize")], (0, 0, 90, 20)),
       "надпись шире куска слоя — не эхо (Т32)")
 check(not main._layer_echo("ab", paras, (470.0, 462.0, 500.0, 472.0)), "короче трёх знаков — не судим")
+# Записи абзацев слоя — с пятым полем (рамки строк): все, кто их разбирает, обязаны его пережить.
+five = [(1, (0.0, 0.0, 100.0, 20.0), ["where"], "WHERE?:", [(0.0, 0.0, 100.0, 20.0)])]
+try:
+    main._holds_layer_pieces("WHERE?: Everyday settings", five, (0.0, 0.0, 300.0, 20.0))
+    ok5 = True
+except ValueError:
+    ok5 = False
+check(ok5, "записи абзацев слоя с рамками строк разбираются без ошибки")
 wrap = [(2, (48.0, 300.0, 545.0, 700.0), [], "the late stage of the disease and other words of this paragraph",
          [(48.0, 690.0, 545.0, 700.0), (48.0, 300.0, 545.0, 310.0)])]
 check(not main._layer_echo("Age", wrap, (200.0, 500.0, 230.0, 510.0)),

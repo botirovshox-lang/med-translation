@@ -34208,7 +34208,7 @@ def _holds_layer_pieces(src: str, paras: list, rect: "tuple | None") -> bool:
         return False
     bx0, by0, bx1, by1 = rect
     hit = []
-    for _pidx, (rx0, ry0, rx1, ry1), pw, psrc in paras:
+    for _pidx, (rx0, ry0, rx1, ry1), pw, psrc, *_ in paras:
         ix, iy = min(bx1, rx1) - max(bx0, rx0), min(by1, ry1) - max(by0, ry0)
         if ix <= 0 or iy <= 0:
             continue
@@ -34675,7 +34675,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
             inside: list = []
             if rect_pt is not None:
                 bx0, by0, bx1, by1 = rect_pt
-                for pidx, (rx0, ry0, rx1, ry1), pw, psrc in layer_paras.get(page) or []:
+                for pidx, (rx0, ry0, rx1, ry1), pw, psrc, *_ in layer_paras.get(page) or []:
                     ov = (max(0.0, min(bx1, rx1) - max(bx0, rx0))
                           * max(0.0, min(by1, ry1) - max(by0, ry0)))
                     if ov >= 0.8 * max(1e-6, (rx1 - rx0) * (ry1 - ry0)):

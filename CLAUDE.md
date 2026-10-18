@@ -68,6 +68,15 @@
 - **`tools/after_run.py`** — отчёт после прогона: счётчики задачи, корзины разбора,
   состав следующего прогона и сравнение с прошлым снимком. Вызовов модели нет,
   код возврата 1 = «есть на что посмотреть» (годится для cron).
+- **`backend/doc_catalog/`** — каталог ДАННЫМИ: виды элементов страницы
+  (`elements.json`, DocLayNet/PAGE XML/FUNSD…), семейства правил набора
+  (`rule_families.json`, W3C JLREQ/ALREQ/ILREQ, Unicode UAX, CSS, OpenType,
+  Брингхерст) и договор форматов (`formats.json`, уровни T1–T4). Статус
+  записи выводится (`tools/catalog_report.py` → `docs/rules/catalog.md`):
+  covered — есть наше правило и тест при нём. Новая находка о файле →
+  правило в справочнике И `handled_by` у записи каталога. Замеры
+  точности выгрузки — `backend/fidelity.py`, базовая линия эталонов —
+  `tests/fixtures/fidelity_baseline.json` (`tools/fidelity_report.py`).
 - **`docs/rules/pdf-reading.md`** — справочник правил чтения PDF и выгрузки
   «как в оригинале»: как устроены чужие файлы (обрезка, формы, невидимый
   текст, кернинг в TJ, коды вместо букв, сноски, повёрнутые строки) и что
@@ -3344,6 +3353,8 @@ node tests/test_home_examples_browser.js                            # «Прим
 .venv/bin/python tests/test_hand_paint.py                            # перевод в фото абзаца: разделы Ф и Х справочника PDF
 .venv/bin/python tests/test_size_break.py                            # Х19: строка другого размера — разрыв при чтении
 .venv/bin/python tests/test_fidelity.py                              # замеры точности выгрузки картинки против оригинала
+.venv/bin/python tests/test_doc_catalog.py                           # каталог элементов, правил и форматов; страница покрытия
+python tools/catalog_report.py                                       # docs/rules/catalog.md пересобрана из backend/doc_catalog
 python tools/landing_build.py                                        # лендинг пересобран из landing/src/home.html
 .venv/bin/python tests/test_pdf_figures.py                           # рисунки книги доезжают до документа
 .venv/bin/python tests/test_pdf_layout_export.py                     # выгрузка PDF «как в оригинале»

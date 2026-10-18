@@ -42,7 +42,7 @@
      "checks": ["слот i ↔ абзац i"],
      "losses": ["выделения внутри абзаца (жирный, ссылки) в переводе не сохраняются"],
      "rules": [], "tests": ["tests/test_export_original.py"]},
-    {"id": "text", "ext": [".txt", ".md"], "tier": "T1", "output": "тот же текстовый файл",
+    {"id": "text", "ext": [".txt", ".md", ".markdown", ".log"], "tier": "T1", "output": "тот же текстовый файл",
      "identical": "строка в строку, кодировка прежняя",
      "checks": ["число строк прежнее"], "losses": [], "rules": [], "tests": ["tests/test_export_original.py"]},
     {"id": "csv", "ext": [".csv", ".tsv"], "tier": "T1", "output": "та же таблица",

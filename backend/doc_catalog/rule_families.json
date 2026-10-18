@@ -1,0 +1,3137 @@
+{
+ "_about": "Семейства типографских правил (W3C jlreq/clreq/alreq/ilreq, Unicode UAX, CSS Text, OpenType, Bringhurst) и правил перерисовки картинок/PDF из docs/rules/pdf-reading.md. data — файл с параметрами семейства, если есть; handled_by — номера правил справочника.",
+ "families": [
+  {
+   "id": "nfc-normalization",
+   "group": "encoding",
+   "desc": "Нормализация Юникода перед сравнением",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "форма NFC/NFKC"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr15/"
+   ],
+   "handled_by": [
+    "К5"
+   ],
+   "scope": "in",
+   "why": "main._same_as_source сравнивает в NFKC; media.glen считает графемы на NFC"
+  },
+  {
+   "id": "grapheme-cluster-units",
+   "group": "encoding",
+   "desc": "Резка и счёт только по графемам",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "границы графем"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://unicode.org/reports/tr29/"
+   ],
+   "handled_by": [
+    "В2",
+    "Г2"
+   ],
+   "scope": "in",
+   "why": "layout_pdf._graphemes и media._graphemes (вирама, тайские гласные, эмодзи)"
+  },
+  {
+   "id": "word-segmentation-no-spaces",
+   "group": "encoding",
+   "desc": "Слова в письме без пробелов",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana",
+    "Thai",
+    "Khmr",
+    "Mymr"
+   ],
+   "params": [
+    "словарь/модель фраз"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://unicode.org/reports/tr29/",
+    "https://w3c.github.io/sealreq/",
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [
+    "Н3",
+    "В2"
+   ],
+   "scope": "in",
+   "why": "BudouX (`_break_point`) для ja/zh/th; кхмерский и бирманский — по знакам (Е)"
+  },
+  {
+   "id": "sentence-boundary",
+   "group": "encoding",
+   "desc": "Граница предложения",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "знаки конца по письму"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://unicode.org/reports/tr29/",
+    "https://cldr.unicode.org/"
+   ],
+   "handled_by": [
+    "Х3"
+   ],
+   "scope": "in",
+   "why": "Х3 рвёт перевод у конца предложения; media.sentence_cues — знаки sentence_end из subtitle_norms.json"
+  },
+  {
+   "id": "script-run-fallback",
+   "group": "encoding",
+   "desc": "Куски строки по письменности со своим шрифтом",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "письменность знака"
+   ],
+   "data": "frontend/vendor/fonts/sub/fonts.json",
+   "sources": [
+    "https://unicode.org/reports/tr24/"
+   ],
+   "handled_by": [
+    "Г2",
+    "Н2"
+   ],
+   "scope": "in",
+   "why": "у каждого знака — шрифт, где он есть; пробел и огласовка — с соседом"
+  },
+  {
+   "id": "glyph-names-to-unicode",
+   "group": "encoding",
+   "desc": "Имена глифов /uniXXXX — знаки",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "ToUnicode, имя глифа"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "М1"
+   ],
+   "scope": "in",
+   "why": "pdftext._glyph_names"
+  },
+  {
+   "id": "unspaced-letters",
+   "group": "encoding",
+   "desc": "Разрядка в слое — обратно в слова",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "доля одиночных токенов"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "М2"
+   ],
+   "scope": "in",
+   "why": "pdftext._unspace"
+  },
+  {
+   "id": "complex-shaping-required",
+   "group": "shaping",
+   "desc": "Письмо, требующее сборки букв",
+   "scripts": [
+    "Arab",
+    "Hebr",
+    "Deva",
+    "Beng",
+    "Taml",
+    "Thai",
+    "Khmr",
+    "Mymr",
+    "Hani"
+   ],
+   "params": [
+    "нужна ли сборка"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/International/i18n-drafts/nav/languagedev",
+    "https://www.w3.org/TR/ilreq"
+   ],
+   "handled_by": [
+    "Н1",
+    "Г2",
+    "А2"
+   ],
+   "scope": "in",
+   "why": "glyph_shaper (HarfBuzz) контурами; нет — raqm картинкой; нет и его — запасная дорога"
+  },
+  {
+   "id": "arabic-joining-forms",
+   "group": "shaping",
+   "desc": "Связные формы арабицы",
+   "scripts": [
+    "Arab"
+   ],
+   "params": [
+    "init/medi/fina/isol"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/alreq/",
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist"
+   ],
+   "handled_by": [
+    "Н1",
+    "Г2"
+   ],
+   "scope": "in",
+   "why": "HarfBuzz; дуга со сложным письмом — целиком по хорде"
+  },
+  {
+   "id": "indic-reordering-reph",
+   "group": "shaping",
+   "desc": "Перестановка и рэф индийских письменностей",
+   "scripts": [
+    "Deva",
+    "Beng",
+    "Gujr",
+    "Guru",
+    "Taml",
+    "Telu"
+   ],
+   "params": [
+    "порядок глифов"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/ilreq",
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist"
+   ],
+   "handled_by": [
+    "Н1"
+   ],
+   "scope": "in",
+   "why": "HarfBuzz"
+  },
+  {
+   "id": "ligatures",
+   "group": "shaping",
+   "desc": "Лигатуры",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "liga/rlig"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "О1"
+   ],
+   "scope": "in",
+   "why": "при чтении лигатуры раскрываются (О1); при печати — у контурных строк HarfBuzz, у reportlab нет"
+  },
+  {
+   "id": "mark-positioning",
+   "group": "shaping",
+   "desc": "Позиция диакритики и огласовок",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "mark/mkmk"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist"
+   ],
+   "handled_by": [
+    "Н1",
+    "Н2",
+    "Т24"
+   ],
+   "scope": "in",
+   "why": "огласовка остаётся с соседом, диакритика не идёт в путь дуги"
+  },
+  {
+   "id": "locl-localized-forms",
+   "group": "shaping",
+   "desc": "Локальные формы глифов (сербский курсив и т.п.)",
+   "scripts": [
+    "Cyrl",
+    "Latn"
+   ],
+   "params": [
+    "locl, язык"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "glyph_shaper зовёт guess_segment_properties без языка"
+  },
+  {
+   "id": "vertical-glyph-substitution",
+   "group": "shaping",
+   "desc": "Вертикальные альтернативы глифов",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "vert/vrt2"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist",
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "вертикального набора нет"
+  },
+  {
+   "id": "proportional-cjk-punctuation",
+   "group": "shaping",
+   "desc": "Пропорциональная пунктуация CJK",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "palt/halt"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist",
+    "https://www.w3.org/TR/jlreq/",
+    "https://www.w3.org/TR/clreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не делается"
+  },
+  {
+   "id": "vector-shaping-harfbuzz",
+   "group": "shaping",
+   "desc": "Контуры глифов через HarfBuzz в PDF",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "форма на глиф, notdef"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Н1"
+   ],
+   "scope": "in",
+   "why": "backend/glyph_shaper.py; stats.shaper, stats.notdef"
+  },
+  {
+   "id": "font-fallback-chain",
+   "group": "fonts",
+   "desc": "Цепочка запасных шрифтов",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "покрытие знаков"
+   ],
+   "data": "frontend/vendor/fonts/sub/fonts.json",
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [
+    "Г2",
+    "Н2",
+    "У2"
+   ],
+   "scope": "in",
+   "why": "font_path(chars=) → Noto → DejaVu из репозитория"
+  },
+  {
+   "id": "font-coverage",
+   "group": "fonts",
+   "desc": "Шрифт обязан знать все буквы перевода",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "cmap"
+   ],
+   "data": "frontend/vendor/fonts/sub/fonts.json",
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Г2",
+    "Т18",
+    "А2",
+    "Н1"
+   ],
+   "scope": "in",
+   "why": "fonts.cmap.json; узкого файла без букв — обычный; нет шрифта — 503 словами"
+  },
+  {
+   "id": "font-metrics-line-box",
+   "group": "fonts",
+   "desc": "Метрики шрифта и высота строки",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "ascent/descent, em"
+   ],
+   "data": "frontend/vendor/fonts/sub/fonts.json",
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "В7",
+    "Л2"
+   ],
+   "scope": "in",
+   "why": "заливка сверху почти без поля; media._ass_fs выравнивает em разных шрифтов"
+  },
+  {
+   "id": "synthetic-style",
+   "group": "fonts",
+   "desc": "Дорисованный курсив/полужирный",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "наклон, обводка"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [
+    "Г3",
+    "Н1",
+    "Ф7",
+    "Х13"
+   ],
+   "scope": "in",
+   "why": "layout_pdf._synth; полужирный обводкой контура"
+  },
+  {
+   "id": "small-caps",
+   "group": "fonts",
+   "desc": "Капитель",
+   "scripts": [
+    "Latn",
+    "Cyrl",
+    "Grek"
+   ],
+   "params": [
+    "smcp/c2sc"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist",
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "капитель не распознаётся и не печатается"
+  },
+  {
+   "id": "numerals-lining-oldstyle",
+   "group": "fonts",
+   "desc": "Цифры прописные/старостильные",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "lnum/onum"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist",
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не различается"
+  },
+  {
+   "id": "numerals-tabular",
+   "group": "fonts",
+   "desc": "Табличные цифры",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "tnum/pnum"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist",
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не различается"
+  },
+  {
+   "id": "fractions-and-scripts",
+   "group": "fonts",
+   "desc": "Дроби, над- и подстрочные",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "frac/sups/subs"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist"
+   ],
+   "handled_by": [
+    "Т9",
+    "Б6"
+   ],
+   "scope": "in",
+   "why": "pdftext._join_scripts склеивает дроби; надстрочник — знаком Юникода"
+  },
+  {
+   "id": "case-forms",
+   "group": "fonts",
+   "desc": "Формы для капса",
+   "scripts": [
+    "Latn",
+    "Cyrl"
+   ],
+   "params": [
+    "case/cpsp"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не делается"
+  },
+  {
+   "id": "script-appropriate-fonts",
+   "group": "fonts",
+   "desc": "Гарнитура по оригиналу и письменности",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "семейство, ширина, засечки"
+   ],
+   "data": "frontend/vendor/fonts/sub/fonts.json",
+   "sources": [
+    "https://www.w3.org/International/i18n-drafts/nav/languagedev",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "Г1",
+    "Г2",
+    "К3",
+    "Т18",
+    "У2",
+    "Х1",
+    "Х6",
+    "Х9",
+    "Х10"
+   ],
+   "scope": "in",
+   "why": "FAMILY_CANDIDATES, print_fonts; Noto/Marck/Liberation Mono/Old Standard"
+  },
+  {
+   "id": "interword-space-by-script",
+   "group": "spacing",
+   "desc": "Межсловный пробел по письменности",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "есть ли пробел, его ширина"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "https://w3c.github.io/sealreq/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "subtitle_norms.json `join` (иероглифы без пробела); в PDF ширина пробела — из шрифта"
+  },
+  {
+   "id": "letter-spacing-tracking",
+   "group": "spacing",
+   "desc": "Межбуквенный интервал",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "Tc"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "М2",
+    "Б7"
+   ],
+   "scope": "in",
+   "why": "Tc учитывается при чтении; разрядка перевода не воспроизводится"
+  },
+  {
+   "id": "no-tracking-connected-scripts",
+   "group": "spacing",
+   "desc": "Без разрядки у связных письменностей",
+   "scripts": [
+    "Arab",
+    "Mong",
+    "Deva"
+   ],
+   "params": [
+    "запрет Tc"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "https://www.w3.org/TR/alreq/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "перевод не разряжается вовсе, правила не требует"
+  },
+  {
+   "id": "cjk-latin-autospace",
+   "group": "spacing",
+   "desc": "Зазор между CJK и латиницей",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "1/4 em"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/jlreq/",
+    "https://www.w3.org/TR/clreq/",
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не делается"
+  },
+  {
+   "id": "ideographic-space",
+   "group": "spacing",
+   "desc": "Идеографический пробел U+3000",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "ширина 1 em"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не различается"
+  },
+  {
+   "id": "thin-narrow-space",
+   "group": "spacing",
+   "desc": "Узкие и тонкие пробелы",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "U+2009/U+202F"
+   ],
+   "data": "backend/lang_rules.json",
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "https://cldr.unicode.org/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "сохраняются как знаки, правил нет"
+  },
+  {
+   "id": "nbsp-binding",
+   "group": "spacing",
+   "desc": "Неразрывный пробел не рвёт строку",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "U+00A0"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr14/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "media.fit_cues переносит только по обычному пробелу; в layout_pdf правила нет"
+  },
+  {
+   "id": "first-line-indent",
+   "group": "spacing",
+   "desc": "Абзацный отступ",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "отступ первой строки"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst",
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [
+    "В3",
+    "Ф1",
+    "Х3",
+    "Х4"
+   ],
+   "scope": "in",
+   "why": "отступ меряется по оригиналу; у письма справа налево — справа"
+  },
+  {
+   "id": "paragraph-spacing",
+   "group": "spacing",
+   "desc": "Интервал между абзацами",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "пропуск × f"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "К2",
+    "Ж5"
+   ],
+   "scope": "in",
+   "why": "разрыв между абзацами из оригинала × f; пропуск перед заглавной — новый пункт"
+  },
+  {
+   "id": "tab-stops-leaders",
+   "group": "spacing",
+   "desc": "Табуляция и отточие",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "позиция, заполнитель"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [
+    "Т10"
+   ],
+   "scope": "in",
+   "why": "цифры оглавления клеятся; табуляция не даёт разрыва строки слоя (П1)"
+  },
+  {
+   "id": "uax14-break-opportunity",
+   "group": "breaking",
+   "desc": "Возможности переноса строки UAX#14",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "класс разрыва"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr14/",
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [
+    "К4",
+    "О6"
+   ],
+   "scope": "in",
+   "why": "перенос по пробелам, своему дефису и после «/»; полной таблицы UAX#14 нет"
+  },
+  {
+   "id": "line-break-strictness",
+   "group": "breaking",
+   "desc": "Строгость переноса (line-break)",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "loose/normal/strict"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не настраивается"
+  },
+  {
+   "id": "kinsoku",
+   "group": "breaking",
+   "desc": "Кинсоку: запрет знака в начале/конце строки",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "NO_START/NO_END"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://www.w3.org/TR/jlreq/",
+    "https://www.w3.org/TR/clreq/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "media._NO_START/_NO_END (субтитры), image_text._NO_LINE_START и _cjk_units (картинки, подпункт «Кинсоку и кавычки» раздела Ф без номера); в layout_pdf нет"
+  },
+  {
+   "id": "break-within-cjk",
+   "group": "breaking",
+   "desc": "Перенос между иероглифами",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "cut: char"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://www.w3.org/TR/jlreq/",
+    "https://www.w3.org/TR/clreq/"
+   ],
+   "handled_by": [
+    "В2",
+    "Н3"
+   ],
+   "scope": "in",
+   "why": "резка по знакам на каждом шаге подбора, граница фразы BudouX; media._hard_wrap"
+  },
+  {
+   "id": "korean-word-keep",
+   "group": "breaking",
+   "desc": "Корейский — перенос по пробелам",
+   "scripts": [
+    "Hang"
+   ],
+   "params": [
+    "keep-all"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://www.w3.org/TR/klreq/",
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "хангыль переносится по пробелам как обычное письмо; правила в справочнике нет"
+  },
+  {
+   "id": "hyphenation-dictionary",
+   "group": "breaking",
+   "desc": "Перенос по словарю языка",
+   "scripts": [
+    "Latn",
+    "Cyrl",
+    "Grek"
+   ],
+   "params": [
+    "словарь pyphen"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "К4"
+   ],
+   "scope": "in",
+   "why": "pyphen.Pyphen(lang, left=2, right=3) в layout_pdf; языка нет — переноса нет"
+  },
+  {
+   "id": "hyphenation-min-chars",
+   "group": "breaking",
+   "desc": "Минимум букв до и после переноса",
+   "scripts": [
+    "Latn",
+    "Cyrl"
+   ],
+   "params": [
+    "left/right, длина слова"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "К4"
+   ],
+   "scope": "in",
+   "why": "_hyph_split: слово от 6 букв, pyphen left=2 right=3"
+  },
+  {
+   "id": "hyphenation-consecutive-limit",
+   "group": "breaking",
+   "desc": "Не больше N переносов подряд",
+   "scripts": [
+    "Latn",
+    "Cyrl"
+   ],
+   "params": [
+    "hyphenate-limit-lines"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "есть только «слово режется один раз» (Т2), предела подряд идущих строк нет"
+  },
+  {
+   "id": "no-hyphenation-exceptions",
+   "group": "breaking",
+   "desc": "Что не переносится (адреса, числа, заголовки)",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "классы токенов"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "Т2",
+    "О6",
+    "Л3"
+   ],
+   "scope": "in",
+   "why": "одно слово не переносится, адреса и цифры не рвутся, заголовки без переносов"
+  },
+  {
+   "id": "soft-hyphen",
+   "group": "breaking",
+   "desc": "Мягкий перенос U+00AD",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "U+00AD"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [
+    "С3",
+    "К5"
+   ],
+   "scope": "in",
+   "why": "pdftext снимает мягкие переносы внутри слов; dehyphen после чтения"
+  },
+  {
+   "id": "phrase-break-sea",
+   "group": "breaking",
+   "desc": "Перенос по фразам в тайском/кхмерском/бирманском",
+   "scripts": [
+    "Thai",
+    "Khmr",
+    "Mymr",
+    "Laoo"
+   ],
+   "params": [
+    "cut: phrase"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://w3c.github.io/sealreq/"
+   ],
+   "handled_by": [
+    "Н3"
+   ],
+   "scope": "in",
+   "why": "тайский — BudouX; кхмерский и бирманский — по знакам (Е), у субтитров — по пробелам между фразами"
+  },
+  {
+   "id": "indic-conjunct-no-break",
+   "group": "breaking",
+   "desc": "Не рвать конъюнкт индийских письменностей",
+   "scripts": [
+    "Deva",
+    "Beng",
+    "Taml",
+    "Khmr"
+   ],
+   "params": [
+    "вирама + согласная"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/ilreq",
+    "https://unicode.org/reports/tr29/"
+   ],
+   "handled_by": [
+    "Г2"
+   ],
+   "scope": "in",
+   "why": "резка только между графемами (media._graphemes учитывает вираму/коенг)"
+  },
+  {
+   "id": "tibetan-syllable-break",
+   "group": "breaking",
+   "desc": "Перенос по тшегу",
+   "scripts": [
+    "Tibt"
+   ],
+   "params": [
+    "tsheg"
+   ],
+   "data": null,
+   "sources": [
+    "https://w3c.github.io/tlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "тибетского в каталоге нет"
+  },
+  {
+   "id": "ethiopic-word-separator",
+   "group": "breaking",
+   "desc": "Эфиопский разделитель слов ፡",
+   "scripts": [
+    "Ethi"
+   ],
+   "params": [
+    "U+1361"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "https://w3c.github.io/elreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "шрифт есть, ። ፧ — конец предложения в subtitle_norms.json; разделитель ፡ как место переноса не учтён"
+  },
+  {
+   "id": "widows-orphans",
+   "group": "breaking",
+   "desc": "Висячие строки",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "widows/orphans"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-break-3/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "страниц оригинала не добавить; правила нет"
+  },
+  {
+   "id": "single-letter-line-end",
+   "group": "breaking",
+   "desc": "Однобуквенный предлог в конце строки",
+   "scripts": [
+    "Cyrl",
+    "Latn"
+   ],
+   "params": [
+    "список слов"
+   ],
+   "data": "backend/lang_rules.json",
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не делается"
+  },
+  {
+   "id": "editor-long-token-wrap",
+   "group": "breaking",
+   "desc": "Таблица редактора не распирается строкой без пробелов",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "overflow-wrap"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "М8"
+   ],
+   "scope": "in",
+   "why": "styles.css `.tbl .src-cell`"
+  },
+  {
+   "id": "justify-inter-word",
+   "group": "justification",
+   "desc": "Выключка по ширине за счёт пробелов",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "Tw, пробел"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "К4",
+    "Л5",
+    "Х2"
+   ],
+   "scope": "in",
+   "why": "только у абзаца, выключенного так в оригинале; пословно"
+  },
+  {
+   "id": "justify-inter-character",
+   "group": "justification",
+   "desc": "Выключка межбуквенно (CJK)",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana",
+    "Thai"
+   ],
+   "params": [
+    "распределение"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [
+    "К4"
+   ],
+   "scope": "deferred",
+   "why": "К4: письмо без пробелов не выключается"
+  },
+  {
+   "id": "justify-kashida",
+   "group": "justification",
+   "desc": "Выключка кашидой",
+   "scripts": [
+    "Arab"
+   ],
+   "params": [
+    "tatweel"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/alreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не делается"
+  },
+  {
+   "id": "justify-shrink-limits",
+   "group": "justification",
+   "desc": "Пределы растяжения пробела",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "JUSTIFY_MAX_GAP"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "К4",
+    "Л5",
+    "Х2"
+   ],
+   "scope": "in",
+   "why": "шире предела — строка влево"
+  },
+  {
+   "id": "rivers",
+   "group": "justification",
+   "desc": "«Реки» из пробелов",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "максимальный пробел"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "К4"
+   ],
+   "scope": "in",
+   "why": "предел пробела «без рек»"
+  },
+  {
+   "id": "last-line-alignment",
+   "group": "justification",
+   "desc": "Последняя строка абзаца",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "text-align-last"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [
+    "Х2",
+    "Л1"
+   ],
+   "scope": "in",
+   "why": "выключаются все строки кроме последней"
+  },
+  {
+   "id": "alignment-from-original",
+   "group": "justification",
+   "desc": "Выключка по краям строк оригинала",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "разброс краёв"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "В3",
+    "Л1",
+    "С4",
+    "Х2"
+   ],
+   "scope": "in",
+   "why": "_slot_align, _vis_lines, image_text._align_para, text_paint.geometry_align"
+  },
+  {
+   "id": "knuth-plass",
+   "group": "justification",
+   "desc": "Оптимальная разбивка абзаца",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "штрафы"
+   ],
+   "data": null,
+   "sources": [
+    "https://doi.org/10.1002/spe.4380111102",
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "жадная разбивка"
+  },
+  {
+   "id": "hanging-punctuation",
+   "group": "justification",
+   "desc": "Висячая пунктуация",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "hanging-punctuation"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не делается"
+  },
+  {
+   "id": "quotation-marks-per-language",
+   "group": "punctuation",
+   "desc": "Кавычки по языку",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "вид кавычек"
+   ],
+   "data": "backend/lang_rules.json",
+   "sources": [
+    "https://cldr.unicode.org/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "ставит перевод; правила документа и lang_rules.json conventions подсказывают в промпте"
+  },
+  {
+   "id": "guillemet-spacing",
+   "group": "punctuation",
+   "desc": "Пробел у французских кавычек",
+   "scripts": [
+    "Latn"
+   ],
+   "params": [
+    "U+202F"
+   ],
+   "data": "backend/lang_rules.json",
+   "sources": [
+    "https://cldr.unicode.org/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не делается"
+  },
+  {
+   "id": "dash-variants",
+   "group": "punctuation",
+   "desc": "Дефис/тире/минус",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "длина знака"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "Х7"
+   ],
+   "scope": "in",
+   "why": "короткий дефис рукописного шрифта печатается тире"
+  },
+  {
+   "id": "ellipsis",
+   "group": "punctuation",
+   "desc": "Многоточие",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "U+2026"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не нормализуется"
+  },
+  {
+   "id": "fullwidth-halfwidth",
+   "group": "punctuation",
+   "desc": "Полно- и полуширинные формы",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana",
+    "Hang"
+   ],
+   "params": [
+    "East Asian Width"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr11/"
+   ],
+   "handled_by": [
+    "Х16"
+   ],
+   "scope": "deferred",
+   "why": "полноширинные номера аффилиаций распознаются (Х16), media считает U+FF00–FFEF широкими; правил печати нет"
+  },
+  {
+   "id": "arabic-punctuation-mirroring",
+   "group": "punctuation",
+   "desc": "Арабская пунктуация и скобки",
+   "scripts": [
+    "Arab"
+   ],
+   "params": [
+    "، ؛ ؟"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/alreq/"
+   ],
+   "handled_by": [
+    "Н2"
+   ],
+   "scope": "in",
+   "why": "знак препинания — из шрифта, который его знает"
+  },
+  {
+   "id": "apostrophe-modifier-letters",
+   "group": "punctuation",
+   "desc": "Апостроф и буквы-модификаторы ʻ ʼ",
+   "scripts": [
+    "Latn",
+    "Cyrl"
+   ],
+   "params": [
+    "U+02BB/U+02BC"
+   ],
+   "data": "backend/lang_rules.json",
+   "sources": [
+    "https://cldr.unicode.org/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "lang_rules.json apostrophe_in_word, main._alphabet_misses; media не считает ʻ ʼ письменностью"
+  },
+  {
+   "id": "quote-nesting",
+   "group": "punctuation",
+   "desc": "Вложенные кавычки",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "уровни"
+   ],
+   "data": "backend/lang_rules.json",
+   "sources": [
+    "https://cldr.unicode.org/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не проверяется"
+  },
+  {
+   "id": "slash-variants",
+   "group": "punctuation",
+   "desc": "Варианты через «/» и перечни",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "косая черта"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "О6",
+    "О7"
+   ],
+   "scope": "in",
+   "why": "перечень рвётся после «/»; « / » в переводе без черты в оригинале — находка"
+  },
+  {
+   "id": "bidi-base-direction",
+   "group": "direction",
+   "desc": "Основное направление абзаца",
+   "scripts": [
+    "Arab",
+    "Hebr"
+   ],
+   "params": [
+    "base level"
+   ],
+   "data": "backend/languages.json",
+   "sources": [
+    "https://unicode.org/reports/tr9/"
+   ],
+   "handled_by": [
+    "Г2"
+   ],
+   "scope": "in",
+   "why": "основа — от абзаца (`_bidi_levels`)"
+  },
+  {
+   "id": "bidi-neutral-resolution",
+   "group": "direction",
+   "desc": "Направление нейтральных знаков",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "N1/N2"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr9/"
+   ],
+   "handled_by": [
+    "Г2"
+   ],
+   "scope": "in",
+   "why": "нейтральные — сторона соседей"
+  },
+  {
+   "id": "bidi-isolation",
+   "group": "direction",
+   "desc": "Изоляция вставок",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "FSI/LRI/RLI"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr9/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "алгоритм упрощённый"
+  },
+  {
+   "id": "bidi-number-placement",
+   "group": "direction",
+   "desc": "Цифры и латиница в RTL",
+   "scripts": [
+    "Arab",
+    "Hebr"
+   ],
+   "params": [
+    "EN/AN"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr9/",
+    "https://www.w3.org/TR/alreq/"
+   ],
+   "handled_by": [
+    "Г2"
+   ],
+   "scope": "in",
+   "why": "цифры и латиница внутри RTL — слева направо"
+  },
+  {
+   "id": "bidi-mirroring",
+   "group": "direction",
+   "desc": "Зеркальные скобки",
+   "scripts": [
+    "Arab",
+    "Hebr"
+   ],
+   "params": [
+    "Bidi_Mirrored"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr9/"
+   ],
+   "handled_by": [
+    "Н1"
+   ],
+   "scope": "in",
+   "why": "HarfBuzz с явным RTL зеркалит сам; в media RLM в начале строки"
+  },
+  {
+   "id": "vertical-writing-mode",
+   "group": "direction",
+   "desc": "Вертикальный режим письма",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana",
+    "Mong"
+   ],
+   "params": [
+    "writing-mode"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-writing-modes-4/",
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "нет"
+  },
+  {
+   "id": "uax50-orientation",
+   "group": "direction",
+   "desc": "Ориентация знака в вертикали",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "Vertical_Orientation"
+   ],
+   "data": null,
+   "sources": [
+    "https://unicode.org/reports/tr50/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "нет"
+  },
+  {
+   "id": "text-orientation-mixed",
+   "group": "direction",
+   "desc": "Смешанная ориентация",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "text-orientation"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-writing-modes-4/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "нет"
+  },
+  {
+   "id": "tate-chu-yoko",
+   "group": "direction",
+   "desc": "Татэ-тю-ёко",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "text-combine-upright"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-writing-modes-4/",
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "нет"
+  },
+  {
+   "id": "vertical-punctuation",
+   "group": "direction",
+   "desc": "Вертикальная пунктуация",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "позиция знаков"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/jlreq/",
+    "https://www.w3.org/TR/clreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "нет"
+  },
+  {
+   "id": "mongolian-vertical",
+   "group": "direction",
+   "desc": "Монгольское вертикальное письмо",
+   "scripts": [
+    "Mong"
+   ],
+   "params": [
+    "направление, формы"
+   ],
+   "data": null,
+   "sources": [
+    "https://w3c.github.io/mlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "письменности нет в каталоге"
+  },
+  {
+   "id": "mixed-script-baseline",
+   "group": "direction",
+   "desc": "Общая базовая линия у разных письменностей",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "dominant-baseline, em"
+   ],
+   "data": "frontend/vendor/fonts/sub/fonts.json",
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "media._ass_fs/REF_EM выравнивает em; в PDF — кегль строки один (Л2)"
+  },
+  {
+   "id": "emphasis-marks",
+   "group": "decoration",
+   "desc": "Точки выделения CJK",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "text-emphasis"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "нет"
+  },
+  {
+   "id": "underline-skip-ink",
+   "group": "decoration",
+   "desc": "Подчёркивание с пропуском выносных",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "text-decoration-skip-ink"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "подчёркивания рядом с текстом не раздвигают закраску (Т28), но не перерисовываются"
+  },
+  {
+   "id": "italic-unavailable-scripts",
+   "group": "decoration",
+   "desc": "Курсива нет в письменности",
+   "scripts": [
+    "Arab",
+    "Hani",
+    "Deva"
+   ],
+   "params": [
+    "замена выделения"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/International/i18n-drafts/nav/languagedev"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "Г3 дорисовывает наклон любому письму"
+  },
+  {
+   "id": "ruby",
+   "group": "annotation",
+   "desc": "Руби (фуригана)",
+   "scripts": [
+    "Hani",
+    "Hira",
+    "Kana"
+   ],
+   "params": [
+    "позиция, размер"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-ruby-1/",
+    "https://www.w3.org/TR/jlreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "textcount снимает ruby/rt в субтитрах; в документах не набирается"
+  },
+  {
+   "id": "footnote-placement",
+   "group": "annotation",
+   "desc": "Место сноски на странице",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "float footnote"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-gcpm-3/"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "страницы оригинала: сноска остаётся на месте, правила не требует"
+  },
+  {
+   "id": "footnote-marks",
+   "group": "annotation",
+   "desc": "Знаки сносок",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "*, †, §, цифры"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-gcpm-3/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "Т7",
+    "Т9",
+    "Т33"
+   ],
+   "scope": "in",
+   "why": "знаки не мусор, надстрочник знаком Юникода, ссылка не обрывает точный конец"
+  },
+  {
+   "id": "counter-numbering-systems",
+   "group": "lists",
+   "desc": "Системы счёта номеров",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "counter-style"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-counter-styles-3/",
+    "https://cldr.unicode.org/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "номера переносятся как есть; Т16 не переставляет число в шаблоне"
+  },
+  {
+   "id": "list-marker-hanging-indent",
+   "group": "lists",
+   "desc": "Маркер и висячий отступ",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "маркер, отступ"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "М3",
+    "В3",
+    "Т11",
+    "Т12",
+    "О3"
+   ],
+   "scope": "in",
+   "why": "_with_bullet, значки-маркеры"
+  },
+  {
+   "id": "letter-numerals",
+   "group": "lists",
+   "desc": "Буквенные номера (а, б, в / α, β)",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "counter-style"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-counter-styles-3/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "не распознаются отдельно"
+  },
+  {
+   "id": "page-margins",
+   "group": "page",
+   "desc": "Поля и размер листа",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "MediaBox/CropBox"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-gcpm-3/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "А4",
+    "Ж1"
+   ],
+   "scope": "in",
+   "why": "лист скана — размера оригинала; ленты — виртуальные страницы"
+  },
+  {
+   "id": "keep-with-next",
+   "group": "page",
+   "desc": "Заголовок не отрывается от текста",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "break-after: avoid"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-break-3/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "Л3",
+    "М7"
+   ],
+   "scope": "in",
+   "why": "заголовок не остаётся последней строкой колонки; в конце потока — на месте"
+  },
+  {
+   "id": "baseline-grid",
+   "group": "page",
+   "desc": "Ритм базовых линий",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "шаг строк"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "Ф1",
+    "К1"
+   ],
+   "scope": "in",
+   "why": "строки перевода на базы оригинала тем же шагом"
+  },
+  {
+   "id": "column-balancing",
+   "group": "page",
+   "desc": "Балансировка колонок",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "column-fill"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/TR/css-text-4/",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "Л3"
+   ],
+   "scope": "in",
+   "why": "тесноту одного забирает пустота под соседним"
+  },
+  {
+   "id": "leading-per-script",
+   "group": "page",
+   "desc": "Интерлиньяж по письменности",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "line-height"
+   ],
+   "data": null,
+   "sources": [
+    "https://www.w3.org/International/i18n-drafts/nav/languagedev"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "шаг берётся у оригинала × f, поправки на письменность нет"
+  },
+  {
+   "id": "shrink-to-fit-order",
+   "group": "page",
+   "desc": "Порядок ужатия: сужение → кегль → шаг",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "HSCALE_MIN, FLOOR_HARD"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "В2",
+    "Ф3",
+    "Х15",
+    "Т13",
+    "Л4"
+   ],
+   "scope": "in",
+   "why": "_fit_slots, _fit_flow, fit_rhythm"
+  },
+  {
+   "id": "curved-rotated-baseline",
+   "group": "page",
+   "desc": "Повёрнутая и дуговая базовая линия",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "угол, путь"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "В5",
+    "Б2",
+    "Б3",
+    "Ж3",
+    "Т20",
+    "Т21"
+   ],
+   "scope": "in",
+   "why": "_rot_path, _draw_rot"
+  },
+  {
+   "id": "paragraph-reflow",
+   "group": "page",
+   "desc": "Перевёрстка абзаца в колонку",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "кегль f, шаг × f"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "К1",
+    "К2",
+    "Л2",
+    "Л3",
+    "Ф3"
+   ],
+   "scope": "in",
+   "why": "_fit_flow, _stories"
+  },
+  {
+   "id": "harmonize-size-class",
+   "group": "page",
+   "desc": "Один кегль у класса стиля на странице",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "квартиль, ступени"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "З2",
+    "Л4",
+    "П6",
+    "У3",
+    "Ф4",
+    "Т26"
+   ],
+   "scope": "in",
+   "why": "_harmonize, STORY_STEPS, _page_even"
+  },
+  {
+   "id": "measure-cpl",
+   "group": "measure",
+   "desc": "Длина строки в знаках",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "знаков в строке"
+   ],
+   "data": "backend/subtitle_norms.json",
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "в PDF ширина — у оригинала; у субтитров `line` в subtitle_norms.json (media.screen_lines)"
+  },
+  {
+   "id": "leading-ratio",
+   "group": "measure",
+   "desc": "Отношение шага к кеглю",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "LEAD_SQUEEZE"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "К1"
+   ],
+   "scope": "in",
+   "why": "шаг × f, сжатие до 0.93"
+  },
+  {
+   "id": "tracking-large-sizes",
+   "group": "measure",
+   "desc": "Трекинг крупного кегля",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "Tc"
+   ],
+   "data": null,
+   "sources": [
+    "book:Bringhurst"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "нет"
+  },
+  {
+   "id": "kerning",
+   "group": "measure",
+   "desc": "Кернинг",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "kern/GPOS, числа TJ"
+   ],
+   "data": null,
+   "sources": [
+    "https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist",
+    "book:Bringhurst"
+   ],
+   "handled_by": [
+    "Б7"
+   ],
+   "scope": "in",
+   "why": "кернинг TJ учитывается при чтении; reportlab не кернит, контурные строки — кернят (Е)"
+  },
+  {
+   "id": "page-norms",
+   "group": "measure",
+   "desc": "Норма страницы для счёта объёма",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "слов/знаков на страницу"
+   ],
+   "data": "backend/page_norms.json",
+   "sources": [],
+   "handled_by": [],
+   "scope": "in",
+   "why": "textcount.norm_for; к вёрстке не относится"
+  },
+  {
+   "id": "erase-on-flat-vs-inpaint",
+   "group": "image-paint",
+   "desc": "Стирание: заливка, inpaint, LaMa",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "ровность фона, маска букв"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "К8",
+    "Ф9",
+    "Х5",
+    "Ф5",
+    "Т29",
+    "Т31",
+    "П4",
+    "Р1",
+    "Л9"
+   ],
+   "scope": "in",
+   "why": "text_paint.erase, paint_lama"
+  },
+  {
+   "id": "ink-colour",
+   "group": "image-paint",
+   "desc": "Цвет краски букв",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "ось штриха, операторы цвета"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Г4",
+    "Г6",
+    "Х13",
+    "Т26"
+   ],
+   "scope": "in",
+   "why": "core_ink, _set_fill"
+  },
+  {
+   "id": "x-height-match",
+   "group": "image-paint",
+   "desc": "Кегль по высоте строчных",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "x-height"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Х10",
+    "Х13",
+    "Х17"
+   ],
+   "scope": "in",
+   "why": "em_by_xheight, font_xh"
+  },
+  {
+   "id": "stroke-weight-density",
+   "group": "image-paint",
+   "desc": "Вес по штриху и плотности набора",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "штрих, плотность"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Г5",
+    "Ф7",
+    "Х11",
+    "Х12",
+    "Х13"
+   ],
+   "scope": "in",
+   "why": "font_weight.stem_ratio, stem_mid, weight_by_density"
+  },
+  {
+   "id": "serif-detection",
+   "group": "image-paint",
+   "desc": "Засечки по буквам",
+   "scripts": [
+    "Latn",
+    "Cyrl",
+    "Grek"
+   ],
+   "params": [
+    "вынос ступни"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Х6",
+    "Х9",
+    "Х17"
+   ],
+   "scope": "in",
+   "why": "text_paint.serif_score"
+  },
+  {
+   "id": "typewriter-mono",
+   "group": "image-paint",
+   "desc": "Машинопись — моноширинный",
+   "scripts": [
+    "Latn",
+    "Cyrl"
+   ],
+   "params": [
+    "фазовая согласованность"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Х1",
+    "Х15"
+   ],
+   "scope": "in",
+   "why": "text_paint.mono_score"
+  },
+  {
+   "id": "handwriting-font",
+   "group": "image-paint",
+   "desc": "Рукописный шрифт",
+   "scripts": [
+    "Latn",
+    "Cyrl"
+   ],
+   "params": [
+    "доля рукописи"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "У2",
+    "Ф2",
+    "Ф7",
+    "Х7"
+   ],
+   "scope": "in",
+   "why": "Marck Script, main._hand_image"
+  },
+  {
+   "id": "pre-reform-font",
+   "group": "image-paint",
+   "desc": "Шрифт дореформенной книги",
+   "scripts": [
+    "Cyrl"
+   ],
+   "params": [
+    "ять/ер"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Х10"
+   ],
+   "scope": "in",
+   "why": "Old Standard TT"
+  },
+  {
+   "id": "drop-cap",
+   "group": "image-paint",
+   "desc": "Буквица при стирании и чтении",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "связная область у края"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Х8",
+    "С2",
+    "Ф1"
+   ],
+   "scope": "in",
+   "why": "continuation_mask"
+  },
+  {
+   "id": "size-split-parts",
+   "group": "image-paint",
+   "desc": "Участки блока разного размера",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "высота строчных полос"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Х14",
+    "Х16",
+    "Х19",
+    "К13"
+   ],
+   "scope": "in",
+   "why": "size_split, size_break"
+  },
+  {
+   "id": "affiliation-numbers",
+   "group": "image-paint",
+   "desc": "Номера аффилиаций как граница участка",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "ряд имя+номер"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Х16",
+    "Т9"
+   ],
+   "scope": "in",
+   "why": "tail_by_numbers"
+  },
+  {
+   "id": "inline-icons",
+   "group": "image-paint",
+   "desc": "Значки в строке",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "насыщенность, рост"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Х18",
+    "Т11",
+    "Т12"
+   ],
+   "scope": "in",
+   "why": "find_icons, _put_icons"
+  },
+  {
+   "id": "arc-text-paint",
+   "group": "image-paint",
+   "desc": "Надпись по дуге на картинке",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "радиус, цепочка букв"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Т22",
+    "Т23",
+    "Т24",
+    "Т25",
+    "В6",
+    "К8"
+   ],
+   "scope": "in",
+   "why": "_arc_of, _paint_arc"
+  },
+  {
+   "id": "rotated-text-paint",
+   "group": "image-paint",
+   "desc": "Повёрнутая надпись на картинке",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "угол главной оси"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "К8",
+    "В5",
+    "Б2"
+   ],
+   "scope": "in",
+   "why": "вертикальная рамка без угла — отказ vertical"
+  },
+  {
+   "id": "paper-colour",
+   "group": "image-paint",
+   "desc": "Цвет бумаги и узор",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "частый тон, период узора"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Г4",
+    "В6",
+    "Р1",
+    "Р3",
+    "Ф5",
+    "Ф6",
+    "Ф6а"
+   ],
+   "scope": "in",
+   "why": "_paper_periodic, _plate_of"
+  },
+  {
+   "id": "image-block-grouping",
+   "group": "image-paint",
+   "desc": "Сборка строк картинки в блоки",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "ритм, фон, разделитель"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "У1",
+    "У4",
+    "С1",
+    "С2",
+    "С3",
+    "С4",
+    "Т14",
+    "Х3"
+   ],
+   "scope": "in",
+   "why": "image_text._rhythm_merge, _column_rescue, regroup_boxes"
+  },
+  {
+   "id": "ocr-source-correction",
+   "group": "image-paint",
+   "desc": "Чтение без правки и исправление человеком",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "промпт чтения, правка оригинала"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Ф8",
+    "У5"
+   ],
+   "scope": "in",
+   "why": "_image_read_system, /source"
+  },
+  {
+   "id": "ink-box-extension",
+   "group": "pdf-layer",
+   "desc": "Закраска по краске за концом строки",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "INK_EXACT_SLACK, свой цвет"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Б8",
+    "К7",
+    "Т27",
+    "Т28",
+    "З4",
+    "Т5"
+   ],
+   "scope": "in",
+   "why": "_ink_box, _own_ink"
+  },
+  {
+   "id": "exact-line-end",
+   "group": "pdf-layer",
+   "desc": "Точный конец строки по оператору",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "Tj/TJ, ширины по коду"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Б7",
+    "Т33",
+    "Т10"
+   ],
+   "scope": "in",
+   "why": "op_end, _exact_ends"
+  },
+  {
+   "id": "invisible-text",
+   "group": "pdf-layer",
+   "desc": "Невидимый текст: обрезка, закраска",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "re W n, gs/ca"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Б4",
+    "Б1",
+    "Т19"
+   ],
+   "scope": "in",
+   "why": "_mark_covered; обрезка по кривой выключена"
+  },
+  {
+   "id": "form-xobject-coords",
+   "group": "pdf-layer",
+   "desc": "Форма (Form XObject) в координатах листа",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "матрица формы"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Б5",
+    "Б11"
+   ],
+   "scope": "in",
+   "why": "fmats, dups"
+  },
+  {
+   "id": "pdf-text-state-isolation",
+   "group": "pdf-layer",
+   "desc": "Tz и обводка в q/Q на строку",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "q/Q"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "В4"
+   ],
+   "scope": "in",
+   "why": "layout_pdf"
+  },
+  {
+   "id": "slot-placement",
+   "group": "pdf-layer",
+   "desc": "Перевод в места строк",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "slots, _spread"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "В1",
+    "Б6",
+    "Б9",
+    "О5"
+   ],
+   "scope": "in",
+   "why": "места строк вместо прямоугольника"
+  },
+  {
+   "id": "free-paper-growth",
+   "group": "pdf-layer",
+   "desc": "Рост в свободную бумагу",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "FREE_MARGIN, ROOM_TAKE"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "З1",
+    "К6",
+    "Л6",
+    "П3",
+    "Р3",
+    "Т1",
+    "Т4"
+   ],
+   "scope": "in",
+   "why": "_free_room, _free_below, _span"
+  },
+  {
+   "id": "colontitle-repeat",
+   "group": "pdf-layer",
+   "desc": "Колонтитул: один перевод на книгу",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "кластер, номер страницы"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Т15",
+    "Ж6"
+   ],
+   "scope": "in",
+   "why": "_head_paragraphs, repeat"
+  },
+  {
+   "id": "figure-crop",
+   "group": "pdf-layer",
+   "desc": "Вырезка рисунка и его надписи",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "рамка в долях листа"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Д2",
+    "Д3",
+    "Р4"
+   ],
+   "scope": "in",
+   "why": "pdf_crop_figures, tag_figure"
+  },
+  {
+   "id": "text-layer-leftover",
+   "group": "pdf-layer",
+   "desc": "Строки вне слоя и разрывы слоя",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "разрывы, краска минус слой"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "К9",
+    "К12",
+    "П1",
+    "Р2",
+    "Т15b",
+    "Т32"
+   ],
+   "scope": "in",
+   "why": "_mark_layer_blocks, _line_gaps"
+  },
+  {
+   "id": "layer-image-dedup",
+   "group": "pdf-layer",
+   "desc": "Одно место — один источник",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "сходство букв"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "О1",
+    "К11",
+    "Л8",
+    "Р5",
+    "Т26b"
+   ],
+   "scope": "in",
+   "why": "_piece_in, _same_text"
+  },
+  {
+   "id": "collisions",
+   "group": "pdf-layer",
+   "desc": "Наложения до отчёта «готово»",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "прямоугольники строк"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "З3",
+    "Л7",
+    "Т13",
+    "Т30"
+   ],
+   "scope": "in",
+   "why": "_resolve_collisions"
+  },
+  {
+   "id": "export-self-check",
+   "group": "pdf-layer",
+   "desc": "Самопроверка выгрузки",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "leftover, sizeMedian"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Д1",
+    "К10"
+   ],
+   "scope": "in",
+   "why": "_layout_leftovers, _size_report"
+  },
+  {
+   "id": "export-path-choice",
+   "group": "pdf-layer",
+   "desc": "Какой дорогой печатать PDF",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "pdfFrom, layoutWhy"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "А1",
+    "А2",
+    "А3",
+    "А4"
+   ],
+   "scope": "in",
+   "why": "_generate_export"
+  },
+  {
+   "id": "vector-vs-raster-fallback",
+   "group": "pdf-layer",
+   "desc": "Контуры или картинка строки",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "LAYOUT_VECTOR"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Н1",
+    "Г2"
+   ],
+   "scope": "in",
+   "why": "glyph_shaper, _Raster"
+  },
+  {
+   "id": "ribbon-pages",
+   "group": "pdf-layer",
+   "desc": "Лента CamScanner → страницы",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "клипы групп, H/W"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Ж1",
+    "Ж2",
+    "З5"
+   ],
+   "scope": "in",
+   "why": "backend/pdf_panels.py"
+  },
+  {
+   "id": "table-columns",
+   "group": "pdf-layer",
+   "desc": "Таблица по колонкам",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "_col_starts, tcol"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Ж4",
+    "Т6",
+    "П2",
+    "Р6",
+    "О3",
+    "Т1",
+    "Т3"
+   ],
+   "scope": "in",
+   "why": "_table_streams, _rot_cells"
+  },
+  {
+   "id": "footnote-superscripts",
+   "group": "pdf-layer",
+   "desc": "Надстрочники сносок",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "сдвиг базовой линии"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Б6",
+    "Т9",
+    "Т33"
+   ],
+   "scope": "in",
+   "why": "_script_marks, _line_parts"
+  },
+  {
+   "id": "broken-math-detection",
+   "group": "pdf-layer",
+   "desc": "Повреждённая формула/знаки сравнения",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "дробная черта, знак без операнда"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Т7",
+    "М1"
+   ],
+   "scope": "in",
+   "why": "checks.broken_math — находка об оригинале (CLAUDE.md, п. 11 pdftext)"
+  },
+  {
+   "id": "reading-order",
+   "group": "pdf-layer",
+   "desc": "Порядок чтения и разрыв абзаца",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "CONT_DY, колонки"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Б10",
+    "Б3",
+    "Л3",
+    "М4",
+    "М5",
+    "О4",
+    "Ж5"
+   ],
+   "scope": "in",
+   "why": "_geo_follows, _stories"
+  },
+  {
+   "id": "twin-unify",
+   "group": "pdf-layer",
+   "desc": "Двойники печатаются одним переводом",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "исходник+соседи"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Т16"
+   ],
+   "scope": "in",
+   "why": "main._twin_unify"
+  },
+  {
+   "id": "abbreviation-legend",
+   "group": "pdf-layer",
+   "desc": "Сокращения по легенде документа",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "пары ABBR"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Т17",
+    "Л10",
+    "Т8"
+   ],
+   "scope": "in",
+   "why": "main._abbr_map, _caps_label"
+  },
+  {
+   "id": "references-keep",
+   "group": "pdf-layer",
+   "desc": "Литература и адреса оригиналом",
+   "scripts": [
+    "*"
+   ],
+   "params": [
+    "зона литературы, URL"
+   ],
+   "data": null,
+   "sources": [
+    "docs/rules/pdf-reading.md"
+   ],
+   "handled_by": [
+    "Л10",
+    "М6",
+    "К5"
+   ],
+   "scope": "in",
+   "why": "_refs_of, _keep_verbatim"
+  }
+ ]
+}

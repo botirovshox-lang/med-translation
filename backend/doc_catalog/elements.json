@@ -1,0 +1,1229 @@
+{
+ "_about": "Каталог элементов документа (DocLayNet, PubLayNet, DocBank, PAGE/OCR-D, PRImA, FUNSD и жанры), которые система «перевод в ту же вёрстку» обязана узнать. handled_by — номера правил docs/rules/pdf-reading.md; scope: in — делаем/нужно, deferred — отложено, out — другой продукт.",
+ "elements": [
+  {
+   "id": "text",
+   "group": "text",
+   "desc": "Абзац основного текста",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://arxiv.org/abs/1908.07836",
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "К1",
+    "К2",
+    "Л3",
+    "Л4",
+    "Б10",
+    "Ж5"
+   ],
+   "scope": "in",
+   "why": "перевёрстка абзаца в свою колонку, история страницы, разрыв по геометрии"
+  },
+  {
+   "id": "title",
+   "group": "heading",
+   "desc": "Заголовок документа/статьи",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://arxiv.org/abs/1908.07836"
+   ],
+   "handled_by": [
+    "Х14",
+    "Х17",
+    "Х19",
+    "Л3"
+   ],
+   "scope": "in",
+   "why": "заголовок крупнее тела — связь истории; в картинке — свой участок с авторами"
+  },
+  {
+   "id": "section-header",
+   "group": "heading",
+   "desc": "Заголовок раздела",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062"
+   ],
+   "handled_by": [
+    "М4",
+    "М7",
+    "Л3",
+    "П6",
+    "Т8"
+   ],
+   "scope": "in",
+   "why": "конец подзаголовка по смене начертания и кегля, капс — свой класс кегля, не остаётся внизу потока"
+  },
+  {
+   "id": "list-item",
+   "group": "text",
+   "desc": "Пункт списка",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://arxiv.org/abs/1908.07836"
+   ],
+   "handled_by": [
+    "М3",
+    "Т11",
+    "Т12",
+    "О3",
+    "Ж4"
+   ],
+   "scope": "in",
+   "why": "маркер-буква на рамке абзаца, значок-контур — маркер, пункт держит край у значка"
+  },
+  {
+   "id": "list-label",
+   "group": "text",
+   "desc": "Метка пункта (•, 1., а)) отдельно от текста",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "М3",
+    "Т10",
+    "Т11"
+   ],
+   "scope": "in",
+   "why": "маркер в конце строки — своя ячейка, в текст сегмента не входит"
+  },
+  {
+   "id": "caption",
+   "group": "text",
+   "desc": "Подпись к рисунку/таблице",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://arxiv.org/abs/1908.07836"
+   ],
+   "handled_by": [
+    "К6",
+    "Т17",
+    "П3",
+    "З1"
+   ],
+   "scope": "in",
+   "why": "однострочная подпись растёт в свободную бумагу; легенда сокращений даёт пары"
+  },
+  {
+   "id": "author",
+   "group": "text",
+   "desc": "Строка авторов",
+   "sources": [
+    "https://arxiv.org/abs/2006.01038"
+   ],
+   "handled_by": [
+    "Х14",
+    "Х16",
+    "Х17",
+    "Х19"
+   ],
+   "scope": "in",
+   "why": "в картинке — свой участок: кегль по строчным, своё семейство, хвост по номерам аффилиаций"
+  },
+  {
+   "id": "abstract",
+   "group": "text",
+   "desc": "Аннотация",
+   "sources": [
+    "https://arxiv.org/abs/2006.01038"
+   ],
+   "handled_by": [
+    "Х11",
+    "Т11"
+   ],
+   "scope": "in",
+   "why": "обычный текст; ложный полужирный от размытия снимается, серая полоса под строками — фон, а не значки"
+  },
+  {
+   "id": "reference",
+   "group": "text",
+   "desc": "Запись списка литературы",
+   "sources": [
+    "https://arxiv.org/abs/2006.01038"
+   ],
+   "handled_by": [
+    "Л10",
+    "М6",
+    "К5"
+   ],
+   "scope": "in",
+   "why": "литература печатается оригиналом (пиксели оригинала), название статьи между записями — часть записи"
+  },
+  {
+   "id": "toc-entry",
+   "group": "text",
+   "desc": "Строка оглавления с номером страницы",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "Т10"
+   ],
+   "scope": "in",
+   "why": "цифры оглавления клеятся к строке; в .docx поля TOC помечаются к пересчёту (main._refresh_fields)"
+  },
+  {
+   "id": "credit",
+   "group": "text",
+   "desc": "Подпись-кредит (фото, источник)",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "отдельного правила нет — идёт как подпись/текст"
+  },
+  {
+   "id": "floating",
+   "group": "text",
+   "desc": "Текст среди графики (вне колонок)",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "Д2",
+    "Д3",
+    "Т32",
+    "В1"
+   ],
+   "scope": "in",
+   "why": "надписи схем читаются на своём месте, перевод — в места строк"
+  },
+  {
+   "id": "byline",
+   "group": "text",
+   "desc": "Байлайн газетной статьи",
+   "sources": [
+    "https://arxiv.org/abs/2005.01583"
+   ],
+   "handled_by": [
+    "Х14"
+   ],
+   "scope": "in",
+   "why": "как строка авторов; отдельного газетного правила нет"
+  },
+  {
+   "id": "pull-quote",
+   "group": "text",
+   "desc": "Выносная цитата журнала",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "в PDF — вставка (роль `a` в pdftext), своего правила в справочнике нет"
+  },
+  {
+   "id": "sidebar",
+   "group": "text",
+   "desc": "Врезка/сайдбар",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "Т27",
+    "Т28",
+    "Т30"
+   ],
+   "scope": "in",
+   "why": "врезка в рамке — роль вставки pdftext; закраска не трогает рамку плашки"
+  },
+  {
+   "id": "interlinear-gloss",
+   "group": "special",
+   "desc": "Подстрочная глосса рукописи",
+   "sources": [
+    "https://github.com/PRImA-Research-Lab/PAGE-XML"
+   ],
+   "handled_by": [],
+   "scope": "out",
+   "why": "научное издание текста, а не перевод документа"
+  },
+  {
+   "id": "rubric",
+   "group": "heading",
+   "desc": "Рубрика (красная строка-заголовок рукописи)",
+   "sources": [
+    "https://github.com/PRImA-Research-Lab/PAGE-XML"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "печатается как заголовок; цвет краски берётся из оригинала, отдельного правила нет"
+  },
+  {
+   "id": "footnote",
+   "group": "note",
+   "desc": "Сноска внизу страницы",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "Б6",
+    "Т7",
+    "Т9",
+    "Т33"
+   ],
+   "scope": "in",
+   "why": "надстрочный знак сноски сохраняется, строка со сноской режется на места, точный конец через ссылку"
+  },
+  {
+   "id": "footnote-continued",
+   "group": "note",
+   "desc": "Продолжение сноски на следующей странице",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "Л3"
+   ],
+   "scope": "in",
+   "why": "своего правила нет; абзац, разорванный страницей, делится по доле строк"
+  },
+  {
+   "id": "endnote",
+   "group": "note",
+   "desc": "Концевая сноска",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "обычный текст, правила не требует"
+  },
+  {
+   "id": "marginalia",
+   "group": "note",
+   "desc": "Заметка на полях",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html",
+    "https://github.com/PRImA-Research-Lab/PAGE-XML"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "вставка на полях — роль вставки pdftext; правила в справочнике нет"
+  },
+  {
+   "id": "affiliation-superscript",
+   "group": "note",
+   "desc": "Надстрочные номера аффилиаций у авторов",
+   "sources": [
+    "https://arxiv.org/abs/2006.01038"
+   ],
+   "handled_by": [
+    "Х16",
+    "Т9"
+   ],
+   "scope": "in",
+   "why": "в картинке хвост по номерам; в PDF надстрочность печатается строкой (Е: «Дэвис,1,2»)"
+  },
+  {
+   "id": "page-header",
+   "group": "running",
+   "desc": "Верхний колонтитул",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "Т15",
+    "Ж6"
+   ],
+   "scope": "in",
+   "why": "колонтитул по высоте строки, один перевод на книгу, номер страницы подставляется"
+  },
+  {
+   "id": "page-footer",
+   "group": "running",
+   "desc": "Нижний колонтитул",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062"
+   ],
+   "handled_by": [
+    "Т15",
+    "Ж6"
+   ],
+   "scope": "in",
+   "why": "как верхний"
+  },
+  {
+   "id": "page-number",
+   "group": "running",
+   "desc": "Номер страницы",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "Ж6"
+   ],
+   "scope": "in",
+   "why": "номер снимается с краёв (pdftext), в колонтитуле — свой номер страницы"
+  },
+  {
+   "id": "catch-word",
+   "group": "running",
+   "desc": "Кустода (слово-ловитор внизу страницы)",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "встречается в старопечатных книгах; пока не различается"
+  },
+  {
+   "id": "signature-mark",
+   "group": "running",
+   "desc": "Сигнатура листа",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "старопечатные издания; не различается"
+  },
+  {
+   "id": "jump-line",
+   "group": "running",
+   "desc": "Строка «продолжение на с. N»",
+   "sources": [
+    "https://arxiv.org/abs/2005.01583"
+   ],
+   "handled_by": [
+    "Т15"
+   ],
+   "scope": "in",
+   "why": "«Continued on p. N» — граница абзаца на стыке страниц"
+  },
+  {
+   "id": "drop-capital",
+   "group": "special",
+   "desc": "Буквица",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/structur_gtlevel1.html"
+   ],
+   "handled_by": [
+    "Х8",
+    "С2",
+    "Ф1"
+   ],
+   "scope": "in",
+   "why": "буквица стирается целиком, слово за ней не становится отдельным блоком; pdftext восстанавливает слово"
+  },
+  {
+   "id": "inline-icon",
+   "group": "special",
+   "desc": "Значок в строке (ORCID и т.п.)",
+   "sources": [
+    "https://info.orcid.org/brand-guidelines/"
+   ],
+   "handled_by": [
+    "Х18",
+    "Т11"
+   ],
+   "scope": "in",
+   "why": "значок конца строки переносится за перевод; посреди строки — называется числом"
+  },
+  {
+   "id": "watermark",
+   "group": "graphic",
+   "desc": "Водяной знак",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [
+    "Б4"
+   ],
+   "scope": "deferred",
+   "why": "полупрозрачная закраска учитывается при видимости текста; перевод водяного знака не делается"
+  },
+  {
+   "id": "mrz",
+   "group": "special",
+   "desc": "Машиночитаемая зона паспорта/ID",
+   "sources": [
+    "https://www.icao.int/publications/pages/publication.aspx?docnum=9303"
+   ],
+   "handled_by": [
+    "К5",
+    "Д1"
+   ],
+   "scope": "in",
+   "why": "переводить нельзя: совпавшее с оригиналом остаётся пикселями оригинала и не считается остатком"
+  },
+  {
+   "id": "receipt",
+   "group": "special",
+   "desc": "Чек/кассовая лента",
+   "sources": [
+    "https://github.com/clovaai/cord",
+    "https://arxiv.org/abs/2103.10213"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "текст на фото; отдельной раскладки ключ-значение нет"
+  },
+  {
+   "id": "invoice",
+   "group": "special",
+   "desc": "Счёт-фактура",
+   "sources": [
+    "https://arxiv.org/abs/2103.10213"
+   ],
+   "handled_by": [
+    "Ж4",
+    "Т6"
+   ],
+   "scope": "in",
+   "why": "таблица и пары ключ-значение"
+  },
+  {
+   "id": "certificate-seal",
+   "group": "graphic",
+   "desc": "Печать/гербовая печать сертификата",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "текст по кругу печати — дуга; перевод печатей не делается"
+  },
+  {
+   "id": "banknote-security",
+   "group": "special",
+   "desc": "Банкноты и защитная печать",
+   "sources": [],
+   "handled_by": [],
+   "scope": "out",
+   "why": "другой продукт: защитная графика не перепечатывается"
+  },
+  {
+   "id": "speech-bubble",
+   "group": "special",
+   "desc": "Пузырь реплики в комиксе",
+   "sources": [
+    "https://arxiv.org/abs/2005.04425"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "manga-image-translator (GPL) не взят; своей раскладки по пузырю нет"
+  },
+  {
+   "id": "engineering-drawing",
+   "group": "special",
+   "desc": "Чертёж (штамп, размеры)",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "надписи — как текст в кадре; размеры и допуски не переводятся"
+  },
+  {
+   "id": "illuminated-initial",
+   "group": "special",
+   "desc": "Украшенный инициал рукописи",
+   "sources": [
+    "https://github.com/PRImA-Research-Lab/PAGE-XML"
+   ],
+   "handled_by": [
+    "Х8"
+   ],
+   "scope": "deferred",
+   "why": "стирание связной области работает, воспроизведения орнамента нет"
+  },
+  {
+   "id": "slide",
+   "group": "special",
+   "desc": "Слайд презентации",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "pptx — правка файла по слотам (importers.extract_slots); PDF слайдов — общие правила"
+  },
+  {
+   "id": "poster",
+   "group": "special",
+   "desc": "Плакат/постер",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "К8",
+    "К13"
+   ],
+   "scope": "in",
+   "why": "текст на картинке и плашках"
+  },
+  {
+   "id": "menu",
+   "group": "special",
+   "desc": "Меню (строка с отточием и ценой)",
+   "sources": [],
+   "handled_by": [],
+   "scope": "in",
+   "why": "своего правила нет; точки-отточие — табуляция с заполнителем, не переводится"
+  },
+  {
+   "id": "packaging-label",
+   "group": "special",
+   "desc": "Этикетка упаковки",
+   "sources": [],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "изогнутые поверхности на фото; искажение перспективы не снимается"
+  },
+  {
+   "id": "ui-screenshot",
+   "group": "special",
+   "desc": "Снимок экрана интерфейса",
+   "sources": [
+    "https://dl.acm.org/doi/10.1145/3126594.3126651"
+   ],
+   "handled_by": [
+    "К8",
+    "Т31"
+   ],
+   "scope": "in",
+   "why": "надписи на картинке, буквы прямой строки по высоте области"
+  },
+  {
+   "id": "picture",
+   "group": "graphic",
+   "desc": "Рисунок/фото",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [
+    "Д2",
+    "К8",
+    "Р4",
+    "Л9"
+   ],
+   "scope": "in",
+   "why": "вырезка рисунка с меткой места, надписи внутри — тем же разбором, что у скана"
+  },
+  {
+   "id": "line-drawing",
+   "group": "graphic",
+   "desc": "Штриховой рисунок/схема кривыми",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "Д3",
+    "Т32",
+    "Л8"
+   ],
+   "scope": "in",
+   "why": "текст, нарисованный кривыми, ищется на самой странице"
+  },
+  {
+   "id": "chart",
+   "group": "graphic",
+   "desc": "График/инфографика",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "В1",
+    "Б9",
+    "З1",
+    "З2",
+    "К13",
+    "Т14"
+   ],
+   "scope": "in",
+   "why": "перевод в места строк, надписи одного стиля — один кегль, плашки по участкам"
+  },
+  {
+   "id": "separator",
+   "group": "graphic",
+   "desc": "Линия-разделитель",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "О2",
+    "Т3",
+    "Т5",
+    "Т14"
+   ],
+   "scope": "in",
+   "why": "история не идёт через линию, линейка в полосе строки — не краска соседа"
+  },
+  {
+   "id": "decoration",
+   "group": "graphic",
+   "desc": "Орнамент/украшение",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [
+    "Х8"
+   ],
+   "scope": "in",
+   "why": "орнамент «* * *» снимается pdftext; мелкие завитки у буквицы стираются с ней"
+  },
+  {
+   "id": "frame",
+   "group": "graphic",
+   "desc": "Рамка/плашка вокруг текста",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [
+    "К7",
+    "Т27",
+    "Т28",
+    "Т30",
+    "Р3"
+   ],
+   "scope": "in",
+   "why": "сплошная заливка — не буквы, закраска по краске своего цвета, место — комната плашки"
+  },
+  {
+   "id": "logo",
+   "group": "graphic",
+   "desc": "Логотип",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [
+    "Б5"
+   ],
+   "scope": "in",
+   "why": "форма-логотип не прячет текст; сам логотип не переводится"
+  },
+  {
+   "id": "letterhead",
+   "group": "graphic",
+   "desc": "Фирменный бланк",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "как логотип и текст на картинке; правила нет"
+  },
+  {
+   "id": "handwritten-annotation",
+   "group": "graphic",
+   "desc": "Пометка от руки поверх печати",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "рукопись как жанр поддержана (У, Ф), смешение пометок с печатью — нет"
+  },
+  {
+   "id": "stamp",
+   "group": "graphic",
+   "desc": "Штамп",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "штамп сканера отсекается при поиске остатка (Т32); перевод текста штампов не делается"
+  },
+  {
+   "id": "signature",
+   "group": "graphic",
+   "desc": "Подпись от руки",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "графика, не стирается и не переводится; правила нет"
+  },
+  {
+   "id": "barcode",
+   "group": "graphic",
+   "desc": "Штрихкод",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "не текст; не трогается"
+  },
+  {
+   "id": "qr-code",
+   "group": "graphic",
+   "desc": "QR-код",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "не текст; не трогается"
+  },
+  {
+   "id": "punch-hole",
+   "group": "graphic",
+   "desc": "Отверстие дырокола на скане",
+   "sources": [
+    "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "шум скана; правила нет"
+  },
+  {
+   "id": "noise",
+   "group": "graphic",
+   "desc": "Шум/мусор распознавания",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "Т7"
+   ],
+   "scope": "in",
+   "why": "pdftext снимает мусорные токены; знаки сравнения, & и сноски мусором не считаются"
+  },
+  {
+   "id": "advert",
+   "group": "graphic",
+   "desc": "Реклама в журнале/газете",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "отдельной роли нет"
+  },
+  {
+   "id": "map",
+   "group": "graphic",
+   "desc": "Карта",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [],
+   "scope": "out",
+   "why": "картография (подписи вдоль рек и дорог) — другой продукт"
+  },
+  {
+   "id": "music",
+   "group": "graphic",
+   "desc": "Нотная запись",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [],
+   "scope": "out",
+   "why": "ноты не переводятся"
+  },
+  {
+   "id": "table",
+   "group": "table",
+   "desc": "Таблица",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://arxiv.org/abs/1908.07836"
+   ],
+   "handled_by": [
+    "Ж4",
+    "Т6",
+    "О3",
+    "Т1",
+    "Т3",
+    "Т4",
+    "Т5"
+   ],
+   "scope": "in",
+   "why": "ячейки по колонкам, строки таблицы от начал первой колонки, ячейка растёт вниз до своей строки"
+  },
+  {
+   "id": "formula",
+   "group": "math",
+   "desc": "Формула",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062",
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "Т9",
+    "М1",
+    "Д1"
+   ],
+   "scope": "in",
+   "why": "над/подстрочные знаками Юникода, имена глифов — знаки; формула законно остаётся (Д1); checks.broken_math — повреждения оригинала"
+  },
+  {
+   "id": "chem",
+   "group": "math",
+   "desc": "Химическая формула",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "Т9"
+   ],
+   "scope": "in",
+   "why": "индексы H₂O знаками Юникода"
+  },
+  {
+   "id": "form-header",
+   "group": "form",
+   "desc": "Заголовок формы (FUNSD header)",
+   "sources": [
+    "https://arxiv.org/abs/1905.13538"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "как заголовок; правила нет"
+  },
+  {
+   "id": "form-question",
+   "group": "form",
+   "desc": "Вопрос/ключ формы",
+   "sources": [
+    "https://arxiv.org/abs/1905.13538"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "строка «Пациент:» на каждой странице — не колонтитул (pdftext); правила в справочнике нет"
+  },
+  {
+   "id": "form-answer",
+   "group": "form",
+   "desc": "Ответ/значение формы",
+   "sources": [
+    "https://arxiv.org/abs/1905.13538"
+   ],
+   "handled_by": [
+    "О3"
+   ],
+   "scope": "in",
+   "why": "короткие ячейки ряда не сцепляются историей"
+  },
+  {
+   "id": "key-value",
+   "group": "form",
+   "desc": "Пара ключ-значение",
+   "sources": [
+    "https://arxiv.org/abs/1905.13538"
+   ],
+   "handled_by": [
+    "О3",
+    "Т4"
+   ],
+   "scope": "in",
+   "why": "ячейки, граница — середина зазора"
+  },
+  {
+   "id": "checkbox",
+   "group": "form",
+   "desc": "Флажок/галочка",
+   "sources": [
+    "https://arxiv.org/abs/1905.13538"
+   ],
+   "handled_by": [
+    "Т10",
+    "О3"
+   ],
+   "scope": "in",
+   "why": "знак без букв — своя ячейка, не буква"
+  },
+  {
+   "id": "signature-field",
+   "group": "form",
+   "desc": "Поле подписи",
+   "sources": [
+    "https://arxiv.org/abs/1905.13538"
+   ],
+   "handled_by": [],
+   "scope": "in",
+   "why": "линия поля не стирается; правила нет"
+  },
+  {
+   "id": "single-column",
+   "group": "genre",
+   "desc": "Одна колонка (книга)",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062"
+   ],
+   "handled_by": [
+    "К1",
+    "Л3",
+    "Л4"
+   ],
+   "scope": "in",
+   "why": "история страницы одной колонкой"
+  },
+  {
+   "id": "multi-column",
+   "group": "genre",
+   "desc": "Несколько колонок",
+   "sources": [
+    "https://arxiv.org/abs/2206.01062"
+   ],
+   "handled_by": [
+    "Л3",
+    "Б10",
+    "Л6",
+    "Т4"
+   ],
+   "scope": "in",
+   "why": "переход наверх соседней колонки, бумага вбок до начала соседней колонки"
+  },
+  {
+   "id": "non-manhattan",
+   "group": "genre",
+   "desc": "Непрямоугольная вёрстка (инфографика)",
+   "sources": [
+    "https://www.primaresearch.org/datasets/Layout_Analysis"
+   ],
+   "handled_by": [
+    "В1",
+    "З1",
+    "З3",
+    "Л7"
+   ],
+   "scope": "in",
+   "why": "места строк вместо прямоугольника, наложения ищутся до отчёта"
+  },
+  {
+   "id": "vertical-cjk",
+   "group": "genre",
+   "desc": "Вертикальный китайский/японский",
+   "sources": [
+    "https://www.w3.org/TR/jlreq/",
+    "https://www.w3.org/TR/clreq/"
+   ],
+   "handled_by": [],
+   "scope": "deferred",
+   "why": "чтение есть у зрячей модели, вертикального набора перевода нет"
+  },
+  {
+   "id": "rtl",
+   "group": "genre",
+   "desc": "Письмо справа налево",
+   "sources": [
+    "https://www.w3.org/TR/alreq/"
+   ],
+   "handled_by": [
+    "Г2",
+    "Н1",
+    "Х4",
+    "С4"
+   ],
+   "scope": "in",
+   "why": "контуры HarfBuzz, двунаправленный порядок, отступ и начало строки справа"
+  },
+  {
+   "id": "mixed-direction",
+   "group": "genre",
+   "desc": "Смешанное направление в строке",
+   "sources": [
+    "https://unicode.org/reports/tr9/"
+   ],
+   "handled_by": [
+    "Г2",
+    "Н1"
+   ],
+   "scope": "in",
+   "why": "упрощённый bidi (`_bidi_levels`), HarfBuzz с явным направлением"
+  },
+  {
+   "id": "arc-text",
+   "group": "genre",
+   "desc": "Текст по дуге/кольцу",
+   "sources": [],
+   "handled_by": [
+    "В5",
+    "В6",
+    "Т20",
+    "Т22",
+    "Т25",
+    "Т26",
+    "О6"
+   ],
+   "scope": "in",
+   "why": "дуга по пути операторов, в картинке — по цепочке букв"
+  },
+  {
+   "id": "text-on-photo",
+   "group": "genre",
+   "desc": "Текст на фотографии",
+   "sources": [],
+   "handled_by": [
+    "К8",
+    "Ф9",
+    "Ф5",
+    "П4",
+    "Р1"
+   ],
+   "scope": "in",
+   "why": "маска букв, стирание заливкой/inpaint/LaMa, плашка восстановленного фона"
+  },
+  {
+   "id": "text-in-shapes",
+   "group": "genre",
+   "desc": "Текст в плашках и фигурах",
+   "sources": [],
+   "handled_by": [
+    "Т30",
+    "К13",
+    "О4",
+    "Р3"
+   ],
+   "scope": "in",
+   "why": "место — комната плашки, строки плашки — один абзац, край плашки — конец бумаги"
+  },
+  {
+   "id": "rotated-table",
+   "group": "genre",
+   "desc": "Таблица боком",
+   "sources": [],
+   "handled_by": [
+    "Ж2",
+    "Ж3",
+    "П2",
+    "Р6"
+   ],
+   "scope": "in",
+   "why": "страница ставится прямо, ряд повёрнутой таблицы режется на ячейки"
+  },
+  {
+   "id": "overlapping-watermark",
+   "group": "genre",
+   "desc": "Текст под водяным знаком",
+   "sources": [],
+   "handled_by": [
+    "Б4"
+   ],
+   "scope": "deferred",
+   "why": "учитывается прозрачность закраски; сам знак не снимается"
+  },
+  {
+   "id": "skew-warp-scan",
+   "group": "genre",
+   "desc": "Перекошенный/выгнутый скан",
+   "sources": [],
+   "handled_by": [
+    "Б2"
+   ],
+   "scope": "deferred",
+   "why": "наклон базовой линии различается, выпрямления листа нет"
+  },
+  {
+   "id": "low-quality-fax",
+   "group": "genre",
+   "desc": "Плохой скан/факс/выцветшая машинопись",
+   "sources": [],
+   "handled_by": [
+    "С1",
+    "Х12"
+   ],
+   "scope": "in",
+   "why": "строка с нулевой уверенностью судится геометрией столбца, штрих по середине тона"
+  },
+  {
+   "id": "handwriting",
+   "group": "genre",
+   "desc": "Рукопись",
+   "sources": [],
+   "handled_by": [
+    "У1",
+    "У2",
+    "У3",
+    "У4",
+    "У5",
+    "Ф1",
+    "Ф2",
+    "Ф7",
+    "Ф8"
+   ],
+   "scope": "in",
+   "why": "ритм строк, рукописный шрифт, калибровка почерка, перо, переписывать — не править"
+  },
+  {
+   "id": "typewriter",
+   "group": "genre",
+   "desc": "Машинопись",
+   "sources": [],
+   "handled_by": [
+    "Х1",
+    "Х15",
+    "С1"
+   ],
+   "scope": "in",
+   "why": "моноширинный шрифт, уменьшение поровну кеглем и шириной"
+  },
+  {
+   "id": "pre-reform-orthography",
+   "group": "genre",
+   "desc": "Дореформенная орфография",
+   "sources": [],
+   "handled_by": [
+    "Х10"
+   ],
+   "scope": "in",
+   "why": "признак по ятю/еру, Old Standard TT"
+  },
+  {
+   "id": "ruled-notebook",
+   "group": "genre",
+   "desc": "Тетрадь в клетку/линейку",
+   "sources": [],
+   "handled_by": [
+    "Ф6",
+    "Ф6а",
+    "У4"
+   ],
+   "scope": "in",
+   "why": "бумага с узором стирается по модели периода, пропущенные строки по ритму"
+  },
+  {
+   "id": "ribbon-pdf",
+   "group": "genre",
+   "desc": "«Лента» CamScanner (длинные листы)",
+   "sources": [],
+   "handled_by": [
+    "Ж1",
+    "Б1",
+    "З5"
+   ],
+   "scope": "in",
+   "why": "лист режется на виртуальные страницы, выгрузка по страницам или как в файле"
+  },
+  {
+   "id": "scan-with-ocr-layer",
+   "group": "genre",
+   "desc": "Скан с невидимым слоем распознавания",
+   "sources": [],
+   "handled_by": [
+    "Б4",
+    "Г6",
+    "Т32",
+    "К12"
+   ],
+   "scope": "in",
+   "why": "слой под снимком не «накрыт» картинкой; остаток краски на таких страницах не ищется"
+  },
+  {
+   "id": "infographic",
+   "group": "genre",
+   "desc": "Инфографика (подписи, кольца, значки)",
+   "sources": [],
+   "handled_by": [
+    "Б9",
+    "З2",
+    "Т14",
+    "Т26b",
+    "К11"
+   ],
+   "scope": "in",
+   "why": "две надписи одной базовой линии, один кегль стиля, блок-повтор слоя не печатается"
+  }
+ ]
+}

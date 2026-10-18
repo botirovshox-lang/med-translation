@@ -106,10 +106,16 @@ def block_metrics(tp, a, b, it: dict) -> "dict | None":
         mb = _measure(tp, b, it, box)
     if mb is not None:
         W_ = x1 - x0
-        la = [[0, p, W_, q + 1] for p, q in ma["bands"]] or _lines(it, [x0, y0])
-        lb = [[0, p, W_, q + 1] for p, q in mb["bands"]] or [[0, 0, W_, y1 - y0]]
+        # Обе стороны — маской по цвету КРАСКИ оригинала, полосы — из неё же:
+        # линии клетки и разлиновки другого цвета и в маску не попадают
+        # (на конспекте в клетку маска выгрузки брала сетку, и высота
+        # строчных выходила впятеро меньше настоящей).
+        bg_c = ma.get("bg") or (255, 255, 255)
+        ka, kb = _ink_mask(ca, ma["ink"], bg_c), _ink_mask(cb, ma["ink"], bg_c)
+        la = [[0, p, W_, q + 1] for p, q in _bands_of(ka)] or _lines(it, [x0, y0])
+        lb = [[0, p, W_, q + 1] for p, q in _bands_of(kb)] or [[0, 0, W_, y1 - y0]]
         if _cased(it.get("text") or ""):
-            xa, xb = _main_xh(tp, ma["mask"], la), _main_xh(tp, mb["mask"], lb)
+            xa, xb = _main_xh(tp, ka, la), _main_xh(tp, kb, lb)
             if xa > 0 and xb > 0:
                 out["xh"] = round(xb / xa, 3)
         else:
@@ -140,6 +146,33 @@ def block_metrics(tp, a, b, it: dict) -> "dict | None":
         sat = cw.max(axis=2).astype(int) - cw.min(axis=2).astype(int)
         out["icons"] = [ia, int(_blobs(sat > tp.ICON_SAT, amin))]
     return out
+
+
+def _ink_mask(c, ink, bg):
+    """Точки цвета краски: ближе к краске, чем на треть пути к бумаге."""
+    ink_a = np.array(ink[:3], dtype=np.int32)
+    bg_a = np.array(bg[:3], dtype=np.int32)
+    far = float(np.sqrt(((ink_a - bg_a) ** 2).sum())) or 1.0
+    d = np.sqrt(((c.astype(np.int32)[..., :3] - ink_a) ** 2).sum(axis=2))
+    return d < far / 3.0
+
+
+def _bands_of(mask, share: float = 0.08) -> list:
+    """Полосы строк по профилю маски: подряд идущие ряды с краской."""
+    prof = mask.sum(axis=1)
+    if not prof.max():
+        return []
+    on = prof >= share * prof.max()
+    out, start = [], None
+    for y, v in enumerate(on):
+        if v and start is None:
+            start = y
+        elif not v and start is not None:
+            out.append((start, y - 1))
+            start = None
+    if start is not None:
+        out.append((start, len(on) - 1))
+    return [b for b in out if b[1] - b[0] >= 2]
 
 
 def _main_xh(tp, mask, boxes) -> float:

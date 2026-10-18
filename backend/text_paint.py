@@ -1059,6 +1059,8 @@ PERIOD_PEAK = float(os.environ.get("PAINT_PERIOD_PEAK", "0.25"))
 PERIOD_GAIN = float(os.environ.get("PAINT_PERIOD_GAIN", "0.75"))
 PERIOD_K = 6                     # сколько точек той же фазы берётся в медиану
 PERIOD_R = 4                     # дальше скольких периодов не ищем
+PERIOD_DIV_MAX = int(os.environ.get("PAINT_PERIOD_DIV_MAX", "3"))  # делители периода-кандидата (Ф6а)
+PERIOD_DIV_PROM = float(os.environ.get("PAINT_PERIOD_DIV_PROM", "0.04"))  # высота пика делителя над впадиной
 PERIOD_MISS = 0.05               # доля точек дыры без соседей той же фазы, ещё терпимая
 PERIODIC_ERASE = os.environ.get("PAINT_PERIODIC_ERASE", "1") != "0"
 # Вырезка больше стольких мегапикселей стирается прежним способом: модель
@@ -1069,21 +1071,50 @@ PERIODIC_MAX_MPX = float(os.environ.get("PAINT_PERIODIC_MAX_MPX", "2.5"))
 def _period_of(prof, lo: int, hi: int):
     """Период профиля (`prof` — среднее «темноты» по строкам/столбцам):
     пик автокорреляции в [lo, hi] не слабее `PERIOD_PEAK` нулевого сдвига."""
+    c = _period_cands(prof, lo, hi)
+    return c[0] if c else None
+
+
+def _period_cands(prof, lo: int, hi: int) -> list:
+    """Ф6а. Кандидаты периода: самый сильный пик автокорреляции и его
+    ДЕЛИТЕЛИ (P/2, P/3), если на них стоит свой пик над впадиной вокруг.
+    Симптом (конспект в клетку, вырезка до края листа): строки текста идут
+    через клетку, их следы ложатся на тот же профиль, и сильнейший пик —
+    вторая гармоника (54 вместо 27); с двойным периодом половина линий
+    клетки «не в фазе», модель не сдавала экзамен, и стирание падало
+    на Telea — клетки размазывались. Какой кандидат верен, решает экзамен
+    (`_paper_periodic`), а не высота пика."""
     p = prof - prof.mean()
     n = len(p)
     hi = min(hi, n // 2)
     if hi <= lo + 1:
-        return None
+        return []
     ac = np.correlate(p, p, "full")[n - 1:]
     if ac[0] <= 1e-9:
-        return None
+        return []
     P = lo + int(np.argmax(ac[lo:hi]))
     if ac[P] < PERIOD_PEAK * ac[0]:
-        return None
+        return []
     # Пик на краю окна — это не период, а медленный наклон профиля.
     if P <= lo or P >= hi - 1:
-        return None
-    return P
+        return []
+    out = [P]
+    for k in range(2, PERIOD_DIV_MAX + 1):
+        d0 = P / k
+        if d0 < max(lo, 3):
+            break
+        a, b = max(1, int(d0) - 1), min(n - 2, int(d0) + 2)
+        if a >= b:
+            continue
+        d = a + int(np.argmax(ac[a:b + 1]))
+        # Свой пик, а не склон: выше впадины вокруг себя (знак не важен —
+        # следы строк сдвигают весь профиль, и пик клетки бывает ниже нуля).
+        r = max(2, d // 4)
+        trough = float(ac[max(1, d - r):min(n, d + r + 1)].min())
+        if (ac[d] >= ac[d - 1] and ac[d] >= ac[d + 1]
+                and ac[d] - trough >= PERIOD_DIV_PROM * ac[0] and d not in out):
+            out.append(d)
+    return out
 
 
 def _phase_median(q, known, ys, xs, Px, Py):
@@ -1144,12 +1175,13 @@ def _paper_periodic(rgb, hole, lh: float, em: float):
     q = f / ill
     dark = (1.0 - q.mean(axis=2)) * w
     lo, hi = max(5, int(0.25 * lh)), int(3.0 * lh) + 1
-    Px = _period_of(dark.sum(0) / np.maximum(w.sum(0), 1), lo, hi)
-    Py = _period_of(dark.sum(1) / np.maximum(w.sum(1), 1), lo, hi)
-    if not Px and not Py:
+    cx = _period_cands(dark.sum(0) / np.maximum(w.sum(0), 1), lo, hi) or [None]
+    cy = _period_cands(dark.sum(1) / np.maximum(w.sum(1), 1), lo, hi) or [None]
+    if cx == [None] and cy == [None]:
         return None
     # Экзамен: кольцо известных точек вокруг дыры предсказывается узором
     # (без самой точки) и ровным тоном; узор обязан ошибаться заметно меньше.
+    # Из кандидатов периода (Ф6а) берётся тот, что ошибается меньше всех.
     kr = _odd(0.5 * lh, 3, 61)
     ring = (cv2.dilate(hole.astype(np.uint8), np.ones((kr, kr), np.uint8)) > 0) & known
     ry, rx = np.nonzero(ring)
@@ -1157,18 +1189,33 @@ def _paper_periodic(rgb, hole, lh: float, em: float):
         return None
     step = max(1, len(ry) // 6000)
     ry, rx = ry[::step], rx[::step]
-    pred, c = _phase_median(q, known, ry, rx, Px, Py)
-    okp = c > 0
-    if okp.sum() < 30:
-        return None
     qg = q.mean(axis=2)
-    e_per = float(np.mean(np.abs(pred[okp].mean(axis=1) - qg[ry[okp], rx[okp]])))
     flat = float(np.median(qg[known]))
-    e_flat = float(np.mean(np.abs(flat - qg[ry[okp], rx[okp]])))
-    if not (e_per < PERIOD_GAIN * e_flat):
+    passed = []
+    for Px in cx:
+        for Py in cy:
+            if not Px and not Py:
+                continue
+            pred, c = _phase_median(q, known, ry, rx, Px, Py)
+            okp = c > 0
+            if okp.sum() < 30:
+                continue
+            truth = qg[ry[okp], rx[okp]]
+            e_per = float(np.mean(np.abs(pred[okp].mean(axis=1) - truth)))
+            e_flat = float(np.mean(np.abs(flat - truth)))
+            if e_per < PERIOD_GAIN * e_flat:
+                passed.append((e_per, Px, Py))
+    if not passed:
         return None
+    # Сдавший экзамен с наименьшей ошибкой, у которого точки дыры находят
+    # соседей той же фазы: двойной период на кольце точнее, но через полосу
+    # строк до известной бумаги не дотягивается.
     hy, hx = np.nonzero(hole)
-    med, cnt = _phase_median(q, known, hy, hx, Px, Py)
+    med = cnt = None
+    for _, Px, Py in sorted(passed, key=lambda t: t[0]):
+        med, cnt = _phase_median(q, known, hy, hx, Px, Py)
+        if (cnt > 0).mean() >= 1.0 - PERIOD_MISS:
+            break
     out = rgb.copy()
     got = cnt > 0
     val = np.clip(med[got] * ill[hy[got], hx[got]], 0, 255)

@@ -127,6 +127,31 @@ rng = np.random.RandomState(3)
 noise = (np.dstack([light] * 3) + rng.randint(-25, 25, (H, W, 1))).clip(0, 255).astype(np.uint8)
 check(tp._paper_periodic(noise, hole, 56.0, 40.0) is None, "шум (ложный узор) экзамен не сдаёт")
 
+print("\n── Ф6а. период клетки — не гармоника строк ──")
+# Строки текста стоят на каждой второй линии клетки, поля листа без клетки:
+# сильнейший пик профиля — двойной шаг, с ним полоса строк не дотягивается
+# до известной бумаги, и стирание падало на размытие (клетки замазывались).
+H2, P2 = 480, 24
+yy2, xx2 = np.mgrid[0:H2, 0:W]
+light2 = 150 + 60 * (yy2 / H2)
+grid2 = (((xx2 % P2) < 2) | ((yy2 % P2) < 2)) & (xx2 >= 60) & (xx2 < 360)
+clean2 = np.dstack([np.where(grid2, light2 - 35, light2)] * 3).clip(0, 255).astype(np.uint8)
+hole2 = np.zeros((H2, W), bool)
+for y0 in range(2 * P2 - 8, H2 - P2, 2 * P2):
+    hole2[y0:y0 + 18, 50:370] = True
+dirty2 = clean2.copy()
+dirty2[hole2] = 20
+prof2 = np.zeros(480)
+prof2[0::24] = 0.3                                            # линия клетки, видная лишь в полях
+prof2[0::48] = 1.0                                            # линия клетки между строками
+cands2 = tp._period_cands(prof2, 12, 145)
+check(cands2[:1] == [48] and 24 in cands2, "кандидаты периода — пик и его делитель: %s" % cands2)
+per2 = tp._paper_periodic(dirty2, hole2, 2.0 * P2, 1.6 * P2)
+check(per2 is not None, "делитель периода сдал экзамен — модель есть")
+if per2 is not None:
+    err2 = np.abs(per2[hole2].astype(int) - clean2[hole2].astype(int)).mean()
+    check(err2 < 3, "клетка под строками восстановлена: ошибка %.1f" % err2)
+
 print("\n── Ф3. свободная строка: клетка — не буквы ──")
 strip = clean[100:140, 40:380].copy()
 check(not tp.has_letters(strip, 30.0), "в клетке без надписей букв нет")

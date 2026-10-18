@@ -3225,13 +3225,6 @@ Spleeter или файл UVR MDX-Net), `MEDIA_SEP_THREADS` (1), `MEDIA_SEP_CHUNK
 (выключить), `PAINT_LAMA_THREADS` (2), `PAINT_LAMA_CALL_S` (25 с на вызов),
 `PAINT_LAMA_BUDGET_S` (90 с на картинку и на выгрузку PDF), `PAINT_LAMA_MAX_TILES`
 (12). План внешних моделей чтения и вставки — `docs/plans/ocr-paint-tools.md`.
-**Яндекс Vision — второй читатель надписей** (Ш5, `backend/yandex_ocr.py`):
-`YANDEX_VISION_API_KEY` (ключ сервисного аккаунта с ролью `ai.vision.user`;
-без ключа — прежнее поведение), `YANDEX_VISION_FOLDER` (если ключ не привязан
-к каталогу), `YANDEX_VISION_HAND` (`off` | `prefer` — текст рукописи брать
-у Vision; включать по замеру), `YANDEX_VISION_USD` (цена запроса, 0.002).
-Читает, когда зрячая модель не ответила; ходит мимо `HTTPS_PROXY`. С ключом
-политика сама называет Яндекс получателем изображений (`legal._PROVIDERS`).
 **Родной голос для узбекского и ещё ~10 языков** — Azure Speech:
 `AZURE_SPEECH_KEY` + `AZURE_SPEECH_REGION` (например `westeurope`); без них
 эти языки озвучиваются OpenAI «с акцентом», и экран это называет. Бесплатный

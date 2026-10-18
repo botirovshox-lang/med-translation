@@ -6,12 +6,10 @@
     OCR_CMP_PIDS=90,74,78,83,2 OCR_CMP_MAX=15 OCR_CMP_MODELS=gpt-4o,claude-sonnet-5
 
 Читатели — ровно те, что работают в бою: зрячая модель через
-`main._openai_read_image(model=…)` (тот же промпт и та же нарезка кропов)
-и Яндекс Vision через `main._vision_read_blocks` (модель рукописи — у блоков,
-помеченных рукописью). Блоки берутся из карты картинок проекта (sidecar
+`main._openai_read_image(model=…)` (тот же промпт и та же нарезка кропов). Блоки берутся из карты картинок проекта (sidecar
 `data/sources/{pid}.json`), уже отсеянные (`skip`) не берутся.
 
-Платно: по вызову на картинку у каждой модели и по запросу на блок у Vision —
+Платно: по вызову на картинку у каждой модели —
 запускать по решению владельца. Ничего не пишет ни в проекты, ни в карты.
 Вырезки блоков кладёт в OCR_CMP_OUT (по умолчанию /tmp/ocrcmp) — по ним
 человек (или сверяющий) решает, кто прав, где читатели разошлись; результат —
@@ -108,15 +106,9 @@ def main_():
             res = {}
             for m in models:
                 t = time.time()
-                got = main._openai_read_image(blob, blocks, src, model=m, fallback=False) or [None] * len(blocks)
+                got = main._openai_read_image(blob, blocks, src, model=m) or [None] * len(blocks)
                 res[m] = ([(g or {}).get("text") for g in got], [(g or {}).get("hand") for g in got], time.time() - t)
-            t = time.time()
             hand = [bool(b.get("hand")) or any((res[m][1][k] or False) for m in models) for k, b in enumerate(blocks)]
-            vis = [None] * len(blocks)
-            for k, b in enumerate(blocks):
-                g = main._vision_read_blocks(blob, [b], src, hand=hand[k])
-                vis[k] = (g or [None])[0]
-            res["yandex"] = ([(g or {}).get("text") for g in vis], hand, time.time() - t)
             for k, i in enumerate(idx):
                 b = rec["blocks"][i]
                 crop = main.image_text.crop(blob, b["box"], line_h=b.get("lineH"), rows=b.get("rows"))

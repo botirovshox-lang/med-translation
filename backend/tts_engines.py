@@ -109,6 +109,71 @@ def uz_cyr_to_lat(text: str) -> str:
     return "".join(out)
 
 
+# Обратная дорога — для своего распознавания (`asr_local_worker`): модель пишет
+# узбекскую речь латиницей, а у проекта UZ-CYRL оригинал обязан быть кириллицей.
+# Латиница → кириллица НЕ однозначна (sh — ш или с+ҳ, «ts», «yo» после согласной),
+# поэтому это лучшее приближение по таблице 1995 года, а не обратимая замена:
+# такие слова редки, и правит их человек в строке, как любую ошибку распознавания.
+_UZ_LAT2 = tuple([(b + a, c) for b, c in (("o", "ў"), ("g", "ғ")) for a in "'ʻʼ’‘`"]
+                 + [("sh", "ш"), ("ch", "ч"), ("yo", "ё"), ("yu", "ю"), ("ya", "я"), ("ye", "е")])
+_UZ_LAT1 = {"a": "а", "b": "б", "d": "д", "f": "ф", "g": "г", "h": "ҳ", "i": "и", "j": "ж", "k": "к",
+            "l": "л", "m": "м", "n": "н", "o": "о", "p": "п", "q": "қ", "r": "р", "s": "с", "t": "т",
+            "u": "у", "v": "в", "x": "х", "y": "й", "z": "з", "c": "к", "w": "в"}
+_APOS = "'ʼʻ’‘`"
+
+
+def uz_lat_to_cyr(text: str) -> str:
+    """Узбекская латиница → кириллица. «e» в начале слова — «э», иначе «е»;
+    отдельный апостроф (тутуқ белгиси) — «ъ». Регистр — как в `uz_cyr_to_lat`:
+    заглавная даёт заглавную, слово капсом — капс. Кириллица, цифры и знаки
+    проходят как есть."""
+    out = []
+    for w in re.split(r"([^\w'ʼʻ’‘`]+)", text):
+        if not w or not re.search(r"[A-Za-z]", w):
+            out.append(w)
+            continue
+        # Сокращение капсом с цифрой или дефисом рядом («COVID-19», «MDR-TB») —
+        # латинское имя, а не узбекское слово: остаётся как есть.
+        if w.isupper() and len(w) <= 6 and re.search(r"[A-Z]{2}", w) and not re.search(r"[A-Z]['ʻʼ’‘`]", w):
+            if re.search(r"(?:[-\d]%s|%s[-\d])" % (re.escape(w), re.escape(w)), text):
+                out.append(w)
+                continue
+        caps = len(w) > 1 and w.isupper()
+        low = w.lower()
+        res, i = [], 0
+        while i < len(low):
+            two = low[i:i + 2]
+            # «yo'g'i» — й + ў, а не ё + ъ: oʻ сильнее сочетания yo.
+            if two == "yo" and low[i + 2:i + 3] in tuple(_APOS):
+                two = "y"
+            hit = next((c for l2, c in _UZ_LAT2 if two == l2), None)
+            if hit:
+                orig, step = w[i], 2
+            elif low[i] == "e":
+                hit, orig, step = ("э" if i == 0 else "е"), w[i], 1
+            elif low[i] in _UZ_LAT1:
+                hit, orig, step = _UZ_LAT1[low[i]], w[i], 1
+            elif low[i] in _APOS:
+                hit, orig, step = ("ъ" if 0 < i < len(low) - 1 else ""), w[i], 1
+            else:
+                res.append(w[i])
+                i += 1
+                continue
+            if caps or (orig.isupper() and orig.isalpha()):
+                hit = hit.upper()
+            res.append(hit)
+            i += step
+        out.append("".join(res))
+    return "".join(out)
+
+
+def uz_lat_apostrophes(text: str) -> str:
+    """ASCII-апостроф распознавания → буквы узбекской латиницы: oʻ и gʻ (U+02BB),
+    тутуқ белгиси — ʼ (U+02BC), как требуют правила языка (`lang_rules.json`)."""
+    t = re.sub(r"(?<=[OoGg])['’‘`](?=\w)", "ʻ", text)
+    return re.sub(r"(?<=\w)['’`](?=\w)", "ʼ", t)
+
+
 _TRANSLIT = {"uz-cyrl-latn": uz_cyr_to_lat}
 
 

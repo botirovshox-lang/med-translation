@@ -81,15 +81,16 @@ def load_audio(path: str):
     return np.frombuffer(raw, np.int16).astype(np.float32) / 32768.0
 
 
-def transcribe(audio: str, lang: str, model_name: str, threads: int, prompt: str, compute: str) -> dict:
+def transcribe(audio: str, lang: str, model_name: str, threads: int, prompt: str, compute: str,
+               vad: bool = False, cond: bool = True) -> dict:
     from faster_whisper import WhisperModel
     t0 = time.time()
     model = WhisperModel(model_name, device="cpu", compute_type=compute, cpu_threads=threads)
     t_load = time.time() - t0
     t1 = time.time()
     segs, info = model.transcribe(load_audio(audio), language=lang or None, initial_prompt=prompt or None,
-                                  word_timestamps=True, vad_filter=False, beam_size=5,
-                                  condition_on_previous_text=True)
+                                  word_timestamps=True, vad_filter=vad, beam_size=5,
+                                  condition_on_previous_text=cond)
     segments, words = [], []
     for s in segs:
         segments.append({"start": s.start, "end": s.end, "text": s.text,
@@ -121,9 +122,11 @@ def main(argv=None):
     ap.add_argument("--ref", default="", help="эталон: .txt или .srt/.vtt")
     ap.add_argument("--ref-kind", default="human", choices=["human", "whisper-1"])
     ap.add_argument("--out", default="")
+    ap.add_argument("--vad", action="store_true", help="нарезка по речи (Silero VAD)")
+    ap.add_argument("--no-cond", action="store_true", help="без опоры на предыдущий текст")
     a = ap.parse_args(argv)
 
-    resp = transcribe(a.audio, a.lang, a.model, a.threads, a.prompt, a.compute)
+    resp = transcribe(a.audio, a.lang, a.model, a.threads, a.prompt, a.compute, a.vad, not a.no_cond)
     try:
         import media
         noise = sum(1 for s in resp["segments"] if media._is_noise_segment(s))
@@ -132,7 +135,7 @@ def main(argv=None):
     text = " ".join(s["text"].strip() for s in resp["segments"])
     dur = resp["duration"] or 1
     report = {
-        "model": a.model, "compute": a.compute, "threads": a.threads, "lang": a.lang,
+        "model": a.model, "vad": a.vad, "cond": not a.no_cond, "compute": a.compute, "threads": a.threads, "lang": a.lang,
         "audio_sec": round(dur, 1), "load_s": resp["_load_s"], "run_s": resp["_run_s"],
         "sec_per_audio_min": round(resp["_run_s"] / (dur / 60), 1),
         "peak_rss_mb": _peak_rss_mb(),

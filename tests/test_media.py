@@ -523,6 +523,63 @@ check(n2 == 2 and len(main._project_by_id(pid)["segments"]) == 5,
 check(c.post("/api/projects/%d/media/transcribe" % pid, headers=H(B)).status_code == 409, "у готового — 409")
 proj = main._project_by_id(pid)
 
+print("=== 5в. Своё распознавание (GigaAM): узбекский, движок на задачу ===")
+check(main._asr_engine_for("UZ") is None or main._asr_local_ready(), "без модели узбекский — нечем (415)")
+main._ASR_LOCAL_READY[:] = [time.time() + 3600, True]          # «модель и окружение стоят»
+check(main._asr_engine_for("UZ") == "local" and main._asr_engine_for("UZ-CYRL") == "local"
+      and main._asr_engine_for("KY") == "local" and main._asr_engine_for("KK") == "local",
+      "узбекский (оба письма), киргизский, казахский — своим движком")
+check(main._asr_engine_for("RU") == "cloud" and main._asr_engine_for("AR") == "cloud",
+      "русский и арабский — облаком (знаки препинания)")
+LOCAL_RUNS = []
+_media_run = main.media_mod.run
+
+
+def fake_local_run(cmd, timeout, stdin=None, cwd=None):
+    """Процесс модели: читает задание, пишет ответы, как asr_local_worker."""
+    if str(main._ASR_LOCAL_WORKER) not in [str(x) for x in cmd]:
+        return _media_run(cmd, timeout, stdin=stdin, cwd=cwd)
+    LOCAL_RUNS.append(cmd)
+    for x in json.loads(Path(cmd[-1]).read_text(encoding="utf-8")):
+        n = int(Path(x["in"]).name[5:8])
+        Path(x["out"]).write_text(json.dumps({
+            "duration": 30.0, "language": None,
+            "segments": [{"start": 1.0, "end": 3.0, "text": "bor yo'g'i o'n sakkizta medal %d" % n,
+                          "no_speech_prob": 0.0, "avg_logprob": 0.0, "compression_ratio": 1.0}],
+            "words": [{"word": "bor", "start": 1.0, "end": 1.4}, {"word": "yo'g'i", "start": 1.5, "end": 1.9}]}),
+            encoding="utf-8")
+    return types.SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+
+main.media_mod.run = fake_local_run
+n_cloud = CALLS["asr"]
+for src_code, want in (("UZ", "Bor yoʻgʻi oʻn sakkizta medal"), ("UZ-CYRL", "Бор йўғи ўн саккизта медал")):
+    d = os.urandom(400)
+    t = c.post("/api/media/upload", headers=H(B), json={"name": "uz-%s.mp4" % src_code, "size": len(d),
+                                                        "src": src_code, "tgt": "RU"})
+    check(t.status_code == 200, "узбекская речь при своей модели — загрузка принята (%s)" % src_code)
+    t = t.json()["token"]
+    c.post("/api/media/upload/%s/chunk?offset=0" % t, headers=H(B), content=d)
+    r = c.post("/api/media/upload/%s/finish" % t, headers=H(B))
+    check(r.status_code == 200, "«готово» — 200 (%s): %s" % (src_code, r.text[:120]))
+    uj = main._JOBS[r.json()["jobId"]]
+    check(uj["params"].get("asrEngine") == "local" and main._job_is_free(uj),
+          "движок заморожен в задаче, задача бесплатна для лимита")
+    main._job_execute(uj)
+    if uj["status"] == "queued":                 # уступила чужой задаче — довести
+        main._job_execute(uj)
+    up = main._project_by_id(r.json()["id"])
+    check(uj["status"] == "done" and up["mediaStatus"] == "ready", "распознано своей моделью: %s %s"
+          % (uj["status"], uj.get("error")))
+    check(up["segments"] and up["segments"][0]["source"].startswith(want),
+          "письмо ответа по языку проекта (%s): %s" % (src_code, up["segments"][0]["source"] if up["segments"] else None))
+    check(uj["counters"].get("asrEngine") == "local", "в счётчиках — каким движком")
+    c.delete("/api/projects/%d" % up["id"], headers=H(B))      # счёт видео организации дальше — прежний
+check(CALLS["asr"] == n_cloud and LOCAL_RUNS, "облако не звали ни разу, модель — %d запусков" % len(LOCAL_RUNS))
+check(len(LOCAL_RUNS) == 4, "куски идут порциями по ASR_LOCAL_BATCH=2: %d запуска на два ролика" % len(LOCAL_RUNS))
+main.media_mod.run = _media_run
+main._ASR_LOCAL_READY[:] = [0.0, False]
+
 print("=== 6. Страницы речи списывает API высшей точкой ===")
 rec_b = main._tenant_rec("beta")
 rec_b.pop("pagesUsed", None); rec_b.pop("pagesCredit", None); rec_b.pop("pagesLog", None)

@@ -22,7 +22,9 @@ RestartSec=5
 # и выходит сам. Порция ремонта — минуты; убивать раньше значит платить
 # за вызовы и выбрасывать их результат.
 TimeoutStopSec=900
-MemoryMax=1800M
+# 4000M, а не 1800M: своё распознавание речи (asr_local_worker.py) — дочерний
+# процесс в той же группе, и сама модель в int8 занимает ~1,6 ГБ.
+MemoryMax=4000M
 ProtectSystem=full
 ReadWritePaths=/opt/med-translation/backend/data
 

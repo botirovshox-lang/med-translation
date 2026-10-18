@@ -2421,6 +2421,19 @@ ASR_LANGS = frozenset(x.strip().lower() for x in os.environ.get(
     "af ar hy az be bs bg ca zh hr cs da nl en et fi fr gl de el he hi hu is id it ja kn kk ko lv lt mk "
     "ms mr mi ne no fa pl pt ro ru sr sk sl es sw sv tl ta th tr uk ur vi cy").replace(",", " ").split()
     if x.strip())
+# Своё распознавание (`asr_local_worker.py`, GigaAM Multilingual — та же модель,
+# что у «Звонков AI» Камолы, исходная, MIT). Языки, где оно сильнее облака
+# или облако их не берёт вовсе: узбекский (облако — 400), киргизский (облако —
+# 400), казахский (замер авторов модели: FLEURS 4,4% против 32% у whisper).
+# Русский — облаком: у своей модели нет знаков препинания и заглавных, а по
+# ним `sentence_cues` находит конец фразы. Модель и окружение ставит
+# `tools/install_asr_local.sh`; нет их — язык идёт облаком либо отказом 415.
+ASR_LOCAL_LANGS = frozenset(x.strip().lower() for x in os.environ.get("ASR_LOCAL_LANGS", "uz,ky,kk")
+                            .replace(",", " ").split() if x.strip())
+ASR_LOCAL_MODEL = os.environ.get("ASR_LOCAL_MODEL") or str(ROOT / "backend" / "data" / "models" / "gigaam-large_ctc")
+ASR_LOCAL_PYTHON = os.environ.get("ASR_LOCAL_PYTHON") or str(ROOT / ".venv-asr" / "bin" / "python")
+ASR_LOCAL_THREADS = int(os.environ.get("ASR_LOCAL_THREADS", "2"))
+ASR_LOCAL_BATCH = max(1, int(os.environ.get("ASR_LOCAL_BATCH", "2")))   # кусков звука на один запуск модели
 TTS_MODEL = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")
 AUX_MODEL_PRICES = {EMBED_MODEL: {"in": 0.02, "out": 0.0},
                     ASR_MODEL: {"in": 0.0, "out": 0.0, "perMin": 0.006},
@@ -38253,7 +38266,9 @@ def _job_public(job: dict) -> dict:
         # каждые пару секунд, так что это была бы самая частая утечка из всех.
         if out.get("params"):
             out["params"] = {k: v for k, v in out["params"].items()
-                             if k not in _MODEL_PARAM_KEYS and k != "ttsEngine"}
+                             if k not in _MODEL_PARAM_KEYS and k not in ("ttsEngine", "asrEngine")}
+        if isinstance(out.get("counters"), dict) and "asrEngine" in out["counters"]:
+            out["counters"] = {k: v for k, v in out["counters"].items() if k != "asrEngine"}
     if _hide_cost():
         if out.get("usage"):
             out["usage"] = {k: v for k, v in out["usage"].items()
@@ -38883,7 +38898,11 @@ def _job_loop():
 def _job_is_free(job: dict) -> bool:
     """Задача, которая не зовёт модель ни разу: сборка видео с дорожкой
     субтитров и с субтитрами в кадре (ffmpeg на нашем сервере)."""
-    return job.get("kind") == "mediarender" and (job.get("params") or {}).get("what") in ("subs", "burn")
+    p = job.get("params") or {}
+    if job.get("kind") == "mediarender" and p.get("what") in ("subs", "burn"):
+        return True
+    # Своё распознавание речи без чтения кадров — процессор сервера, не деньги.
+    return job.get("kind") == "asr" and p.get("asrEngine") == "local" and not p.get("frames")
 
 
 def _job_execute(job: dict):
@@ -39675,13 +39694,16 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
             raise HTTPException(402, "Видео ≈ %.1f стр. текста, а осталось %.1f стр.: пополните лимит у администратора"
                                 % (est_pages, usage["left"]), headers=PAY_NEED_PAGES)
         limit_sec = round(fit, 1)
-    # Деньги: распознавание платное, смета — по минутам.
-    est_usd = (limit_sec or span) / 60.0 * float((AUX_MODEL_PRICES.get(ASR_MODEL) or {}).get("perMin") or 0)
+    # Деньги: облачное распознавание платное, смета — по минутам; своё —
+    # бесплатно для нас (процессор сервера), и лимит расхода его не режет.
+    asr_engine = _asr_engine_for(rec.get("src") or "")
+    est_usd = 0.0 if asr_engine == "local" else (
+        (limit_sec or span) / 60.0 * float((AUX_MODEL_PRICES.get(ASR_MODEL) or {}).get("perMin") or 0))
     st = _spend_status()
     if st.get("limitUsd") is not None and st["spentUsd"] + est_usd > float(st["limitUsd"]):
         _ev("cap.spend402", tid)
         raise HTTPException(402, "Распознавание этого видео не уместится в лимит расхода организации")
-    if not os.environ.get("OPENAI_API_KEY"):
+    if asr_engine == "cloud" and not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(503, "Распознавание речи сейчас недоступно: сообщите администратору")
     folder = _folder_target(rec.get("folder")) if rec.get("folder") is not None else None
     domain = folder["domain"] if folder is not None else _resolve_domain(rec.get("domain") or DEFAULT_DOMAIN)["id"]
@@ -39754,7 +39776,8 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
         save_state(STATE)
     if folder is not None:
         _folders_changed()
-    job = _job_enqueue(new_id, "asr", [], {"limitSec": limit_sec, "est_cost": round(est_usd, 4)})
+    job = _job_enqueue(new_id, "asr", [], {"limitSec": limit_sec, "est_cost": round(est_usd, 4),
+                                           "asrEngine": asr_engine, "frames": want_frames})
     _ev("funnel.upload:" + _ext_code(rec["name"]), tid)
     _tenant_first("upload", tid)
     return dict(project, jobId=job["id"])
@@ -39924,16 +39947,18 @@ def media_transcribe(pid: int):
     if _media_source(project) is None:
         raise HTTPException(409, "Исходное видео удалено по сроку хранения — загрузите его заново на карточке файла")
     _asr_lang_gate(project.get("src") or "", _current_tenant())
-    if not os.environ.get("OPENAI_API_KEY"):
+    asr_engine = _asr_engine_for(project.get("src") or "")
+    if asr_engine == "cloud" and not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(503, "Распознавание речи сейчас недоступно: сообщите администратору")
     st = _spend_status()
-    if st["over"]:
+    if st["over"] and asr_engine != "local":
         return _limit_402(st, _current_tenant())
     ex = project.get("mediaExcerpt") or {}
     project["mediaStatus"] = "transcribing"
     project.pop("mediaError", None)
     save_state(STATE)
-    job = _job_enqueue(pid, "asr", [], {"limitSec": ex.get("sec")})
+    job = _job_enqueue(pid, "asr", [], {"limitSec": ex.get("sec"), "asrEngine": asr_engine,
+                                        "frames": (project.get("frameText") or {}).get("status") in ("queued", "running")})
     return {"ok": True, "job": _job_public(job), "project": _project_for_client(project)}
 
 
@@ -40017,20 +40042,115 @@ def _asr_language(code: str) -> Optional[str]:
     return c if re.fullmatch(r"[a-z]{2}", c) else None
 
 
-def _asr_supported(code: str) -> bool:
-    """Примет ли распознавание речь на этом языке (`ASR_LANGS`). Спрашивают
-    ДО приёма гигабайтов и до списания минут: отказ поставщика по языку —
-    не временный сбой, повтор его не лечит."""
-    if "*" in ASR_LANGS:
-        return True
+_ASR_LOCAL_READY = [0.0, False]
+
+
+def _asr_local_ready() -> bool:
+    """Стоят ли своё окружение и модель (проверка — не чаще раза в минуту)."""
+    now = time.time()
+    if now - _ASR_LOCAL_READY[0] > 60:
+        m = Path(ASR_LOCAL_MODEL)
+        _ASR_LOCAL_READY[1] = (Path(ASR_LOCAL_PYTHON).is_file()
+                               and (m / "config.json").is_file()
+                               and ((m / "model_int8.pt").is_file() or (m / "pytorch_model.bin").is_file()))
+        _ASR_LOCAL_READY[0] = now
+    return _ASR_LOCAL_READY[1]
+
+
+def _asr_engine_for(code: str) -> Optional[str]:
+    """Чем распознавать речь на этом языке: «local» (своя модель на сервере),
+    «cloud» (поставщик) или None — нечем. Выбирается ОДИН раз на задачу
+    (`params.asrEngine`), как движок озвучки: куски одного ролика разными
+    движками — разные письмо и разметка времени."""
     c = _asr_language(code)
-    return c is not None and c in ASR_LANGS
+    if c is None:
+        return None
+    if c in ASR_LOCAL_LANGS and _asr_local_ready():
+        return "local"
+    if "*" in ASR_LANGS or c in ASR_LANGS:
+        return "cloud"
+    return None
+
+
+def _asr_supported(code: str) -> bool:
+    """Примет ли распознавание речь на этом языке. Спрашивают ДО приёма
+    гигабайтов и до списания минут: отказ поставщика по языку — не временный
+    сбой, повтор его не лечит."""
+    return _asr_engine_for(code) is not None
 
 
 def _asr_lang_gate(code: str, tid: str) -> None:
     if not _asr_supported(code):
         _ev("dead.asrLang", tid)
         raise HTTPException(415, ASR_LANG_415)
+
+
+_ASR_LOCAL_WORKER = ROOT / "backend" / "asr_local_worker.py"
+
+
+def _asr_local_batch(batch: list) -> list:
+    """Куски звука → своя модель ОДНИМ запуском процесса (модель грузится
+    раз на порцию, а не на кусок). Ответы ложатся тем же кэшем, что у облака
+    (`<кусок>.json`), поэтому повтор и выкат не считают готовое заново.
+    Стоп и выкат снимают процесс посреди (`media.run`: CANCEL/ABORT)."""
+    jf = Path(str(batch[0][0]) + ".job.json")
+    jf.write_text(json.dumps([{"in": str(p), "out": str(p) + ".json"} for p, *_ in batch]),
+                  encoding="utf-8")
+    # Всё, что процесс модели захочет записать (код модели, кэши torch,
+    # hydra, numba, временные файлы), — только в data/: у воркера
+    # ProtectSystem=full, и запись в ~/.cache уронила бы процесс.
+    hf = DATA_DIR / "hf"
+    for sub in ("", "cache", "tmp"):
+        (hf / sub).mkdir(parents=True, exist_ok=True)
+    env = ["env", "HF_HUB_OFFLINE=1", "TRANSFORMERS_OFFLINE=1", "PYTHONDONTWRITEBYTECODE=1",
+           "HF_HOME=%s" % hf, "HOME=%s" % hf, "XDG_CACHE_HOME=%s" % (hf / "cache"),
+           "TORCH_HOME=%s" % (hf / "cache"), "NUMBA_CACHE_DIR=%s" % (hf / "cache"),
+           "MPLCONFIGDIR=%s" % (hf / "cache"), "TMPDIR=%s" % (hf / "tmp")] if os.name == "posix" else []
+    err = ""
+    try:
+        media_mod.run(env + [ASR_LOCAL_PYTHON, str(_ASR_LOCAL_WORKER), ASR_LOCAL_MODEL,
+                             str(ASR_LOCAL_THREADS), str(jf)],
+                      # Замер — 13 с на минуту звука при свободном процессоре; под nice 19
+                      # на занятом сервере втрое-впятеро дольше: минута работы на минуту звука.
+                      timeout=300.0 + len(batch) * float(media_mod.ASR_CHUNK_SEC))
+    except (media_mod.Cancelled, media_mod.Aborted):
+        raise
+    except media_mod.MediaError as e:
+        print("[backend] своё распознавание: %s" % e, file=sys.stderr)
+        err = "Своё распознавание речи не ответило — распознайте снова"
+    finally:
+        try:
+            jf.unlink()
+        except OSError:
+            pass
+    return [{"ok": Path(str(p) + ".json").exists(), "error": err or "кусок не распознан", "offset": off}
+            for p, off, *_ in batch]
+
+
+def _asr_local_text(data: dict, src: str) -> dict:
+    """Письмо ответа своей модели — как требует язык проекта. Модель пишет
+    узбекскую речь латиницей с ASCII-апострофом: у UZ — буквы oʻ/gʻ и ʼ,
+    у UZ-CYRL — кириллица по таблице 1995 года (`uz_lat_to_cyr`)."""
+    code = (src or "").upper()
+    if code == "UZ-CYRL":
+        fn = tts_engines.uz_lat_to_cyr
+    elif code == "UZ":
+        fn = tts_engines.uz_lat_apostrophes
+    else:
+        return data
+    out = dict(data)
+    out["segments"] = [dict(s, text=fn(s.get("text") or "")) for s in data.get("segments") or []]
+    out["words"] = [dict(w, word=fn(w.get("word") or "")) for w in data.get("words") or []]
+    return out
+
+
+def _cue_capitalize(cue: dict) -> dict:
+    """Своя модель пишет строчными и без знаков: строка начинается с заглавной."""
+    t = cue.get("text") or ""
+    for i, ch in enumerate(t):
+        if ch.isalpha():
+            return dict(cue, text=t[:i] + ch.upper() + t[i + 1:])
+    return cue
 
 
 def _asr_chunk(item: tuple) -> dict:
@@ -40146,7 +40266,16 @@ def _job_asr(job: dict) -> None:
     if src is None:
         raise RuntimeError("Исходное видео не найдено на сервере — загрузите его заново")
     _media_touch(project)
-    if not os.environ.get("OPENAI_API_KEY"):
+    engine = job["params"].get("asrEngine")
+    if engine not in ("local", "cloud"):
+        # Задача, поставленная до выката: движок выбирается сейчас и один раз.
+        engine = job["params"]["asrEngine"] = _asr_engine_for(project.get("src") or "")
+        _job_persist(job)
+    if engine is None:
+        raise RuntimeError(ASR_LANG_415)
+    if engine == "local" and not _asr_local_ready():
+        raise RuntimeError("Распознавание речи сейчас недоступно: сообщите администратору")
+    if engine == "cloud" and not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("Распознавание речи недоступно: не задан ключ поставщика")
     d = _media_dir(pid) / "asr"
     d.mkdir(parents=True, exist_ok=True)
@@ -40206,6 +40335,7 @@ def _job_asr(job: dict) -> None:
     pending = list(items)
     tries: dict = {}
     last_err = ""
+    local = engine == "local"
     while pending:
         if not first:
             if _SHUTDOWN.is_set():
@@ -40214,14 +40344,15 @@ def _job_asr(job: dict) -> None:
             if _job_should_stop():
                 job["status"] = "stopped"
                 return
-            if _job_money_stop(job):
+            if not local and _job_money_stop(job):      # своё распознавание денег не стоит
                 return
             if _job_should_yield(job):
                 _job_yield(job, [])
                 return
         first = False
-        batch, pending = pending[:ASR_PARALLEL], pending[ASR_PARALLEL:]
-        out = _run_parallel(batch, _asr_chunk)
+        step = ASR_LOCAL_BATCH if local else ASR_PARALLEL
+        batch, pending = pending[:step], pending[step:]
+        out = _asr_local_batch(batch) if local else _run_parallel(batch, _asr_chunk)
         pending += _media_retry(batch, out, tries)
         bad = [r for r in out if not r["ok"]]
         if bad:
@@ -40240,6 +40371,8 @@ def _job_asr(job: dict) -> None:
     dropped: dict = {}
     for p, off, *_ in items:
         data = json.loads(Path(str(p) + ".json").read_text(encoding="utf-8"))
+        if local:
+            data = _asr_local_text(data, project.get("src") or "")
         cues += media_mod.build_cues(data.get("segments") or [], data.get("words") or [], offset=off,
                                      max_sec=media_mod.UNIT_MAX_SEC, max_chars=media_mod.UNIT_MAX_CHARS,
                                      hint=[style_hint, terms, hint], stats=dropped)
@@ -40250,6 +40383,9 @@ def _job_asr(job: dict) -> None:
     # Строка проекта — ПРЕДЛОЖЕНИЕ, а не кусок распознавания (инвариант 38,
     # «Строка субтитров — фраза»): на экранные куски её делит выгрузка.
     cues = media_mod.tidy_cues(media_mod.sentence_cues(cues, lang=project.get("src")))
+    if local:
+        cues = [_cue_capitalize(c) for c in cues]
+    job["counters"]["asrEngine"] = engine
     _media_apply_transcript(project, cues)
     job["counters"]["cues"] = len(cues)
     job["phase"] = None
@@ -40261,6 +40397,17 @@ def _job_asr(job: dict) -> None:
 
 
 def _frame_text_safe(job: dict, project: dict) -> None:
+    # Своё распознавание речи — задача бесплатная, и денежный рубеж между
+    # порциями её не держал (`_job_is_free`); чтение кадров — платная зрячая
+    # модель, поэтому лимит спрашивается здесь, перед ним.
+    if _job_is_free(job) and _spend_status(job.get("tenant"))["over"]:
+        _frame_text_mark(project, status="failed", why="error",
+                         error="Исчерпан лимит расхода организации — прочитайте надписи кнопкой после пополнения")
+        return
+    _frame_text_safe_run(job, project)
+
+
+def _frame_text_safe_run(job: dict, project: dict) -> None:
     """Чтение кадров ПОСЛЕ распознавания речи — в той же задаче. Его сбой
     речь не отменяет: строки уже в проекте, а надписи называются сбоем
     с причиной и читаются снова кнопкой. Выкат и отмена — как везде."""

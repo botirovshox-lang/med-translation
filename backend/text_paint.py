@@ -1697,6 +1697,49 @@ RIGHT_Q = float(os.environ.get("PAINT_RIGHT_Q", "80"))
 FIT_HARD = float(os.environ.get("PAINT_FIT_HARD", "0.45"))
 
 
+# Х24. Одна строка: длинный перевод — во вторую строку на свободной бумаге
+# под ней, а не мельче. У одной строки шага нет, он берётся «авто»-интерлиньяжем
+# набора (`ONE_LEAD` кегля — 120 % в Word, InDesign, CSS normal); вторая
+# строка — только когда в одну строку перевод ужимался бы мельче
+# `ONE_SHRINK` кегля (заголовок, ужатый на 10 %, вернее заголовка в две строки).
+ONE_LEAD = float(os.environ.get("PAINT_ONE_LEAD", "1.2"))
+ONE_SHRINK = float(os.environ.get("PAINT_ONE_SHRINK", "0.85"))
+# Вторая строка — только на ЧИСТОЙ бумаге: не больше `ONE_PAPER` пикселей
+# полосы отличаются от фона надписи сильнее `ONE_PAPER_TOL`. Линии схемы
+# и сетка буквами не считаются (`has_letters`), а печатать по ним нельзя.
+ONE_PAPER = float(os.environ.get("PAINT_ONE_PAPER", "0.01"))
+ONE_PAPER_TOL = int(os.environ.get("PAINT_ONE_PAPER_TOL", "40"))
+
+
+def one_line_geometry(box, mask=None, em: float = 0.0, lead: float = 0.0) -> "dict | None":
+    """Геометрия ОДНОЙ строки в форме `line_geometry` (rows=1): база — по
+    телу краски, края — по краске в рамке, шаг — `lead`·кегль. None — рамка
+    негодна или краски нет."""
+    if not box or len(box) < 4 or not (em and em > 0):
+        return None
+    x0, y0, x1, y1 = (float(v) for v in box[:4])
+    if x1 <= x0 or y1 <= y0:
+        return None
+    base, left, right = y0 + 0.8 * (y1 - y0), x0, x1
+    if mask is not None:
+        H, W = mask.shape[:2]
+        a, b = max(0, int(y0)), min(H, int(math.ceil(y1)))
+        c, d = max(0, int(x0)), min(W, int(math.ceil(x1)))
+        if b - a < 3 or d - c < 3:
+            return None
+        reg = mask[a:b, c:d]
+        prof = reg.sum(axis=1).astype(float)
+        if prof.max() <= 0:
+            return None
+        body = np.nonzero(prof >= 0.5 * prof.max())[0]
+        base = a + float(body[-1]) + 1.0
+        cols = np.nonzero(reg.any(axis=0))[0]
+        left, right = c + float(cols[0]), c + float(cols[-1]) + 1.0
+    return {"bases": [base], "base0": base, "pitch": float((lead or ONE_LEAD) * em),
+            "regular": True, "left": left, "right": right, "indent": 0.0, "rows": 1,
+            "top": y0, "bottom": y1, "heads": [], "shares": [], "align": None}
+
+
 def line_geometry(line_boxes, mask=None, em: float = 0.0) -> "dict | None":
     """Геометрия абзаца по рамкам строк (в координатах вырезки, y вниз).
     None — строк меньше двух или рамки негодны."""

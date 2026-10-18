@@ -38,7 +38,7 @@ check("Kana Okano1" in a, "имя с номером перенесено как 
 check(" " not in synth.pseudo("one two", "zh", 0.6, 0, False, d), "иероглифы — без пробелов")
 
 # 3. Рецепты: раскраска без предупреждений, кроме названных.
-KNOWN = {"caption-on-tint": {"xh"}}   # однострочная подпись мельчает — кандидат в правило
+KNOWN = {}
 for rec in d["recipes"]:
     r = synth.run(rec, 0, d)
     warn = set(r["fidelity"].get("warn") or [])
@@ -48,6 +48,19 @@ for rec in d["recipes"]:
     if rec["id"] == "heading-colour":
         xh = r["fidelity"]["summary"].get("xh")
         check(xh is not None and xh >= 0.8, "Х23: заголовок без выносов не мельчает (xh=%s)" % xh)
+    if rec["id"] == "caption-on-tint":
+        xh = r["fidelity"]["summary"].get("xh")
+        rows = [x for x in (r["report"] or []) if x and x.get("ok")]
+        check(xh is not None and xh >= 0.9, "Х24: одна строка не мельчает, а уходит во вторую (xh=%s)" % xh)
+
+# 4. Х24: под строкой рисунок (линии схемы) — вторая строка туда не ложится.
+import copy  # noqa: E402
+cap = copy.deepcopy(next(r for r in d["recipes"] if r["id"] == "caption-on-tint"))
+cap["rules"] = [[40, 75 + 8 * k, 1060, 75 + 8 * k, 2] for k in range(8)]
+r = synth.run(cap, 0, d)
+xh = r["fidelity"]["summary"].get("xh")
+check(xh is not None and xh < 0.9,
+      "Х24: по линиям схемы под строкой вторая строка не ложится (xh=%s — ужата в одну)" % xh)
 
 print("ВСЁ ПРОШЛО" if not FAILS else "ПРОВАЛЕНО: %d" % len(FAILS))
 sys.exit(1 if FAILS else 0)

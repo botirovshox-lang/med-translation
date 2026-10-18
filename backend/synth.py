@@ -86,6 +86,9 @@ def build(rec: dict):
         boxes.append(bb)
         texts.append(ln["text"])
         y = bb[3] + int(ln["px"] * 0.5)
+    for ru in rec.get("rules") or []:
+        # Линии схемы: [x0, y0, x1, y1, ширина, [цвет]] — проверка «не печатать по рисунку».
+        dr.line(tuple(ru[:4]), fill=tuple(ru[5] if len(ru) > 5 else (60, 60, 60)), width=int(ru[4]))
     st = rec.get("stamp")
     if st:
         cx, cy = st["center"]

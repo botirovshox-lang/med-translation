@@ -298,6 +298,11 @@ print("\n── соседние блоки ──")
 # не имеет права стереть уже написанный перевод первого.
 wide = [12, 40, 388, 150]
 strip = [12, 80, 388, 110]
+# Х24 выключен на время сравнения: в одиночку длинная строка уходит во вторую
+# строку на свободной бумаге, а рядом со вторым блоком эта строка занята, —
+# раскладки разные, и краска сравнивалась бы не о том.
+_tpm = it._tp()
+_one_shrink, _tpm.ONE_SHRINK = _tpm.ONE_SHRINK, -1.0
 alone = it.render_target(src, [{"box": wide, "text": "Alpha beta gamma delta epsilon "
                                                      "zeta eta theta", "lineH": 22}])
 pair = it.render_target(src, [{"box": wide, "text": "Alpha beta gamma delta epsilon "
@@ -305,6 +310,7 @@ pair = it.render_target(src, [{"box": wide, "text": "Alpha beta gamma delta epsi
                               {"box": strip, "text": "hi", "lineH": 26}])
 alone_ink = ink_mask(alone[0], [v * 2 for v in wide]).sum()
 pair_ink = ink_mask(pair[0], [v * 2 for v in wide]).sum()
+_tpm.ONE_SHRINK = _one_shrink
 check(pair[1][0]["ok"] and pair[1][1]["ok"], "оба блока отчитались как написанные")
 check(pair_ink >= alone_ink,
       "перевод первого блока не стёрт заливкой второго: %d против %d"

@@ -1946,6 +1946,12 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         g = tp.line_geometry(loc, m["mask"], m["em"])
         if g and g["regular"]:
             geo = g
+    one = None
+    if geo is None and rows == 1 and not m["angle"] and not m.get("arc"):
+        # Х24: геометрия одной строки — на случай, если перевод в неё не влезет.
+        ob = ([lbs[0][0] - x0, lbs[0][1] - y0, lbs[0][2] - x0, lbs[0][3] - y0] if len(lbs) == 1
+              else [0, 0, m["mask"].shape[1], m["mask"].shape[0]])
+        one = tp.one_line_geometry(ob, m["mask"], m["em"])
     em = m["em"] * k
     src = " ".join((it.get("src") or "").split())
     if fam != "hand" and not m["angle"] and not m.get("arc"):
@@ -2006,7 +2012,7 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     if fam == "hand" and align == "justify":
         align = "left"                      # почерк по ширине не выключается
     return {"m": m, "erased": erased, "alpha": alpha, "fpath": fpath, "font_at": font_at,
-            "em": em, "h0": h0, "geo": geo, "k": k, "pbox": pbox, "it": it, "fam": fam,
+            "em": em, "h0": h0, "geo": geo, "one": one, "k": k, "pbox": pbox, "it": it, "fam": fam,
             "align": align,
             "ink": m["ink"], "stem": stem, "stemMid": stem_mid, "dens": dens, "bandDens": band_dens,
             "icons": icons,
@@ -2308,6 +2314,53 @@ def _free_rows(pm: dict, others: list, arr, w: int, h: int, step: Optional[float
             break
         n += 1
     return n
+
+
+def _one_line_grow(pm: dict, pp, draw, others: list, arr, w: int, h: int):
+    """Х24: одна строка, перевод в которую ужимается мельче `ONE_SHRINK`
+    кегля, — во вторую строку на свободной бумаге под ней (`_free_rows`
+    с геометрией одной строки), если там кегль выходит крупнее."""
+    tp = _tp()
+    one = pm.get("one")
+    if tp is None or not one or (pp is not None and (pp.get("split") or not pp.get("size"))):
+        return pp
+    # pp None — в одну строку не влезло и на полу (пошло бы плашкой).
+    was = pp["size"] if pp is not None else 0.0
+    if was >= tp.ONE_SHRINK * pm["em"] - 1e-6:
+        return pp
+    # Шаг — от ИТОГОВОГО кегля (после поправок по строчным и ширине).
+    one = dict(one, pitch=tp.ONE_LEAD * pm["em"] / pm["k"])
+    pm1 = dict(pm, geo=one)
+    ex = _free_rows(pm1, others, arr, w, h)
+    bg = (pm.get("m") or {}).get("bg")
+    if ex and bg is not None:
+        # Бумага, а не рисунок: строка ниже — того же цвета, что фон надписи.
+        k = pm["k"]
+        x0, y0 = pm["pbox"][0], pm["pbox"][1]
+        em = pm["em"] / k
+        L, R = int(max(0, x0 + one["left"])), int(min(w, math.ceil(x0 + one["right"])))
+        ok = 0
+        for j in range(1, ex + 1):
+            b = y0 + one["base0"] + j * one["pitch"]
+            reg = arr[max(0, int(b - 0.85 * em)):min(h, int(math.ceil(b + 0.35 * em))), L:R]
+            if reg.size == 0:
+                break
+            rgb = _visible(reg)[..., :3].astype(_np.int16)
+            diff = _np.abs(rgb - _np.array(bg[:3], dtype=_np.int16)).max(axis=-1)
+            if float((diff > tp.ONE_PAPER_TOL).mean()) > tp.ONE_PAPER:
+                break
+            ok += 1
+        ex = ok
+    if not ex:
+        return pp
+    p2 = _paint_layout(pm1, draw, extra=ex)
+    # Две строки — только за НАСТОЯЩИЙ выигрыш: кегль не мельче `ONE_SHRINK`
+    # либо заметно крупнее одной строки.
+    if p2 is None or p2.get("over") or not p2.get("size") or (
+            p2["size"] < tp.ONE_SHRINK * pm["em"] - 1e-6 and p2["size"] < 1.08 * was):
+        return pp
+    p2["grown"] = len(p2.get("lines") or []) - 1
+    return p2
 
 
 def _page_even(pms: list, draw, arr, w: int, h: int, others_of) -> dict:
@@ -2791,6 +2844,7 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
             if pp is None:
                 extra = _free_rows(pm, others_of(i), arr, w, h) if pm.get("geo") else 0
                 pp = _paint_layout(pm, draw, extra=extra)
+                pp = _one_line_grow(pm, pp, draw, others_of(i), arr, w, h)
         if pp is not None and vertical and abs(abs(pp["m"]["angle"]) - 90) > 20 \
                 and not pp["m"].get("arc"):
             # Детектор сказал «одна строка, рамка выше ширины», а буквы в ней

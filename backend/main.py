@@ -18028,7 +18028,9 @@ def _split_keyed(rec: dict, project: dict, dry: bool, blob: bytes) -> int:
     part = rec.get("part")
     by_id = {s["id"]: s for s in project.get("segments") or []}
     olds = {i: _image_seg_of(by_id, blocks[i], part, i) for i in plan}
-    plan = {i: c for i, c in plan.items() if not (olds[i] is not None and _human_text(olds[i]))}
+    plan = {i: c for i, c in plan.items()
+            if not (olds[i] is not None and _human_text(olds[i]))
+            and blocks[i].get("by") != "human" and blocks[i].get("textBy") != "human"}
     if not plan or dry:
         return len(plan)
     keep = {i: _image_seg_of(by_id, b, part, i) for i, b in enumerate(blocks) if i not in plan}
@@ -18046,7 +18048,11 @@ def _split_keyed(rec: dict, project: dict, dry: bool, blob: bytes) -> int:
             nb = {"box": [min(l[0] for l in pl), min(l[1] for l in pl), max(l[2] for l in pl), max(l[3] for l in pl)],
                   "rows": len(pl),
                   "lineH": int(round(sum(l[3] - l[1] for l in pl) / float(len(pl)))),
-                  "conf": b.get("conf"), "flat": b.get("flat"),
+                  "conf": b.get("conf"),
+                  # Плоскость фона — заново по рамке ЧАСТИ: по ней решают, можно ли
+                  # писать поверх картинки, а у объединения она была другой.
+                  "flat": round(image_text.flatness(arr, [min(l[0] for l in pl), min(l[1] for l in pl),
+                                                           max(l[2] for l in pl), max(l[3] for l in pl)]), 3),
                   "align": image_text._align_of([{"box": l} for l in pl]),
                   "lineBoxes": [list(l) for l in pl], "splitKey": True}
             new_blocks.append(nb)

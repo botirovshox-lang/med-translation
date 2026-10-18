@@ -820,13 +820,15 @@ def page_lines(page) -> tuple:
     lines = out.splitlines()
     try:
         vrules, hrules = _grid_rules(vrules, hrules)
-        marked = _split_at_rules(_mark_covered(chunks, covers), op_recs, vrules)
-        used = marked
-        geom = _geometry(lines, out, marked, figs, rects, page, op_ends, op_recs, icons, (vrules, hrules))
+        marked = _mark_covered(chunks, covers)
+        # Разрез по линиям таблицы (Т34) — ПОСЛЕ отбора повтора формы: `dups`
+        # хранит номера кусков до разреза, и после него выбросил бы не тот.
+        used = _split_at_rules(marked, op_recs, vrules)
+        geom = _geometry(lines, out, used, figs, rects, page, op_ends, op_recs, icons, (vrules, hrules))
         if geom is None and dups:
             # Текст формы пришёл дважды: изнутри (точки на своих местах)
             # и повтором в точке формы. Без повтора куски сложатся в ответ.
-            used = [c for k, c in enumerate(marked) if k not in dups]
+            used = _split_at_rules([c for k, c in enumerate(marked) if k not in dups], op_recs, vrules)
             geom = _geometry(lines, out, used, figs, rects, page, op_ends, op_recs, icons, (vrules, hrules))
         if geom is not None:
             lines = _script_marks(lines, used)
@@ -1505,6 +1507,7 @@ def _rules_of(segs, pending, vrules: list, hrules: list) -> None:
 
 
 GRID_TOL = 1.2           # пт: конец линии «упирается» в другую
+GRID_PAIRS_MAX = 400000  # вертикалей × горизонталей: дороже — это рисунок, и проверять его некогда
 
 
 def _grid_rules(vrules: list, hrules: list) -> tuple:
@@ -1516,6 +1519,8 @@ def _grid_rules(vrules: list, hrules: list) -> tuple:
     границы ячеек, резали подписи по словам («Consider | specific |
     factors») и рвали абзацы под декоративной чертой."""
     t = GRID_TOL
+    if len(vrules) * len(hrules) > GRID_PAIRS_MAX:
+        return [], []                   # густая сетка штрихов — диаграмма, не таблица
 
     def touches(x, y):
         return any(abs((h[1] + h[3]) / 2.0 - y) <= t and h[0] - t <= x <= h[2] + t for h in hrules)
@@ -1595,7 +1600,7 @@ def _split_at_rules(chunks: list, op_recs: list, vrules: list) -> list:
     return out
 
 
-def _in_ruled(vrules, y, size) -> bool:
+def _in_ruled(vrules, y, size, x=None) -> bool:
     """Т35. На странице с расчерченной таблицей (есть вертикальные линии)
     начала колонок (`_col_starts`) режут только строки ВНУТРИ таблицы — по
     высоте её вертикальных линий. Вне её колонок нет: широкий пробел
@@ -1605,7 +1610,12 @@ def _in_ruled(vrules, y, size) -> bool:
     на странице — как прежде (таблица без линейки держится на `_col_starts`)."""
     if not vrules:
         return True
-    return any(r[1] - 0.5 * size <= y <= r[3] + 0.5 * size for r in vrules)
+    xs = [r[0] for r in vrules if r[1] - 0.5 * size <= y <= r[3] + 0.5 * size]
+    if len(xs) < 2:
+        return False
+    # Колонки — только в пределах ширины таблицы на этой высоте: таблица без
+    # линейки сбоку от расчерченной своё разбиение не теряет.
+    return x is None or min(xs) - 2.0 * size <= x <= max(xs) + 2.0 * size
 
 
 def _rule_between(vrules, xa, xb, y, size) -> bool:
@@ -1662,7 +1672,7 @@ def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None, vrules=()
         # Колонка таблицы — по ТОЧНОМУ концу краски, где он известен.
         col = (c[1] > gx1c + COL_GAP * max(size, sz)
                and any(abs(c[1] - x) <= COL_TOL for x in cols)
-               and _in_ruled(vrules, c[2], sz))
+               and _in_ruled(vrules, c[2], sz, c[1]))
         has_alpha = any(ch.isalpha() for ch in c[0])
         if (not same and has_alpha and len(c[0].strip()) > 3 and sz >= 0.85 * size
                 and (c[1] > gx1c + V_SPLIT_GAP * sz or cx1 + V_SPLIT_GAP * sz < gx0)

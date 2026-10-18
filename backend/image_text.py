@@ -1456,6 +1456,12 @@ def legend_key(arr, box, bg=None):
         return None
     c = comps[0]                                   # самая левая краска
     cx, cy, cw_, ch_, area = (int(v) for v in c)
+    # Ключ стоит В строке (центр по высоте внутри её рамки) и вплотную к её
+    # тексту: столбец диаграммы или ячейка слева, задевшие область поиска,
+    # ключом не считаются.
+    kc = ry0 + cy + ch_ / 2.0
+    if not (y0 <= kc <= y1) or rx0 + cx + cw_ < x0 - 1.2 * h:
+        return None
     if not (KEY_MIN * h <= cw_ <= KEY_MAX * h and KEY_MIN * h <= ch_ <= KEY_MAX * h):
         return None
     if not (0.7 <= cw_ / float(ch_) <= 1.43) or area < KEY_FILL * cw_ * ch_:
@@ -1494,8 +1500,8 @@ def regroup_plan(blocks: list) -> list:
     покупается вторым чтением."""
     inner = []
     for i, b in enumerate(blocks or []):
-        if b.get("skip") or not b.get("box"):
-            continue
+        if b.get("skip") or not b.get("box") or b.get("splitKey"):
+            continue                    # часть разреза по ключу (Т36) обратно не склеивается
         lbs = b.get("lineBoxes") or [b["box"]]
         inner.append({"box": list(b["box"]), "lineH": float(b.get("lineH") or
                                                           (b["box"][3] - b["box"][1]) / max(1, len(lbs))),

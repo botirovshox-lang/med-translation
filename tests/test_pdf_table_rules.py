@@ -108,13 +108,14 @@ check(not any("SNP" in t and "rs10905277" in t for t in items), "шапка не
 print("=== Т35. Ложное начало колонки вне таблицы строку не режет ===")
 title = [chunk("Ассоциация варианта гена ", 50.0, 637.0), chunk("GATA3", 170.0, 637.0),
          chunk(" с развитием", 196.0, 637.0)]
-table_rules = [[118.0, 480.0, 118.0, 520.0]]
+table_rules = [[118.0, 480.0, 118.0, 520.0], [190.0, 480.0, 190.0, 520.0]]
 g = pw._h_groups([0, 1, 2], title, 0.5, [170.5], None, table_rules)
 check(len(g) == 1, "заголовок над расчерченной таблицей остаётся одной надписью")
 g = pw._h_groups([0, 1, 2], title, 0.5, [170.5], None, ())
 check(len(g) >= 2, "без линий на странице — прежнее правило колонок")
 check(pw._in_ruled(table_rules, 500.0, 8.5) and not pw._in_ruled(table_rules, 637.0, 8.5),
       "строка внутри высоты линий — в таблице, над ней — нет")
+check(not pw._in_ruled(table_rules, 500.0, 8.5, 400.0), "сбоку от расчерченной таблицы — не в ней")
 
 # ─── Т36. Ключ легенды ───────────────────────────────────────────────
 print("=== Т36. Ключ легенды — сплошной квадрат у левого края строки ===")
@@ -134,6 +135,16 @@ round_[(yy - 52) ** 2 + (xx - 25) ** 2 <= 30] = (30, 30, 30)
 for x in range(40, 150, 9):
     round_[44:58, x:x + 5] = (90, 90, 90)
 check(image_text.legend_key(round_, legend) is None, "круглый маркер списка ключом не считается")
+bar = np.full((80, 320, 3), 255, np.uint8)
+bar[20:60, 18:30] = (120, 120, 120)                     # высокий столбик диаграммы слева
+for x in range(40, 126, 9):
+    bar[44:58, x:x + 5] = (90, 90, 90)
+check(image_text.legend_key(bar, legend) is None, "столбик диаграммы слева (выше строки) — не ключ")
+high = np.full((80, 320, 3), 255, np.uint8)
+high[30:38, 22:30] = (30, 120, 220)                     # квадрат выше строки
+for x in range(40, 126, 9):
+    high[44:58, x:x + 5] = (90, 90, 90)
+check(image_text.legend_key(high, legend) is None, "квадрат не на высоте строки — не ключ")
 
 print("=== Т36. Строка с ключом начинает свой блок ===")
 la = {"box": axis, "flat": 1.0}
@@ -167,6 +178,8 @@ n = main._regroup_rec(rec, pr, False, blob)
 check(n >= 1 and len(rec["blocks"]) == 2, "блок разрезан на два: %d" % len(rec["blocks"]))
 check(all("text" not in b for b in rec["blocks"]), "у частей нет текста — их дочитает шаг чтения")
 check(not pr["segments"], "сегмент склеенного блока снят")
+check(all(b.get("splitKey") for b in rec["blocks"]) and image_text.regroup_plan(rec["blocks"]) == [],
+      "части разреза ритмовая склейка обратно не собирает")
 rec, pr = rec_and_project(human=True)
 main._regroup_rec(rec, pr, False, blob)
 check(len(rec["blocks"]) == 1 and pr["segments"], "блок с работой человека не режется")

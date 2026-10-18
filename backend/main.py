@@ -34644,6 +34644,26 @@ def _hand_image(im: dict) -> bool:
     return tot > 0 and hand >= IMG_HAND_SHARE * tot
 
 
+_KEY_ARR: list = [None, None]
+
+
+def _legend_key_end(part, b: dict) -> "int | None":
+    """x правого края ключа легенды у левого края строки блока (+2 пкс) или None."""
+    try:
+        import numpy as _np
+        from PIL import Image as _PIL
+        if _KEY_ARR[0] is not part:
+            _KEY_ARR[0], _KEY_ARR[1] = part, _np.asarray(_PIL.open(io.BytesIO(part.blob)).convert("RGB"))
+        arr = _KEY_ARR[1]
+        lb = (b.get("lineBoxes") or [b.get("box")])[0]
+        k = image_text.legend_key(arr, lb, image_text._bg_of(arr, lb))
+    except Exception:
+        return None
+    if k is None or k[0] > int(lb[0]) + 0.5 * max(1, int(lb[3]) - int(lb[1])):
+        return None
+    return int(k[2]) + 2
+
+
 def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                      printed: "dict | None" = None) -> list:
     """Надписи со страниц-КАРТИНОК — рамками для выгрузки PDF «как в оригинале».
@@ -34793,6 +34813,13 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                     if _piece_in(psrc, bsrc):
                         er_cand.add(pidx)
             x0, y0, x1, y1 = b["box"]
+            if not virt and int(b.get("rows") or 1) <= 1 and image_text is not None:
+                # Ц14б: рамка строки детектора начата на самом ключе легенды
+                # («■ Moderate…»): перевод встаёт ПРАВЕЕ ключа, иначе закраска
+                # стирает цветной квадрат серии (боевой проект 105, рис. 1).
+                kx = _legend_key_end(part, b)
+                if kx is not None and x0 <= kx < x1:
+                    x0 = kx
             if er_cand and rect_pt is not None and fig is not None and int(b.get("rows") or 1) <= 1:
                 # Надпись НАЧИНАЕТСЯ куском слоя («WHERE?:» и дальше кривыми
                 # «Everyday settings»): где начинается текст, слой знает точно,

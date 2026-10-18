@@ -1,23 +1,20 @@
 WEBVTT
 
-00:00.000 --> 00:03.500
-A screen recording of the service. Only the wait for the translation is sped up.
+00:00.000 --> 00:04.000
+A screen recording, no editing: we pick a file and a language
 
-00:03.500 --> 00:06.000
-We pick a file and a language
-
-00:06.000 --> 00:07.500
+00:04.000 --> 00:06.000
 We press “Translate” (Перевести) — the only button
 
-00:07.500 --> 00:12.000
+00:06.000 --> 00:12.500
 The rest is on us: the project is created and the translation starts by itself 7 seconds later
 
-00:12.000 --> 00:27.200
-Translation and checks run on their own · shown ×12 · really 2 min 15 s
+00:12.500 --> 00:18.500
+Translation and checks run on their own · shown ×8 · really 49 s
 
-00:27.200 --> 00:31.500
-Done: all 4 lines translated and checked — 2 min 21 s after the click
+00:18.500 --> 00:23.000
+Done: all 4 lines translated and checked — 56 s after the click
 
-00:31.500 --> 00:41.100
+00:23.000 --> 00:30.000
 “Download” (Скачать) — the same Word file, now in English
 

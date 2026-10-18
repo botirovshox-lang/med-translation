@@ -99,8 +99,9 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # docs/rules/pdf-reading.md; 15 — раздел С: строки таблицы (Т6), знаки
 # сравнения и сноски (Т7), капс «MLTCs» (Т8), над- и подстрочные знаки
 # Юникодом (Т9), колонтитул по месту на листе, в том числе повёрнутый (Т15),
-# и правила того же раздела, сделанные следом.
-RULES_VERSION = 15
+# и правила того же раздела, сделанные следом; 16 — Т34: линии таблицы,
+# нарисованные обводкой, режут строку по ячейкам и абзац по рядам.
+RULES_VERSION = 16
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -2577,6 +2578,78 @@ def _heading_ends(a: dict, b: dict) -> bool:
     return True
 
 
+def _cell_of(r: dict, vr: list, hr: list):
+    """Ячейка расчерченной таблицы, в которой стоит строка: (левая линия,
+    правая, верхняя, нижняя) или None — строка не между двумя вертикалями."""
+    s = max(r.get("s") or 1.0, 1.0)
+    y, x0, x1 = r["y"], r["x0"], r["x1"]
+    xs = [((v[0] + v[2]) / 2.0) for v in vr if v[1] - 0.5 * s <= y <= v[3] + 0.5 * s]
+    left = max((x for x in xs if x <= x0 + 0.5), default=None)
+    right = min((x for x in xs if x >= x1 - 0.5), default=None)
+    if left is None or right is None:
+        return None
+    xm = (x0 + x1) / 2.0
+    ys = [((h[1] + h[3]) / 2.0) for h in hr if h[0] - 0.5 <= xm <= h[2] + 0.5]
+    top = min((v for v in ys if v > y), default=None)
+    bot = max((v for v in ys if v < y), default=None)
+    return (round(left, 1), round(right, 1), top and round(top, 1), bot and round(bot, 1))
+
+
+def _cell_order(body: list, g) -> list:
+    """Т34б. Строки расчерченной таблицы — по ЯЧЕЙКАМ: pypdf выдаёт шапку по
+    высоте (верхние строки всех ячеек, потом нижние), и строки одной
+    ячейки («Гено-» … «тип», «Контроль,» … «n, %») стояли в потоке не
+    подряд — абзац их не собирал, и двухстрочная ячейка переводилась
+    кусками. Внутри каждой подряд идущей пачки строк, стоящих в ячейках,
+    строки одной ячейки собираются вместе (сверху вниз), ячейки — по месту
+    (ряд сверху вниз, в ряду слева направо). Строки вне ячеек пачку обрывают и не двигаются."""
+    vr = (g or {}).get("vrules") if isinstance(g, dict) else None
+    if not vr or not body:
+        return body
+    hr = g.get("hrules") or []
+    keys = [_cell_of(r, vr, hr) for r in body]
+    out, k = [], 0
+    while k < len(body):
+        if keys[k] is None:
+            out.append(body[k])
+            k += 1
+            continue
+        j = k
+        while j < len(body) and keys[j] is not None:
+            j += 1
+        order, groups = [], {}
+        for t in range(k, j):
+            if keys[t] not in groups:
+                groups[keys[t]] = []
+                order.append(keys[t])
+            groups[keys[t]].append(body[t])
+        # Ячейки — по месту: ряд (верхняя линия ячейки, без неё — верх её
+        # строк) сверху вниз, в ряду — слева направо.
+        order.sort(key=lambda kk: (-(kk[2] if kk[2] is not None else max(r["y"] for r in groups[kk])), kk[0]))
+        for key in order:
+            out.extend(sorted(groups[key], key=lambda r: -r["y"]))
+        k = j
+    return out
+
+
+def _rule_parts(hrules, ax0, ay, ax1, asz, bx0, by, bx1, bsz) -> bool:
+    """Т34. Горизонтальная линия листа проходит МЕЖДУ строкой a (выше) и
+    строкой b (ниже) и накрывает по ширине обе — это граница ряда таблицы
+    (или рамки), и абзац через неё не переходит. Подчёркивание (линия под
+    самой строкой, ближе 0.3 кегля к базовой) границей не считается."""
+    if not hrules or ay is None or by is None or ay <= by:
+        return False
+    asz, bsz = max(asz or 1.0, 1.0), max(bsz or 1.0, 1.0)
+    lo, hi = by + 0.75 * bsz, ay - 0.3 * asz
+    if hi <= lo:
+        return False
+    for r in hrules:
+        ym = (r[1] + r[3]) / 2.0
+        if lo < ym < hi and r[0] <= max(ax0, bx0) + 0.5 * asz and r[2] >= min(ax1, bx1) - 0.5 * asz:
+            return True
+    return False
+
+
 def _geo_follows(a: dict, b: dict) -> bool:
     """Строка b геометрически продолжает строку a (оба с местом `geo`):
     стоит ниже не дальше `CONT_DY` кеглей и пересекается по горизонтали,
@@ -2591,6 +2664,8 @@ def _geo_follows(a: dict, b: dict) -> bool:
         return False                    # значок пункта списка — новый абзац
     _p, ax0, ay, ax1, asz = ga[:5]
     _p, bx0, by, bx1, bsz = gb[:5]
+    if _rule_parts(a.get("hr") or b.get("hr"), ax0, ay, ax1, asz, bx0, by, bx1, bsz):
+        return False                    # Т34: между строками линия ряда таблицы
     size = max(asz or 0.0, bsz or 0.0, 1.0)
     dy = ay - by
     if _heading_ends(a, b):
@@ -3534,7 +3609,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                 else:
                     break
                 drop.add(k)
-        body = [r for k, r in enumerate(recs) if k not in drop]
+        body = _cell_order([r for k, r in enumerate(recs) if k not in drop], geom[i])
         lost_after = [c_ for k, r in enumerate(recs) if k in drop for t in (r.get("after") or [])
                       for c_ in [_clean_line(_tidy(t), report)] if c_]
         unplaced.extend({"page": i, "text": t} for t in lost_after)
@@ -3576,6 +3651,9 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                             # Колонка таблицы (`_table_streams`): абзац из одной
                             # колонки в другую не переходит.
                             "tcol": r.get("tcol"),
+                            # Т34: горизонтальные линии листа (граница ряда
+                            # таблицы) — абзац через них не переходит.
+                            "hr": (geom[i] or {}).get("hrules") if isinstance(geom[i], dict) else None,
                             # Обычный межстрочный страницы — мерка «пропуска
                             # строки» между пунктами списка (`_geo_follows`).
                             "plead": _lead_for(pg, r["s"]),

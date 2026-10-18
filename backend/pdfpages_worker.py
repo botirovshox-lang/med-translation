@@ -311,6 +311,15 @@ def page_lines(page) -> tuple:
     # линиями, а не картинкой; `ppts` — точки текущего контура на листе.
     icons: list = []
     ppts: list = []
+    # Т34: линии таблицы. Отрезки текущего контура (`m`/`l`) и тонкие
+    # прямоугольники; обведённые (или залитые, если это полоска) — линии
+    # листа. Вертикальная линия между кусками одной строки — граница ячейки
+    # (`_h_groups`), горизонтальная между строками — граница ряда
+    # (`pdftext._geo_follows`). Прежде линии таблиц, нарисованные обводкой,
+    # не попадали никуда: `rects` собирает только `re`.
+    psegs: list = []
+    vrules: list = []
+    hrules: list = []
     # Обрезка (clip) — прямоугольник, вне которого на странице не видно
     # НИЧЕГО. Текст за ней есть в текстовом слое, но не на листе: у боевого
     # PDF схема лежала дважды — вторая копия, сдвинутая на 23 пт и с иными
@@ -684,6 +693,11 @@ def page_lines(page) -> tuple:
             if op in (b"m", b"l", b"c", b"v", b"y"):
                 state["curve"] = True
                 nums = [_num(a) for a in args]
+                if None not in nums and len(nums) >= 2 and len(psegs) < _RULES_MAX:
+                    pt = _xy(cm, nums[-2], nums[-1])
+                    if op == b"l" and state.get("lpen") is not None:
+                        psegs.append((state["lpen"], pt))
+                    state["lpen"] = pt
                 if len(ppts) < _PATH_PTS_MAX and None not in nums:
                     for k_ in range(0, len(nums) - 1, 2):
                         ppts.append(_xy(cm, nums[k_], nums[k_ + 1]))
@@ -700,6 +714,10 @@ def page_lines(page) -> tuple:
             elif op in _CLIP_OPS:
                 state["clip"] = True
             elif op in _PAINT_OPS or op == b"n":
+                if op != b"n" and not state["clip"] and not forms:
+                    _rules_of(psegs if op in _STROKE_OPS else (), pending, vrules, hrules)
+                psegs.clear()
+                state["lpen"] = None
                 if op != b"n" and not state["clip"]:
                     rects.extend(pending)
                     if ppts and len(icons) < _ICONS_MAX:
@@ -801,14 +819,15 @@ def page_lines(page) -> tuple:
         return (page.extract_text() or "").splitlines(), None
     lines = out.splitlines()
     try:
-        marked = _mark_covered(chunks, covers)
+        vrules, hrules = _grid_rules(vrules, hrules)
+        marked = _split_at_rules(_mark_covered(chunks, covers), op_recs, vrules)
         used = marked
-        geom = _geometry(lines, out, marked, figs, rects, page, op_ends, op_recs, icons)
+        geom = _geometry(lines, out, marked, figs, rects, page, op_ends, op_recs, icons, (vrules, hrules))
         if geom is None and dups:
             # Текст формы пришёл дважды: изнутри (точки на своих местах)
             # и повтором в точке формы. Без повтора куски сложатся в ответ.
             used = [c for k, c in enumerate(marked) if k not in dups]
-            geom = _geometry(lines, out, used, figs, rects, page, op_ends, op_recs, icons)
+            geom = _geometry(lines, out, used, figs, rects, page, op_ends, op_recs, icons, (vrules, hrules))
         if geom is not None:
             lines = _script_marks(lines, used)
     except Exception:
@@ -1212,7 +1231,7 @@ def _line_parts(body: list, chunks: list, size: float, cw: float):
              round(g["xl"], 1), g["n"]] for g in groups]
 
 
-def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=(), icons=()):
+def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=(), icons=(), rules=((), ())):
     text = "".join(c[0] for c in chunks)
     if text.splitlines() != lines:
         return None                      # куски не сложились в ответ — не гадаем
@@ -1262,7 +1281,7 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=(), ico
             if body and _rotated_line(body, chunks):
                 rot_paths[len(geo_lines) - 1] = _rot_path(body, chunks, cw, op_ends, op_recs)
             continue
-        groups = _h_groups(body, chunks, cw, cols, ends)
+        groups = _h_groups(body, chunks, cw, cols, ends, rules[0])
         if len(groups) > 1:
             # pypdf склеил в одну строку ДВЕ надписи одной базовой линии
             # с разных концов листа («making» в рамке посреди схемы
@@ -1294,6 +1313,7 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=(), ico
     r1 = lambda v: [round(float(t), 1) for t in v]   # noqa: E731
     out_ = {"box": r1(box) if box else None, "lines": geo_lines,
             "figs": [r1(f) for f in figs], "rects": [r1(r) for r in rects],
+            "hrules": [r1(r) for r in rules[1]], "vrules": [r1(r) for r in rules[0]],
             "rot": {str(k): v for k, v in rot_paths.items() if v}}
     near = _icons_near(icons, geo_lines + [sg[1] for subs in splits.values() for sg in subs[1:]])
     if near:
@@ -1453,7 +1473,154 @@ def _col_starts(text: str, owner: list, starts: list, chunks: list, cw: float,
     return out
 
 
-def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None) -> list:
+# Т34. Линия листа — отрезок не короче `RULE_MIN` пт и не толще `RULE_THIN`
+# пт по другой оси; `_RULES_MAX` — потолок на страницу (сетки графиков
+# бывают из тысяч отрезков, а нужны линии таблиц).
+RULE_MIN = 4.0
+RULE_THIN = 1.5
+RULE_FILL_MIN = 0.25
+_RULES_MAX = 4000
+_STROKE_OPS = {b"S", b"s", b"B", b"B*", b"b", b"b*"}
+
+
+def _rules_of(segs, pending, vrules: list, hrules: list) -> None:
+    """Обведённые отрезки и тонкие прямоугольники → вертикальные и
+    горизонтальные линии [x0, y0, x1, y1] (координаты листа)."""
+    if len(vrules) + len(hrules) >= _RULES_MAX:
+        return
+    for (x0, y0), (x1, y1) in segs:
+        dx, dy = abs(x1 - x0), abs(y1 - y0)
+        if dx <= RULE_THIN * 0.5 and dy >= RULE_MIN:
+            vrules.append([min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)])
+        elif dy <= RULE_THIN * 0.5 and dx >= RULE_MIN:
+            hrules.append([min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)])
+    for r in pending:
+        w, h = r[2] - r[0], r[3] - r[1]
+        # Полоска тоньше `RULE_FILL_MIN` — ступенька градиентной заливки
+        # (стопка по 0.1 пт у инфографики проекта 14), а не линейка.
+        if RULE_FILL_MIN <= w <= RULE_THIN and h >= RULE_MIN:
+            vrules.append(list(r))
+        elif RULE_FILL_MIN <= h <= RULE_THIN and w >= RULE_MIN:
+            hrules.append(list(r))
+
+
+GRID_TOL = 1.2           # пт: конец линии «упирается» в другую
+
+
+def _grid_rules(vrules: list, hrules: list) -> tuple:
+    """Т34. Линии ТАБЛИЦЫ — только те, что складываются в сетку. Вертикаль
+    считается, если оба её конца упираются в горизонтали; горизонталь —
+    если касается такой вертикали концом или пересекает её. Таких вертикалей
+    на странице хотя бы две (одна закрытая ячейка). Иначе это рисунок:
+    стрелки, значки и подчёркивания инфографики (проект 14), принятые за
+    границы ячеек, резали подписи по словам («Consider | specific |
+    factors») и рвали абзацы под декоративной чертой."""
+    t = GRID_TOL
+
+    def touches(x, y):
+        return any(abs((h[1] + h[3]) / 2.0 - y) <= t and h[0] - t <= x <= h[2] + t for h in hrules)
+    vs = [v for v in vrules if touches((v[0] + v[2]) / 2.0, v[1]) and touches((v[0] + v[2]) / 2.0, v[3])]
+    if len(vs) < 2:
+        return [], []
+    hs = []
+    for h in hrules:
+        y = (h[1] + h[3]) / 2.0
+        if any(v[1] - t <= y <= v[3] + t and h[0] - t <= (v[0] + v[2]) / 2.0 <= h[2] + t for v in vs):
+            hs.append(h)
+    return vs, hs
+
+
+def _split_at_rules(chunks: list, op_recs: list, vrules: list) -> list:
+    """Т34. pypdf отдаёт строку ряда таблицы ОДНИМ куском («SNP (ген) Гено- »),
+    хотя внутри она нарисована отдельными операторами в разных ячейках.
+    Кусок режется по операторам показа текста: операторы куска — подряд по
+    потоку, первый стоит в точке куска, их знаков (без пробелов) ровно
+    столько, сколько в куске. Между соседними операторами стоит вертикальная
+    линия, проходящая через строку, — здесь граница ячейки, и кусок делится
+    на два с началом второго в точке его оператора. Текст строки от этого
+    не меняется (половинки подряд дают тот же текст); не сошлось число
+    знаков — кусок не трогаем: резать наугад нельзя."""
+    if not vrules or not op_recs:
+        return chunks
+    out, pos = [], 0
+    for c in chunks:
+        if c[1] is None or c[4] or not c[0].strip() or len(c) < 8 or c[7]:
+            out.append(c)
+            continue
+        size = max(c[3] or 1.0, 1.0)
+        want = sum(1 for ch in c[0] if not ch.isspace())
+        j = next((k for k in range(pos, len(op_recs))
+                  if abs(op_recs[k][0] - c[1]) <= 0.6 and abs(op_recs[k][1] - c[2]) <= 0.3 * size), None)
+        if j is None:
+            out.append(c)
+            continue
+        ops, got = [], 0
+        for k in range(j, len(op_recs)):
+            o = op_recs[k]
+            # pypdf сливает в одну строку и куски соседней базовой линии
+            # (ячейки шапки выше и ниже соседних) — цепочкой: каждый
+            # следующий с предыдущим, тот же допуск.
+            if abs(o[1] - (ops[-1][1] if ops else c[2])) > 0.8 * size:
+                break
+            ops.append(o)
+            got += o[4]
+            if got >= want:
+                break
+        if got != want or len(ops) < 2:
+            out.append(c)
+            continue
+        pos = j + len(ops)
+        cuts = []                                   # (знаков до разреза, x второго)
+        acc = 0
+        for o1, o2 in zip(ops, ops[1:]):
+            acc += o1[4]
+            if _rule_between(vrules, o1[0], o2[0], (o1[1] + o2[1]) / 2.0, size):
+                cuts.append((acc, o2[0]))
+        if not cuts:
+            out.append(c)
+            continue
+        text, n, ci = c[0], 0, 0
+        bounds, xs = [0], [c[1]]
+        for i, ch in enumerate(text):
+            if ci < len(cuts) and n == cuts[ci][0] and not ch.isspace():
+                bounds.append(i)
+                xs.append(cuts[ci][1])
+                ci += 1
+            if not ch.isspace():
+                n += 1
+        bounds.append(len(text))
+        ys = [c[2]] + [next(o[1] for o in ops if o[0] == x_) for x_ in xs[1:]]
+        for k in range(len(xs)):
+            out.append((text[bounds[k]:bounds[k + 1]], xs[k], ys[k]) + tuple(c[3:]))
+    return out
+
+
+def _in_ruled(vrules, y, size) -> bool:
+    """Т35. На странице с расчерченной таблицей (есть вертикальные линии)
+    начала колонок (`_col_starts`) режут только строки ВНУТРИ таблицы — по
+    высоте её вертикальных линий. Вне её колонок нет: широкий пробел
+    выключенной по ширине строки перед курсивом («гена | GATA3») давал
+    ложное «начало колонки», и оно резало заголовок таблицы над линиями
+    на куски, а перевод собирался из них в русском порядке слов. Без линий
+    на странице — как прежде (таблица без линейки держится на `_col_starts`)."""
+    if not vrules:
+        return True
+    return any(r[1] - 0.5 * size <= y <= r[3] + 0.5 * size for r in vrules)
+
+
+def _rule_between(vrules, xa, xb, y, size) -> bool:
+    """Вертикальная линия строго между x началом прошлого куска `xa` и
+    началом этого `xb`, и через базовую линию `y` она проходит."""
+    if not vrules or xa is None or xb is None or xb <= xa:
+        return False
+    for r in vrules:
+        xm = (r[0] + r[2]) / 2.0
+        if xa + 0.5 < xm < xb - 0.2 and r[1] - 0.2 * size <= y <= r[3] + 0.6 * size:
+            return True
+    return False
+
+
+def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None, vrules=()) -> list:
     """Куски строки (номера по порядку потока), разбитые на РАЗНЫЕ надписи
     одной базовой линии: следующий кусок отделён от уже собранной части
     зазором больше `SPLIT_GAP` кеглей — справа от её конца или слева от её
@@ -1480,9 +1647,22 @@ def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None) -> list:
         gap = SPLIT_GAP * max(size, sz)
         same = abs(c[2] - y) <= 0.5 * size
         far = c[1] > gx1c + gap or cx1 + gap < gx0
+        if _rule_between(vrules, chunks[groups[-1][-1]][1], c[1], (c[2] + y) / 2.0, max(size, sz)):
+            # Т34: между началом прошлого куска и началом этого стоит линия
+            # таблицы, проходящая через строку, — это другая ячейка, каким
+            # бы маленьким ни был зазор и на какой бы базовой линии ни стоял
+            # кусок (ячейки шапки выключены по центру, двухстрочные — выше
+            # и ниже соседних). Часть за линией — полноценная ячейка, даже
+            # без букв («0,001»): склеивать её обратно (Т10) нельзя.
+            groups.append([k])
+            weak.append(False)
+            size, y = sz, c[2]
+            gx0, gx1, gx1c = c[1], cx1, _chunk_end(c, cw, ends)
+            continue
         # Колонка таблицы — по ТОЧНОМУ концу краски, где он известен.
         col = (c[1] > gx1c + COL_GAP * max(size, sz)
-               and any(abs(c[1] - x) <= COL_TOL for x in cols))
+               and any(abs(c[1] - x) <= COL_TOL for x in cols)
+               and _in_ruled(vrules, c[2], sz))
         has_alpha = any(ch.isalpha() for ch in c[0])
         if (not same and has_alpha and len(c[0].strip()) > 3 and sz >= 0.85 * size
                 and (c[1] > gx1c + V_SPLIT_GAP * sz or cx1 + V_SPLIT_GAP * sz < gx0)

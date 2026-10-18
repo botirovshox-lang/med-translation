@@ -17999,6 +17999,72 @@ def _regroup_gaps(rec: dict, blob: bytes) -> int:
 
 
 def _regroup_rec(rec: dict, project: dict, dry: bool, blob: bytes = b"") -> int:
+    """Перегруппировка сохранённых блоков по нынешним правилам: сперва разрез
+    (Т36, `_split_keyed`), потом склейка (`_regroup_merge`). Ответ — сколько
+    блоков разрезано и склеено."""
+    n = _split_keyed(rec, project, dry, blob) if int(rec.get("groupRule") or 1) < 4 else 0
+    return n + _regroup_merge(rec, project, dry, blob)
+
+
+def _split_keyed(rec: dict, project: dict, dry: bool, blob: bytes) -> int:
+    """Т36: блок, у которого строка НЕ первая начинается с ключа легенды,
+    режется перед ней (`image_text.split_plan`): подпись оси «AA» и подпись
+    серии «■ Легкая степень БА» под ней — разные надписи. Части без текста:
+    делить прочитанный текст по строкам нечем, их дочитает обычный шаг
+    чтения (несколько коротких блоков). Сегмент прежнего блока снимается —
+    его перевод склеивал две надписи; с работой человека (`_human_text`)
+    блок не режется. Нет картинки — «не знаю», ничего не трогаем."""
+    blocks = rec.get("blocks") or []
+    if not blob or not blocks or image_text._np is None:
+        return 0
+    try:
+        from PIL import Image as _PIL
+        arr = image_text._np.asarray(_PIL.open(io.BytesIO(blob)).convert("RGB"))
+    except Exception:
+        return 0
+    plan = image_text.split_plan(blocks, arr)
+    if not plan:
+        return 0
+    part = rec.get("part")
+    by_id = {s["id"]: s for s in project.get("segments") or []}
+    olds = {i: _image_seg_of(by_id, blocks[i], part, i) for i in plan}
+    plan = {i: c for i, c in plan.items() if not (olds[i] is not None and _human_text(olds[i]))}
+    if not plan or dry:
+        return len(plan)
+    keep = {i: _image_seg_of(by_id, b, part, i) for i, b in enumerate(blocks) if i not in plan}
+    new_blocks = []
+    for i, b in enumerate(blocks):
+        if i not in plan:
+            nb = dict(b)
+            nb["_old"] = i
+            new_blocks.append(nb)
+            continue
+        lbs = b.get("lineBoxes") or []
+        edges = [0] + plan[i] + [len(lbs)]
+        for a_, b_ in zip(edges, edges[1:]):
+            pl = lbs[a_:b_]
+            nb = {"box": [min(l[0] for l in pl), min(l[1] for l in pl), max(l[2] for l in pl), max(l[3] for l in pl)],
+                  "rows": len(pl),
+                  "lineH": int(round(sum(l[3] - l[1] for l in pl) / float(len(pl)))),
+                  "conf": b.get("conf"), "flat": b.get("flat"),
+                  "align": image_text._align_of([{"box": l} for l in pl]),
+                  "lineBoxes": [list(l) for l in pl], "splitKey": True}
+            new_blocks.append(nb)
+    new_blocks.sort(key=lambda b: (b["box"][1], b["box"][0]))
+    for j, nb in enumerate(new_blocks):
+        oi = nb.pop("_old", None)
+        seg = keep.get(oi) if oi is not None else None
+        if seg is not None:
+            seg["origin"] = dict(seg.get("origin") or {}, block=j)
+    for i in plan:
+        s_ = olds.get(i)
+        if s_ is not None and s_ in project["segments"]:
+            project["segments"].remove(s_)
+    rec["blocks"] = new_blocks
+    return len(plan)
+
+
+def _regroup_merge(rec: dict, project: dict, dry: bool, blob: bytes = b"") -> int:
     """Перегруппировать сохранённые блоки картинки по нынешним правилам
     (`image_text.regroup_plan`). Ответ — сколько новых блоков склеено.
 

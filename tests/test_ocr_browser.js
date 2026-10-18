@@ -29,13 +29,33 @@ const { spawn } = require("child_process");
 
 const ROOT = path.join(__dirname, "..");
 const WEB = path.join(ROOT, "frontend");
-const PNG = path.join(__dirname, "fixtures", "ocr_lines.png");
-
-/* Что нарисовано на картинке — то и должно прочитаться, слово в слово. */
-const WANT = [
-  "Диссеминированный туберкулёз лёгких",
-  "Рис. 7. Обзорная рентгенограмма",
-  "Бактериовыделение (МБТ+) подтверждено",
+/* Что нарисовано на картинке — то и должно прочитаться, слово в слово.
+   Два случая — две распознавалки: русский идёт «eslav», узбекская
+   кириллица — «cyrillic» (Ш4): её буквы қ ғ ҳ ў eslav не знает. */
+const CASES = [
+  { src: "RU", png: path.join(__dirname, "fixtures", "ocr_lines.png"), want: [
+    "Диссеминированный туберкулёз лёгких",
+    "Рис. 7. Обзорная рентгенограмма",
+    "Бактериовыделение (МБТ+) подтверждено",
+  ] },
+  { src: "UZ-CYRL", png: path.join(__dirname, "fixtures", "ocr_lines_uzc.png"), want: [
+    "Ўпка сили касаллигини аниқлаш",
+    "Қон таҳлили натижалари ҳақида",
+    "Ғўза ва буғдой ҳосилдорлиги",
+  ] },
+  /* Остальные языки группы «cyrillic» — по образцу на язык: кнопку им
+     даёт таблица REC, и обещание обязано быть проверено чтением, а не
+     только наличием букв в словаре. Картинки рисует tools/ocr_fixtures.py.
+     Таджикский и македонский этот замер НЕ прошли (ӣ→й, ӯ→ў, Ќ→К, Ѕ→S) —
+     кнопки им нет (`test_ocr_local.js`). */
+  { src: "KK", png: path.join(__dirname, "fixtures", "ocr_lines_kk.png"), want: [
+    "Өкпе ауруының белгілері және емі", "Әйелдер мен балаларға көмек"] },
+  { src: "KY", png: path.join(__dirname, "fixtures", "ocr_lines_ky.png"), want: [
+    "Өпкө оорусу жана дарылоо", "Жаңы ыкмалар жөнүндө"] },
+  { src: "MN", png: path.join(__dirname, "fixtures", "ocr_lines_mn.png"), want: [
+    "Эрүүл мэндийн яамны тушаал", "Өвчний шинж тэмдэг"] },
+  { src: "SR", png: path.join(__dirname, "fixtures", "ocr_lines_sr.png"), want: [
+    "Ђачки дом и љекарска њега", "Министарство здравља Србије"] },
 ];
 
 const fail = [];
@@ -67,8 +87,9 @@ const PAGE = `<!doctype html><html><head><meta charset="utf-8"></head><body>
 <script>
 var out = document.getElementById("out");
 function say(s) { out.textContent += "\\n" + s; }
-fetch("_ocr_lines.png").then(function (r) { return r.arrayBuffer(); })
-  .then(function (b) { return window.LocalOCR.read(b, "RU"); })
+var SRC = new URLSearchParams(location.search).get("src");
+fetch("_ocr_lines.png?src=" + SRC).then(function (r) { return r.arrayBuffer(); })
+  .then(function (b) { return window.LocalOCR.read(b, SRC); })
   .then(function (lines) {
     lines.forEach(function (l) { say("LINE " + l.conf + " " + l.text); });
     say("ГОТОВО");
@@ -82,13 +103,17 @@ const TYPES = { ".js": "text/javascript", ".png": "image/png", ".html": "text/ht
 
 const server = http.createServer((req, res) => {
   const url = req.url.split("?")[0];
-  let file;
+  const q = new URLSearchParams(req.url.split("?")[1] || "");
+  let file, own = false;
   if (url === "/_ocr.html") { res.writeHead(200, { "Content-Type": "text/html" }); return res.end(PAGE); }
-  if (url === "/_ocr_lines.png") file = PNG;
-  else file = path.join(WEB, url.replace(/^\/+/, ""));
+  if (url === "/_ocr_lines.png") {
+    const c = CASES.find(x => x.src === q.get("src"));
+    if (!c) { res.writeHead(404); return res.end(); }
+    file = c.png; own = true;
+  } else file = path.join(WEB, url.replace(/^\/+/, ""));
   /* Наружу отдаём только то, что лежит под frontend/ — сервер живёт
      секунды, но дыра в тесте остаётся дырой. */
-  if (file !== PNG && !path.resolve(file).startsWith(path.resolve(WEB))) {
+  if (!own && !path.resolve(file).startsWith(path.resolve(WEB))) {
     res.writeHead(403); return res.end();
   }
   fs.readFile(file, (e, data) => {
@@ -98,55 +123,65 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(0, "127.0.0.1", () => {
-  const port = server.address().port;
-  const profile = fs.mkdtempSync(path.join(os.tmpdir(), "ocrchrome-"));
-  /* Запуск ОБЯЗАН быть асинхронным. `spawnSync` держит тот же цикл событий,
-     на котором стоит наш сервер, — браузер уходит за страницей, сервер
-     ответить не может, и оба ждут друг друга до таймаута. Снаружи это
-     выглядит как «Chrome ничего не отдал». */
-  const proc = spawn(bin, [
-    "--headless=new", "--disable-gpu", "--no-sandbox",
-    "--no-first-run", "--no-default-browser-check",
-    "--disable-background-networking", "--disable-component-update",
-    "--user-data-dir=" + profile,
-    "--virtual-time-budget=180000", "--dump-dom",
-    `http://127.0.0.1:${port}/_ocr.html`,
-  ]);
-  let dom = "";
-  proc.stdout.on("data", (b) => { dom += b.toString("utf8"); });
-  const killer = setTimeout(() => { try { proc.kill(); } catch (e) { /* уже нет */ } }, 300000);
-  proc.on("close", () => {
-  clearTimeout(killer);
-  server.close();
-  try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { /* не наша беда */ }
-
-  /* Браузер не отдал НИЧЕГО — это «не смогли посмотреть», а не «прочитано
-     плохо»: такое бывает от политики машины, от обновлятора, от профиля.
-     Объявлять провалом чужую беду нельзя, молчать о ней — тоже. */
-  if (!dom.trim()) {
-    console.log("Браузер ничего не отдал — проверка не состоялась "
-      + "(это не провал чтения; попробуйте другой CHROME_PATH)");
-    process.exit(0);
-  }
-  /* Смотрим ТОЛЬКО в напечатанное страницей, а не во весь DOM: слова
-     «СБОЙ» и «ГОТОВО» стоят и в исходнике скрипта тут же рядом, и поиск
-     по всему документу находил бы их всегда. */
-  const pre = /<pre[^>]*>([\s\S]*?)<\/pre>/.exec(dom);
-  const said = pre ? pre[1] : "";
-  const lines = [...said.matchAll(/LINE ([\d.]+) (.*)/g)].map(m => m[2]);
-  const oops = /СБОЙ: ([^<\n]*)/.exec(said);
-  check(!oops, "чтение поднялось: исполнитель, модели и словарь доехали"
-    + (oops ? " — " + oops[1] : ""));
-  check(/ГОТОВО/.test(said), "чтение дошло до конца, а не повисло");
-  check(lines.length === WANT.length,
-    "строк прочитано: " + lines.length + " из " + WANT.length);
-  WANT.forEach((want, i) => {
-    check(lines[i] === want,
-      "строка " + (i + 1) + " прочитана слово в слово: " + JSON.stringify(lines[i] || null));
+/* Один случай — один запуск браузера. true — браузер ответил и проверки
+   прошли (или упали), false — браузер не отдал ничего. */
+function runCase(port, c) {
+  return new Promise((done) => {
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), "ocrchrome-"));
+    /* Запуск ОБЯЗАН быть асинхронным. `spawnSync` держит тот же цикл событий,
+       на котором стоит наш сервер, — браузер уходит за страницей, сервер
+       ответить не может, и оба ждут друг друга до таймаута. Снаружи это
+       выглядит как «Chrome ничего не отдал». */
+    const proc = spawn(bin, [
+      "--headless=new", "--disable-gpu", "--no-sandbox",
+      "--no-first-run", "--no-default-browser-check",
+      "--disable-background-networking", "--disable-component-update",
+      "--user-data-dir=" + profile,
+      "--virtual-time-budget=180000", "--dump-dom",
+      `http://127.0.0.1:${port}/_ocr.html?src=${encodeURIComponent(c.src)}`,
+    ]);
+    let dom = "";
+    proc.stdout.on("data", (b) => { dom += b.toString("utf8"); });
+    const killer = setTimeout(() => { try { proc.kill(); } catch (e) { /* уже нет */ } }, 300000);
+    proc.on("close", () => {
+      clearTimeout(killer);
+      try { fs.rmSync(profile, { recursive: true, force: true }); } catch (e) { /* не наша беда */ }
+      console.log("\n── " + c.src + " ──");
+      /* Браузер не отдал НИЧЕГО — это «не смогли посмотреть», а не «прочитано
+         плохо»: такое бывает от политики машины, от обновлятора, от профиля.
+         Объявлять провалом чужую беду нельзя, молчать о ней — тоже. */
+      if (!dom.trim()) {
+        console.log("Браузер ничего не отдал — проверка не состоялась "
+          + "(это не провал чтения; попробуйте другой CHROME_PATH)");
+        return done(false);
+      }
+      /* Смотрим ТОЛЬКО в напечатанное страницей, а не во весь DOM: слова
+         «СБОЙ» и «ГОТОВО» стоят и в исходнике скрипта тут же рядом, и поиск
+         по всему документу находил бы их всегда. */
+      const pre = /<pre[^>]*>([\s\S]*?)<\/pre>/.exec(dom);
+      const said = pre ? pre[1] : "";
+      const lines = [...said.matchAll(/LINE ([\d.]+) (.*)/g)].map(m => m[2]);
+      const oops = /СБОЙ: ([^<\n]*)/.exec(said);
+      check(!oops, "чтение поднялось: исполнитель, модели и словарь доехали"
+        + (oops ? " — " + oops[1] : ""));
+      check(/ГОТОВО/.test(said), "чтение дошло до конца, а не повисло");
+      check(lines.length === c.want.length,
+        "строк прочитано: " + lines.length + " из " + c.want.length);
+      c.want.forEach((want, i) => {
+        check(lines[i] === want,
+          "строка " + (i + 1) + " прочитана слово в слово: " + JSON.stringify(lines[i] || null));
+      });
+      done(true);
+    });
   });
+}
 
+server.listen(0, "127.0.0.1", async () => {
+  const port = server.address().port;
+  let ran = 0;
+  for (const c of CASES) { if (await runCase(port, c)) ran++; }
+  server.close();
+  if (!ran) process.exit(0);
   console.log("\n" + (fail.length ? "ПРОВАЛЕНО: " + fail.join("; ") : "ВСЁ ПРОШЛО"));
   process.exit(fail.length ? 1 : 0);
-  });
 });

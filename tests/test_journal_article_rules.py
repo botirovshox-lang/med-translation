@@ -269,7 +269,16 @@ print("=== Т36. Запись, помеченная прежней версие�
 rec4 = {"groupRule": 4, "blocks": [{"box": [153, 213, 310, 258], "rows": 2, "text": "AA Легкая степень БА"},
                                    {"box": [765, 214, 795, 233], "rows": 1, "skip": "noise"}]}
 check(main._regroup_wants(rec4), "многострочный блок записи правила 4 — перегруппировка нужна (разрез виден по пикселям)")
-check(not main._regroup_wants({"groupRule": 5, "blocks": rec4["blocks"]}), "записи правила 5 — не нужна")
+check(not main._regroup_wants({"groupRule": main.image_text.IMG_GROUP_RULE, "blocks": rec4["blocks"]}),
+      "записи нынешнего правила — не нужна")
+import numpy as _np
+img = _np.full((60, 300, 3), 255, dtype=_np.uint8)
+img[22:42, 5:12] = 60            # буква «A» соседней подписи оси слева
+img[26:38, 30:42] = (240, 130, 30)   # оранжевый квадрат ключа
+for x in range(50, 220, 14):
+    img[24:40, x:x + 9] = 90         # буквы подписи серии
+check(main.image_text.legend_key(img, [28, 20, 220, 44]) is not None,
+      "Ц14: ключ находится, даже когда левее в зоне поиска стоит буква соседней подписи")
 
 print("=== Ц13. Знак журнала ===")
 check(main._same_look("ЕСМ", "ECM") and not main._same_look("ЕСМ", "ESM"), "«ЕСМ» и «ECM» — одно на вид")

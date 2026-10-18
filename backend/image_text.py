@@ -1412,8 +1412,9 @@ def rhythm_gaps(arr, boxes: list) -> list:
 # её блоки (`groupRule`); прежняя — значит разбор картинок перегруппирует
 # их сам (`regroup_plan`, `main._regroup_rec`). 2 — ритм колонки, 3 — строки,
 # пропущенные детектором в ритме (`rhythm_gaps`), оба 16.10.2026.
-IMG_GROUP_RULE = 5       # 4 — Т36: строка с ключом легенды начинает свой блок (`split_plan`), 18.10.2026;
-#                          5 — то же для записей, помеченных 4 без разреза (`main._regroup_wants`)
+IMG_GROUP_RULE = 6       # 4 — Т36: строка с ключом легенды начинает свой блок (`split_plan`), 18.10.2026;
+#                          5 — то же для записей, помеченных 4 без разреза (`main._regroup_wants`);
+#                          6 — ключ — первая слева краска, похожая на ключ (Ц14), а не самая левая
 
 
 # Т36. Ключ легенды — закрашенный квадрат у левого края строки: сторона от
@@ -1455,7 +1456,22 @@ def legend_key(arr, box, bg=None):
     comps = sorted((st[i] for i in range(1, n) if st[i][4] >= 2), key=lambda c: c[0])
     if not comps:
         return None
-    c = comps[0]                                   # самая левая краска
+    # Ц14: ключ — первая слева краска, которая САМА похожа на ключ, а не просто
+    # самая левая: детектор начинает рамку строки на самом квадрате, и в зону
+    # поиска слева попадает буква соседней подписи оси («A» из «AA» перед
+    # «■ Среднетяжелая степень БА», боевой проект 105) — по ней ключ не находился.
+    for ki in range(min(len(comps), KEY_CANDIDATES)):
+        got = _key_from(comps, ki, rx0, ry0, x0, y0, y1, h, arr, ref, Wd)
+        if got is not None:
+            return got
+    return None
+
+
+KEY_CANDIDATES = 3
+
+
+def _key_from(comps, ki, rx0, ry0, x0, y0, y1, h, arr, ref, Wd):
+    c = comps[ki]
     cx, cy, cw_, ch_, area = (int(v) for v in c)
     # Ключ стоит В строке (центр по высоте внутри её рамки) и вплотную к её
     # тексту: столбец диаграммы или ячейка слева, задевшие область поиска,
@@ -1468,7 +1484,7 @@ def legend_key(arr, box, bg=None):
     if not (0.7 <= cw_ / float(ch_) <= 1.43) or area < KEY_FILL * cw_ * ch_:
         return None
     # Правее ключа — текст строки (краска ниже/выше его не в счёт).
-    right = [d for d in comps[1:] if cx + cw_ < d[0] <= cx + cw_ + KEY_TEXT_GAP * h]
+    right = [d for d in comps[ki + 1:] if cx + cw_ < d[0] <= cx + cw_ + KEY_TEXT_GAP * h]
     if not right:
         whole = arr[y0:y1, min(Wd - 1, rx0 + cx + cw_):min(Wd, rx0 + cx + cw_ + int(KEY_TEXT_GAP * h)), :3]
         if whole.size == 0 or not (_np.abs(whole.astype(_np.int16) - ref).max(axis=2) > KEY_INK).any():

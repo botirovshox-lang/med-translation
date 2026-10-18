@@ -18018,7 +18018,7 @@ def _regroup_wants(rec: dict) -> bool:
     blocks = rec.get("blocks") or []
     if image_text.regroup_plan(blocks):
         return True
-    if int(rec.get("groupRule") or 1) < 5 and any(
+    if int(rec.get("groupRule") or 1) < image_text.IMG_GROUP_RULE and any(
             int(b.get("rows") or 1) >= 2 and not b.get("skip") for b in blocks):
         # Т36: разрез по ключу легенды виден только по ПИКСЕЛЯМ (`_split_keyed`),
         # по геометрии его не предсказать. Без этого запись помечалась новой
@@ -18055,7 +18055,7 @@ def _regroup_rec(rec: dict, project: dict, dry: bool, blob: bytes = b"") -> int:
     """Перегруппировка сохранённых блоков по нынешним правилам: сперва разрез
     (Т36, `_split_keyed`), потом склейка (`_regroup_merge`). Ответ — сколько
     блоков разрезано и склеено."""
-    n = _split_keyed(rec, project, dry, blob) if int(rec.get("groupRule") or 1) < 5 else 0
+    n = _split_keyed(rec, project, dry, blob) if int(rec.get("groupRule") or 1) < image_text.IMG_GROUP_RULE else 0
     return n + _regroup_merge(rec, project, dry, blob)
 
 

@@ -121,6 +121,56 @@ ERASE_FILL_HULL = 0.25           # на какую долю строки от к
 _DESC = set("gjpqyQ,;()[]{}/|рудзфщцДЦЩ")
 # Строчные с выносным вверх (латиница, кириллица, греческий): по ним кегль
 # меряется высотой заглавной, а не высотой строчной.
+# Х23. Доля кегля у высоты прописной и выносных вверх (Noto, DejaVu,
+# Times — 0.70–0.76).
+CAP_SHARE = float(os.environ.get("PAINT_CAP_SHARE", "0.74"))
+_DESC_CACHE: dict = {}
+
+
+def has_descender(text: str) -> bool:
+    """Х23: есть ли в тексте буква с нижним выносом (g, p, у, д, ق…).
+    Решает сам шрифт (Noto Sans из репозитория, запасной — DejaVu):
+    рамка буквы опускается ниже базовой линии больше чем на `0.08` кегля.
+    Списка букв нет — работает для любой письменности, которую шрифт знает."""
+    chars = {ch for ch in (text or "") if ch.isalpha()}
+    if not chars:
+        return False
+    if all(ch in _DESC_CACHE for ch in chars):
+        return any(_DESC_CACHE[ch] for ch in chars)
+    try:
+        f = _DESC_CACHE.get("#font")
+        if f is None:
+            from PIL import ImageFont
+            fp = _ref_font_path()
+            if not fp:
+                return True
+            f = _DESC_CACHE["#font"] = ImageFont.truetype(fp, 100)
+        asc = f.getmetrics()[0]
+    except Exception:
+        return True                             # не знаем — прежний потолок
+    for ch in chars:
+        v = _DESC_CACHE.get(ch)
+        if v is None:
+            try:
+                bb = f.getbbox(ch)
+                v = bool(bb) and (bb[3] - asc) > 8
+            except Exception:
+                v = False
+            _DESC_CACHE[ch] = v
+        if v:
+            return True
+    return False
+
+
+def _ref_font_path() -> str:
+    base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "frontend", "vendor", "fonts", "sub")
+    for n in ("NotoSans-Regular.ttf", "DejaVuSans.ttf"):
+        q = os.path.join(base, n)
+        if os.path.exists(q):
+            return q
+    return ""
+
+
 _TALL = set("bdfhklt\u0431\u0434\u0444\u03b2\u03b4\u03b8\u03bb\u03be")
 
 
@@ -415,8 +465,17 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
             letter_em = min(letter, lr)
     em = letter_em / (0.73 if tall else 0.53)
     if flat_line:
-        # Кегль не больше высоты строки рамки детектора.
-        em = min(em, 1.05 * lh)
+        # Кегль не больше высоты строки рамки детектора. Х23: рамка строки
+        # БЕЗ нижних выносных («Results and discussion») — это высота
+        # прописной, около `CAP_SHARE` кегля, а не кегль целиком: потолок
+        # по ней занижал кегль на четверть, и обычный штрих мерился как
+        # полужирный (синтетика, 18.10.2026). Выносы — по шрифту, без списка.
+        # Только у письма с регистром: у иероглифов и арабицы «прописной»
+        # нет, знак занимает почти весь кегль — потолок прежний.
+        cased_src = any(ch.lower() != ch.upper() for ch in (src or ""))
+        cap = (1.02 * lh / CAP_SHARE if (cased_src and rows <= 1 and not has_descender(src))
+               else 1.05 * lh)
+        em = min(em, cap)
     out["em"] = float(em)
     if len(bands) >= 2:
         tops = [a for a, _b in bands]

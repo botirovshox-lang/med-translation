@@ -3353,6 +3353,7 @@ node tests/test_home_examples_browser.js                            # «Прим
 .venv/bin/python tests/test_hand_paint.py                            # перевод в фото абзаца: разделы Ф и Х справочника PDF
 .venv/bin/python tests/test_size_break.py                            # Х19: строка другого размера — разрыв при чтении
 .venv/bin/python tests/test_fidelity.py                              # замеры точности выгрузки картинки против оригинала
+.venv/bin/python tests/test_synth.py                                 # синтетические страницы: рецепты данными → раскраска → замеры (Х23)
 .venv/bin/python tests/test_doc_catalog.py                           # каталог элементов, правил и форматов; страница покрытия
 .venv/bin/python tests/test_paint_marks.py                           # Х20 печать/подпись не стираются, Х21 неразрывный пробел
 python tools/catalog_report.py                                       # docs/rules/catalog.md пересобрана из backend/doc_catalog

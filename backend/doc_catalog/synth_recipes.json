@@ -1,0 +1,190 @@
+{
+ "_about": "Рецепты синтетических страниц: из чего рисуется страница-оригинал, чем «переводится» (местная подмена слов с коэффициентом длины, без модели) и какие замеры должны быть чистыми. Читает backend/synth.py; прогон — tools/synth_pages.py (матрица) и tests/test_synth.py (несколько рецептов). Новый вид документа — новый рецепт, а не код. elements — id из elements.json, чтобы каталог видел, что вид прогоняется.",
+ "expansion": {
+  "_about": "длина перевода к оригиналу (localization: EN→DE +10–35%)",
+  "uz": 1.15,
+  "de": 1.3,
+  "ru": 1.1,
+  "en": 1.0,
+  "zh": 0.6,
+  "ar": 1.05,
+  "kk": 1.15
+ },
+ "alphabets": {
+  "latin": "abcdefghijklmnopqrstuvwxyz",
+  "cyrillic": "абвгдеёжзийклмнопрстуфхцчшщыэюя",
+  "han": "的一是在不了有和人这中大为上个国我以要他时来用们生到作地于出就分对成会可主发年动同工也能下过子说产种面而方后多定行学法所",
+  "arabic": "ابتثجحخدذرزسشصضطظعغفقكلمنهوي"
+ },
+ "script_of": {
+  "uz": "latin",
+  "de": "latin",
+  "en": "latin",
+  "ru": "cyrillic",
+  "kk": "cyrillic",
+  "zh": "han",
+  "ar": "arabic"
+ },
+ "spaceless": [
+  "han"
+ ],
+ "recipes": [
+  {
+   "id": "article-header",
+   "elements": [
+    "title",
+    "author",
+    "inline-icons"
+   ],
+   "size": [
+    1400,
+    360
+   ],
+   "bg": [
+    250,
+    250,
+    250
+   ],
+   "lines": [
+    {
+     "text": "Sleep quality, duration, and consistency are associated with",
+     "font": "NotoSerif-Regular.ttf",
+     "px": 42
+    },
+    {
+     "text": "better academic performance in college students",
+     "font": "NotoSerif-Regular.ttf",
+     "px": 42
+    },
+    {
+     "text": "Kana Okano1, Jakub R. Kaczmarzyk1, Neha Dave2 and Jeffrey C. Grossman3",
+     "font": "NotoSans-Regular.ttf",
+     "px": 20,
+     "icon": "orcid"
+    }
+   ],
+   "target": "uz",
+   "keep_names": true
+  },
+  {
+   "id": "body-paragraph",
+   "elements": [
+    "text"
+   ],
+   "size": [
+    1200,
+    300
+   ],
+   "bg": [
+    248,
+    246,
+    240
+   ],
+   "lines": [
+    {
+     "text": "The quick brown fox jumps over the lazy dog near the river bank",
+     "font": "NotoSerif-Regular.ttf",
+     "px": 28
+    },
+    {
+     "text": "while the patient waits for the results of the second test",
+     "font": "NotoSerif-Regular.ttf",
+     "px": 28
+    },
+    {
+     "text": "and the doctor writes down the dose of 5 mg per day.",
+     "font": "NotoSerif-Regular.ttf",
+     "px": 28
+    }
+   ],
+   "target": "de"
+  },
+  {
+   "id": "stamped-contract",
+   "elements": [
+    "stamp",
+    "text"
+   ],
+   "size": [
+    1300,
+    260
+   ],
+   "bg": [
+    250,
+    250,
+    250
+   ],
+   "lines": [
+    {
+     "text": "The parties have signed this agreement on the date below",
+     "font": "NotoSans-Regular.ttf",
+     "px": 34
+    }
+   ],
+   "stamp": {
+    "center": [
+     770,
+     112
+    ],
+    "r": 62,
+    "colour": [
+     40,
+     70,
+     190
+    ]
+   },
+   "target": "uz"
+  },
+  {
+   "id": "caption-on-tint",
+   "elements": [
+    "caption"
+   ],
+   "size": [
+    1100,
+    160
+   ],
+   "bg": [
+    235,
+    242,
+    250
+   ],
+   "lines": [
+    {
+     "text": "Figure 3. Distribution of sleep duration across the semester",
+     "font": "NotoSans-Regular.ttf",
+     "px": 26
+    }
+   ],
+   "target": "ru"
+  },
+  {
+   "id": "heading-colour",
+   "elements": [
+    "section-header"
+   ],
+   "size": [
+    1100,
+    140
+   ],
+   "bg": [
+    250,
+    250,
+    250
+   ],
+   "lines": [
+    {
+     "text": "Results and discussion",
+     "font": "NotoSans-Regular.ttf",
+     "px": 40,
+     "colour": [
+      180,
+      40,
+      40
+     ]
+    }
+   ],
+   "target": "uz"
+  }
+ ]
+}

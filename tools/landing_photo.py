@@ -28,7 +28,6 @@ import image_text  # noqa: E402
 from PIL import Image  # noqa: E402
 
 OUT = Path("/root/landing-media/out/photo")
-OUT.mkdir(parents=True, exist_ok=True)
 SRC = APP / "backend" / "data" / "sources"
 WIDTH = 1000          # как у прочих картинок /start/
 HAND_SHARE = 0.5      # = main.IMG_HAND_SHARE
@@ -93,13 +92,20 @@ def render(pid):
                       "src": (s.get("source") or "").strip()})
     obst = [list(b["box"]) for b in im.get("blocks") or [] if b.get("box") and (b.get("text") or "").strip()]
     out, rep = image_text.render_target(orig, items, obstacles=obst)
-    return orig, out, rep
+    return orig, out, rep, items
 
 
-for slide, langs in SLIDES.items():
+def main():
+    OUT.mkdir(parents=True, exist_ok=True)
+    for slide, langs in SLIDES.items():
+        _slide(slide, langs)
+    print("готово", OUT)
+
+
+def _slide(slide, langs):
     first = True
     for lang, pid in langs.items():
-        orig, out, rep = render(pid)
+        orig, out, rep, _items = render(pid)
         if first:
             src_lang = (doc("projects:%d" % pid) or {}).get("src", "src").lower()
             print(slide, "orig", src_lang, webp(orig, OUT / ("%s-%s.webp" % (slide, src_lang))))
@@ -109,4 +115,7 @@ for slide, langs in SLIDES.items():
             continue
         print(slide, lang, pid, webp(out, OUT / ("%s-%s.webp" % (slide, lang))),
               [{k: r.get(k) for k in ("ok", "fam", "erase", "over", "why")} for r in rep])
-print("готово", OUT)
+
+
+if __name__ == "__main__":
+    main()

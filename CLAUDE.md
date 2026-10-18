@@ -998,8 +998,10 @@
    по БЛОЧНЫМ тегам (`html_paragraphs`), строки PDF склеиваются в абзацы
    (`join_pdf_lines`), скан и картинки кладутся картинками (текст читает
    разбор надписей, платно, по кнопке). Что теряется, названо на файле
-   (`importKind`, `importNote`): раскладка Excel/PowerPoint обратно
-   не возвращается — выгружается Word. Оригинал лежит рядом с исходником
+   (`importKind`, `importNote`); Excel и PowerPoint возвращаются своим
+   файлом по слотам (инвариант 27), json/xml/po/yaml/rtf/odt — Word.
+   Что значит «тот же файл» для каждого формата — договор точности
+   `backend/doc_catalog/formats.json` (уровни T1–T4, замеры, потери). Оригинал лежит рядом с исходником
    (`{pid}.orig.<ext>`) для будущей выгрузки 1в1; `sourceSha` — отпечаток
    ОРИГИНАЛА, не собранного .docx. Разбор кэшируется по sha
    (`_parse_upload`): проба и загрузка идут подряд. Отказ формата —
@@ -3334,6 +3336,7 @@ node tests/test_home_photo_browser.js                               # карус
 node tests/test_home_examples_browser.js                            # «Примеры работ» на главной: стрелки, точки, язык
 .venv/bin/python tests/test_hand_paint.py                            # перевод в фото абзаца: разделы Ф и Х справочника PDF
 .venv/bin/python tests/test_size_break.py                            # Х19: строка другого размера — разрыв при чтении
+.venv/bin/python tests/test_fidelity.py                              # замеры точности выгрузки картинки против оригинала
 python tools/landing_build.py                                        # лендинг пересобран из landing/src/home.html
 .venv/bin/python tests/test_pdf_figures.py                           # рисунки книги доезжают до документа
 .venv/bin/python tests/test_pdf_layout_export.py                     # выгрузка PDF «как в оригинале»

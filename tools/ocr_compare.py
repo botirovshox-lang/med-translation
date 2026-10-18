@@ -46,14 +46,35 @@ def load_env(path="/etc/medcat/env"):
             os.environ[k] = v.strip().strip('"').strip("'")
 
 
+EXTRA_MODELS = [
+    {"id": "claude-opus-5-5", "label": "Claude Opus 5.5", "in": 4.00, "out": 20.00, "api": "anthropic",
+     "effort": "low", "cacheRead": 0.05, "cacheWrite": 1.25},
+    {"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5", "in": 2.00, "out": 10.00, "api": "anthropic",
+     "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25},
+]
+
+
+def _cost(main, mid):
+    """Потрачено на модель с начала процесса (учёт `_note_usage`)."""
+    leaf = ((main._USAGE_TOTAL or {}).get("models") or {}).get(mid) or {}
+    return float(leaf.get("cost") or 0.0), int(leaf.get("in") or 0), int(leaf.get("out") or 0)
+
+
 def main_():
     load_env()
     os.environ["MEDCAT_ROLE"] = "worker"          # миграции старта не пишут
     sys.path.insert(0, str(ROOT / "backend"))
     import main
-    pids = [int(x) for x in os.environ.get("OCR_CMP_PIDS", "90,74,78,83,2").split(",") if x.strip()]
+    # Модели, которых ещё нет в каталоге, — только на время замера (в каталог
+    # их вносит правка кода с рангом в model_ranks.json, а не этот инструмент).
+    for m in EXTRA_MODELS:
+        if m["id"] not in main._MODELS_BY_ID:
+            main.OPENAI_MODELS.append(m)
+            main._MODELS_BY_ID[m["id"]] = m
+    pids = [int(x) for x in os.environ.get("OCR_CMP_PIDS", "90,74,78,83,2,8").split(",") if x.strip()]
     per = int(os.environ.get("OCR_CMP_MAX", "15"))
-    models = [m for m in os.environ.get("OCR_CMP_MODELS", "gpt-4o,claude-sonnet-5,claude-opus-5").split(",") if m]
+    per_pid = {2: 60, 8: 30}
+    models = [m for m in os.environ.get("OCR_CMP_MODELS", "claude-sonnet-5,claude-sonnet-5-5,claude-opus-5,claude-opus-5-5").split(",") if m]
     out_dir = Path(os.environ.get("OCR_CMP_OUT", "/tmp/ocrcmp"))
     out_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -71,15 +92,16 @@ def main_():
             continue
         zf = zipfile.ZipFile(docx)
         taken = 0
+        cap = per_pid.get(pid, per)
         for rec in data.get("images") or []:
-            if taken >= per:
+            if taken >= cap:
                 break
             try:
                 blob = zf.read(rec["part"])
             except KeyError:
                 continue
             idx = [i for i, b in enumerate(rec.get("blocks") or [])
-                   if b.get("box") and not b.get("skip") and (b.get("text") or "").strip()][:per - taken]
+                   if b.get("box") and not b.get("skip") and (b.get("text") or "").strip()][:cap - taken]
             if not idx:
                 continue
             blocks = [rec["blocks"][i] for i in idx]
@@ -107,6 +129,9 @@ def main_():
             for r in res:
                 print("p%d %s %s: %.1f с на %d блоков" % (pid, Path(rec["part"]).name, r, res[r][2], len(idx)))
             taken += len(idx)
+    for m in models:
+        c, ti, to = _cost(main, m)
+        print("ЦЕНА %s: $%.4f (вход %d, выход %d токенов)" % (m, c, ti, to))
     (out_dir / "results.json").write_text(json.dumps(rows, ensure_ascii=False, indent=1), encoding="utf-8")
     print("блоков:", len(rows), "→", out_dir / "results.json")
 

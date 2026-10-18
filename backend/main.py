@@ -1643,7 +1643,11 @@ OPENAI_MODELS = [
     # входа (у Anthropic 0.1 и 1.25 при пятиминутном кэше — та же страница
     # цен). Поле ДАННЫХ модели, а не правило поставщика в коде: у модели без
     # него кэш считается по полной цене входа (`_usage_cost`), как и раньше.
-    {"id": "claude-opus-5",   "label": "Claude Opus 5",    "in": 5.00, "out": 25.00, "api": "anthropic", "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, флагман"},
+    # Opus 5.5: «размышление» не выключается (400 и на disabled, и на budget_tokens),
+    # обёртка его и не шлёт — только уровень усилия. Чтение надписей: замер
+    # tools/ocr_compare.py 18.10.2026 — ноль ошибок на 46 блоках (Sonnet 5 — ~10).
+    {"id": "claude-opus-5-5", "label": "Claude Opus 5.5", "in": 4.00, "out": 20.00, "api": "anthropic", "effort": "low", "cacheRead": 0.05, "cacheWrite": 1.25, "note": "Anthropic, флагман"},
+    {"id": "claude-opus-5",   "label": "Claude Opus 5",    "in": 5.00, "out": 25.00, "api": "anthropic", "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, флагман прежнего поколения"},
     {"id": "claude-sonnet-5", "label": "Claude Sonnet 5",  "in": 2.00, "out": 10.00, "api": "anthropic", "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, баланс качества и цены"},
     {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "in": 1.00, "out": 5.00, "api": "anthropic", "sampling": True, "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, быстрая"},
 ]

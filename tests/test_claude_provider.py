@@ -108,7 +108,7 @@ CLAUDE = [m for m in main.OPENAI_MODELS if m.get("api") == "anthropic"]
 
 print("(1) каталог")
 ids = {m["id"] for m in CLAUDE}
-check(ids == {"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"}, "модели Claude в каталоге: %s" % sorted(ids))
+check(ids == {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"}, "модели Claude в каталоге: %s" % sorted(ids))
 check(all(m["in"] > 0 and m["out"] > 0 for m in CLAUDE), "у каждой цена")
 check(all(main.model_rank(m["id"]) is not None for m in main.OPENAI_MODELS),
       "у КАЖДОЙ модели каталога есть ранг (иначе проверки перепокупаются)")

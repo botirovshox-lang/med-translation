@@ -12,7 +12,7 @@
     bash tools/prod_run.sh tools/landing_photo.py
 
 Результат — /root/landing-media/out/photo/<слайд>-<язык>.webp; затем
-скопировать в landing/start/media/ (scp) и закоммитить.
+скопировать в landing/media/ (scp) и закоммитить.
 Плитки «Книги» и «Сканы» на той же странице берут эти же картинки
 (`data-img` у плитки): своей копии у них нет — она отставала от правил.
 """

@@ -46,18 +46,24 @@
   укладка озвучки в тайминг, сборка копией видеопотока. Инвариант 38.
 - **`landing/`** — лендинг `click.simpletranslate.me`: статика без бэкенда,
   nginx-конфиг `deploy/nginx-click.conf` (отдельный файл в `sites-enabled/click`).
-  Источник правды — `landing/src/` (шаблон, стили, тело), собирает
+  Источник правды — ОДНА страница `landing/src/home.html` (бывшая /start/,
+  главная с 18.10.2026; `/start/` отвечает 301 на `/`), собирает
   `tools/landing_build.py` в `index.html`, `uz/index.html`, `en/index.html`,
-  `sitemap.xml`, `llms.txt`, `pricing.md`: FAQ-разметка выводится из ВИДИМЫХ
-  вопросов, дата и цены — одной константой в сборщике, переводы —
-  `landing/src/i18n/<код>.json` (ключ = русская строка, инвариант 35). Правишь текст — правь `src/`, поднимай
-  `UPDATED` и пересобирай; сторожит `tests/test_landing.py`. Отзывы на
-  странице — примеры, помеченные как примеры, до настоящих от тест-группы.
-  Индексация, Метрика, коды Вебмастера и Search Console, ключ IndexNow —
-  константы в начале сборщика (`INDEXABLE`, `METRIKA_ID` = 113660224 с
-  17.10.2026, …); `landing/start/index.html` сборщик НЕ собирает — код
-  счётчика вставлен туда руками той же строкой, сменишь номер — смени и там; robots.txt
-  и 404.html тоже собирает он. Ключевые слова — `docs/landing-keywords.md`.
+  `sitemap.xml`, `llms.txt`, `pricing.md`, `robots.txt`, `404.html`. Текст каждой
+  версии ПРЕДВАРИТЕЛЬНО переведён сборщиком словарём самой страницы
+  (`var UI = {ru,uz,en}` в её скрипте, ключи `data-t`/`data-th`/`data-ta`;
+  нет ключа на языке — сборка падает): поисковик видит ту же страницу, что
+  человек. Голова (title/description из `META`, canonical, hreflang, og,
+  JSON-LD с FAQPage из ВИДИМЫХ вопросов), Метрика и дата — из сборщика
+  (плейсхолдеры `__HEADSEO__`, `__METRIKA__`, `__LANG__`, `__DATE_*__`).
+  Язык страницы — её АДРЕС: переключатель — ссылки на /, /uz/, /en/.
+  Медиа примеров — `landing/media/` по абсолютному адресу `/media/…`.
+  Правишь текст — правь `home.html` (русский — в разметке, переводы — в
+  `UI`), поднимай `UPDATED` и пересобирай; сторожит `tests/test_landing.py`.
+  Отзывы на странице — образцы, помеченные как образцы, до настоящих от
+  тест-группы. Индексация, Метрика, коды Вебмастера и Search Console, ключ
+  IndexNow — константы в начале сборщика (`INDEXABLE`, `METRIKA_ID` =
+  113660224 с 17.10.2026, …). Ключевые слова — `docs/landing-keywords.md`.
   Форма перевода на первом экране — см. инвариант 35, «Форма на лендинге».
 - **`tools/after_run.py`** — отчёт после прогона: счётчики задачи, корзины разбора,
   состав следующего прогона и сравнение с прошлым снимком. Вызовов модели нет,
@@ -1709,12 +1715,12 @@
 35. **Первый час человека: лендинг на его языке, знакомство, инструкция,
    поддержка.** Четыре двери в сервис, и у каждой свой закон.
    **Лендинг — ТРИ ЯЗЫКА, и ключ словаря есть сама русская строка**
-   (`landing/src/i18n/<код>.json`, сборка `tools/landing_build.py`).
-   Тот же закон, что у словаря приложения (инвариант 17): на русском
-   сборка не подменяет ничего побитово, а забытый перевод РОНЯЕТ СБОРКУ,
-   а не показывает русскую строку среди узбекских. Языки ВЫВОДЯТСЯ
-   из имён файлов словаря (`en.json` → `en`), списка в коде нет: первый же
-   забытый язык собирался бы наполовину русским и не проверялся никогда.
+   (с 18.10.2026 — словарь `var UI` самой страницы `landing/src/home.html`,
+   сборка `tools/landing_build.py`, см. «Что здесь актуально»).
+   Забытый перевод РОНЯЕТ СБОРКУ, а не показывает русскую строку среди
+   узбекских. Языки ВЫВОДЯТСЯ из блоков словаря (`uz: {` → `uz`), списка
+   в коде нет. Описание ниже про `NO_TRANSLATE` и линзу — про прежнюю
+   главную (до 18.10.2026); линзы на нынешней нет.
    Русский лежит в КОРНЕ (на него ведут прежние ссылки, он же canonical),
    остальные — в своей папке (`/uz/`, `/en/`); у каждой страницы свой
    canonical, свой `@id` в схеме и `hreflang` на все прочие плюс
@@ -1902,8 +1908,8 @@
    поддержки не платная: написать в поддержку человек обязан мочь
    и на исчерпанном лимите (инвариант 15).
    Сторожат `tests/test_support.py`, `tests/test_onboarding_render.js`,
-   `tests/test_landing.py` (разделы 9–10) и `tests/test_landing_browser.js`
-   (линза в настоящем браузере).
+   `tests/test_landing.py` (разделы 9, 11–13), `tests/test_home_photo_browser.js`
+   и `tests/test_home_examples_browser.js` (примеры в настоящем браузере).
 
 36. **Приглашения: кто привёл клиента, тот получает страницы.** Правила
    счёта собраны в шапке `backend/referral.py` — читать её обязательно,
@@ -3310,7 +3316,6 @@ node tests/test_pricing_render.js                                    # экра�
 node tests/test_onboarding_render.js                                 # знакомство и виджет поддержки
 node tests/test_video_render.js                                      # мини-редактор видео и субтитры в кадре
 .venv/bin/python tests/test_frame_text.py                            # текст в кадре видео и качество распознавания речи
-node tests/test_landing_browser.js                                   # линза лендинга в НАСТОЯЩЕМ браузере (нет Chrome — пропустит)
 .venv/bin/python tests/test_support.py                               # поддержка (в т.ч. группа), знакомство, /tutorial
 .venv/bin/python tests/test_trial_excerpt.py                         # пробный фрагмент вместо 402 у пробной организации
 .venv/bin/python tests/test_referral.py                              # приглашения: ссылка, высшая точка, потолки
@@ -3325,9 +3330,10 @@ node tests/test_pay_render.js                                        # экра�
 .venv/bin/python tests/test_tts_engines.py                          # синтез: маршрут по языку, Azure, письмо, ошибки
 .venv/bin/python tests/test_landing.py                               # лендинг: три языка, hreflang, линза, форма, 404
 node tests/test_landing_handoff_browser.js                          # форма лендинга → файл в приложении, НАСТОЯЩИЙ Chrome
-node tests/test_start_photo_browser.js                              # карусель «Фото» на /start/: слайды, языки, картинки
+node tests/test_home_photo_browser.js                               # карусель «Фото» на главной: слайды, языки, картинки
+node tests/test_home_examples_browser.js                            # «Примеры работ» на главной: стрелки, точки, язык
 .venv/bin/python tests/test_hand_paint.py                            # перевод в фото абзаца: разделы Ф и Х справочника PDF
-python tools/landing_build.py                                        # лендинг пересобран из landing/src
+python tools/landing_build.py                                        # лендинг пересобран из landing/src/home.html
 .venv/bin/python tests/test_pdf_figures.py                           # рисунки книги доезжают до документа
 .venv/bin/python tests/test_pdf_layout_export.py                     # выгрузка PDF «как в оригинале»
 .venv/bin/python tests/test_pdf_rules_t.py                          # правила Т1–Т9, Т18 (сверка выгрузки 7)

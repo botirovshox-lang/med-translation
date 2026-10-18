@@ -1,28 +1,17 @@
 <!doctype html>
-<html lang="ru" class="nojs">
+<html lang="__LANG__" class="nojs">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SimpleTranslate: перевод на любой язык в один клик</title>
-<meta name="description" content="Книги, научные статьи, документы и видео с субтитрами. Загрузите файл, выберите язык и нажмите «Перевести».">
-<meta name="robots" content="noindex, follow">
-<link rel="canonical" href="https://click.simpletranslate.me/start/">
-<meta name="theme-color" content="#F2F5FA">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 64 64%22%3E%3Crect width=%2264%22 height=%2264%22 rx=%2216%22 fill=%22%230A5CF0%22/%3E%3Crect x=%2216%22 y=%2219%22 width=%2232%22 height=%225%22 rx=%222.5%22 fill=%22%23fff%22/%3E%3Crect x=%2216%22 y=%2230%22 width=%2232%22 height=%225%22 rx=%222.5%22 fill=%22%23fff%22/%3E%3Crect x=%2216%22 y=%2241%22 width=%2232%22 height=%225%22 rx=%222.5%22 fill=%22%232EE6D0%22/%3E%3C/svg%3E">
-<meta property="og:title" content="SimpleTranslate: перевод на любой язык в один клик">
-<meta property="og:description" content="Книги, научные статьи, документы и видео с субтитрами.">
-<meta property="og:image" content="https://click.simpletranslate.me/og.png">
+__HEADSEO__
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500&family=Manrope:wght@400;500;700;800&family=Unbounded:wght@500;600&display=swap" rel="stylesheet">
 <style>
-/* МАКЕТ страницы «Перевод в один клик» (будущий адрес: click.simpletranslate.me/start/).
-   Только облик и поведение: кнопка «Перевести» показывает окно-заглушку
-   вместо перехода в редактор (MOCK = true в скрипте). Всё, что нужно для
-   боевого выката, в design/start/BACKLOG.md. Примеры работ — настоящие: источники
-   из общественного достояния и CC, переведены боевой системой (design/start/BACKLOG.md, п. 9).
-   Отзывы придуманы для макета и помечены на странице как образцы (правило лендинга в CLAUDE.md). Языки (73) вписаны разово
-   из backend/languages.json; места под будущие кадры помечены IMG-SLOT. */
+/* Главная лендинга click.simpletranslate.me (с 18.10.2026; прежде — макет /start/).
+   Исходник один: собирает tools/landing_build.py в /, /uz/, /en/ (текст —
+   словарём UI ниже). Примеры работ — переводы боевой системы (источники —
+   в подписи под примерами). Отзывы — образцы, помеченные на странице. */
 :root {
   --canvas: #F2F5FA; --panel: #FBFCFE; --line: #DAE2EE; --line-2: #C5D0E0;
   --ink: #0B1324; --ink-2: #44516A; --ink-3: #6A778F;
@@ -73,12 +62,17 @@ button, select, input { font: inherit; color: inherit; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; font: 600 19px var(--fd); letter-spacing: -.01em; }
 .brand img { width: 34px; height: 34px; border-radius: 10px; }
 .top .sp { flex: 1; }
+.secnav { display: flex; gap: 22px; margin-right: 8px; }
+.secnav a { color: var(--ink-2); text-decoration: none; font-weight: 700; font-size: 15px; }
+.secnav a:hover { color: var(--accent); }
+section[id], [id="tr"] { scroll-margin-top: 96px; }
+@media (max-width: 1100px) { .secnav { display: none; } }
 .langs { display: flex; gap: 2px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 999px; }
-.langs button {
-  border: 0; background: none; cursor: pointer; min-height: 40px; padding: 0 14px;
+.langs a {
+  display: inline-flex; align-items: center; text-decoration: none; min-height: 40px; padding: 0 14px;
   border-radius: 999px; font-weight: 700; font-size: 15px; color: var(--ink-2);
 }
-.langs button[aria-pressed="true"] { background: var(--ink); color: #fff; }
+.langs a[aria-current="page"] { background: var(--ink); color: #fff; }
 .btn-ghost {
   display: inline-flex; align-items: center; min-height: 48px; padding: 0 20px; border-radius: 999px;
   border: 1.5px solid var(--line-2); text-decoration: none; font-weight: 700; font-size: 16px;
@@ -547,20 +541,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
 .stage .scan { transform: perspective(900px) rotateX(var(--tx, 0deg)) rotateY(var(--ty, 0deg)) rotate(-3deg); transition: transform .5s var(--ease); }
 
 /* Окно-заглушка макета вместо перехода в редактор */
-.mock { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 20px; background: rgba(11,19,36,.42); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
-.mock[hidden] { display: none; }
-.mock .box { width: min(520px, 100%); background: var(--panel); border-radius: 30px; padding: 34px 30px 30px; box-shadow: 0 30px 80px -20px rgba(11,19,36,.5); text-align: center; animation: pop .4s var(--ease); }
 @keyframes pop { from { opacity: 0; transform: translateY(14px) scale(.98); } }
-.mock .win { width: 190px; margin: 0 auto 22px; border-radius: 14px; border: 1px solid var(--line); background: var(--canvas); overflow: hidden; }
-.mock .win i { display: block; height: 22px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.mock .win div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 10px; }
-.mock .win b { height: 8px; border-radius: 8px; background: var(--line); }
-.mock .win b:nth-child(even) { background: var(--accent); opacity: .55; }
-.mock h3 { font: 600 26px/1.2 var(--fd); margin: 0 0 12px; }
-.mock .mf { font-weight: 800; font-size: 19px; margin: 0 0 6px; overflow-wrap: anywhere; }
-.mock .mp { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; color: var(--ink-2); margin: 0 0 18px; }
-.mock .mn { color: var(--ink-3); font-size: 16px; margin: 0 0 24px; }
-.mock .go { margin: 0; }
 
 /* Появление: только когда скрипт работает, иначе всё видно сразу. */
 .js .rv { opacity: 0; transform: translateY(22px); transition: opacity .9s var(--ease), transform .9s var(--ease); transition-delay: var(--d, 0s); }
@@ -582,7 +563,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   .top .wrap { min-height: 64px; gap: 10px; }
   .top #login { display: none; }
   .brand span { display: none; }
-  .langs button { padding: 0 10px; font-size: 14px; }
+  .langs a { padding: 0 10px; font-size: 14px; }
   .btn-ghost { min-height: 44px; padding: 0 14px; font-size: 15px; }
   .drop { flex-direction: column; text-align: center; min-height: 170px; }
   .chip, .other select { font-size: 17px; }
@@ -613,6 +594,43 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   .rev q { font-size: 19px; }
   .pbar .tm { display: none; }
 }
+
+/* Цены, вопросы, контакты — перенесены с прежней главной */
+.sub.key-answer { max-width: 62ch; }
+.answer { margin: 14px 0 0; color: var(--ink-2); font-size: 16px; line-height: 1.55; max-width: 52ch; }
+.tiers { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 20px; }
+.tier { position: relative; display: flex; flex-direction: column; gap: 14px; padding: 30px 28px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
+.tier.hot { border: 2px solid var(--accent); }
+.tier .tag { position: absolute; top: -13px; left: 24px; background: var(--accent); color: #fff; font: 700 13px var(--fb); padding: 4px 12px; border-radius: 999px; }
+.tier h3 { margin: 0; font: 600 24px var(--fd); }
+.tier .for { margin: 0; color: var(--ink-2); font-size: 16px; }
+.tier .price { margin: 4px 0; font-size: 16px; color: var(--ink-2); }
+.tier .price b { font: 600 40px/1 var(--fd); color: var(--ink); letter-spacing: -.02em; }
+.tier ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; flex: 1; }
+.tier li { display: flex; gap: 10px; align-items: flex-start; font-size: 16px; line-height: 1.45; }
+.tier li svg { flex: none; margin-top: 3px; color: var(--accent); }
+.tier .go, .tier .btn-ghost { justify-content: center; width: 100%; margin: 0; text-decoration: none; }
+.cmp-wrap { margin-top: 36px; overflow-x: auto; border-radius: var(--r); border: 1px solid var(--line); background: var(--panel); }
+.cmp { width: 100%; border-collapse: collapse; font-size: 15px; min-width: 640px; }
+.cmp caption { text-align: left; padding: 18px 20px 6px; font-weight: 800; font-size: 17px; }
+.cmp th, .cmp td { text-align: left; padding: 12px 20px; border-top: 1px solid var(--line); vertical-align: top; }
+.cmp thead th { color: var(--ink-3); font-weight: 700; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+.cmp td:nth-child(2) { font-weight: 700; color: var(--ink); }
+.faq-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.faq { padding: 26px 28px; border-radius: var(--r); background: var(--panel); border: 1px solid var(--line); }
+.faq h3 { margin: 0 0 10px; font: 700 19px/1.3 var(--fb); }
+.faq p { margin: 0; color: var(--ink-2); font-size: 16px; line-height: 1.6; }
+.contact { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 40px; align-items: start; }
+.contact .h2 { margin-bottom: 18px; }
+.contact .sub { margin: 0; }
+.contact-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border-radius: var(--r); border: 1px solid var(--line); background: var(--panel); }
+.contact-list li { display: flex; gap: 16px; padding: 16px 22px; border-top: 1px solid var(--line); font-size: 16px; }
+.contact-list li:first-child { border-top: 0; }
+.contact-list .k { flex: none; width: 110px; color: var(--ink-3); font-weight: 700; }
+.contact-list a { color: var(--accent); }
+footer .upd { color: var(--ink-3); font-size: 14px; width: 100%; }
+@media (max-width: 980px) { .tiers { grid-template-columns: minmax(0, 1fr); } .faq-list, .contact { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 640px) { .tier { padding: 24px 20px; } .faq { padding: 20px; } .contact-list li { flex-direction: column; gap: 4px; } .contact-list .k { width: auto; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .js .rv { opacity: 1; transform: none; }
@@ -621,9 +639,8 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   .track [aria-hidden="true"] { display: none; }
 }
 </style>
-<script>window.METRIKA_ID=113660224;(function(m,e,t,r,i,k,a){m[i]=m[i]||function(){(m[i].a=m[i].a||[]).push(arguments)};m[i].l=1*new Date();for(var j=0;j<document.scripts.length;j++){if(document.scripts[j].src===r){return;}}k=e.createElement(t),a=e.getElementsByTagName(t)[0],k.async=1,k.src=r,a.parentNode.insertBefore(k,a)})(window,document,"script","https://mc.yandex.ru/metrika/tag.js?id=113660224","ym");ym(113660224,"init",{ssr:true,webvisor:true,clickmap:true,ecommerce:"dataLayer",referrer:document.referrer,url:location.href,accurateTrackBounce:true,trackLinks:true});</script>
+__METRIKA__
 <script src="/track.js" defer></script>
-<noscript><div><img src="https://mc.yandex.ru/watch/113660224" style="position:absolute;left:-9999px" alt=""></div></noscript>
 </head>
 <body>
 <div class="env" aria-hidden="true"><i></i></div>
@@ -632,10 +649,11 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   <div class="wrap">
     <a class="brand" href="https://click.simpletranslate.me/"><svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0A5CF0"/><rect x="16" y="19" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="30" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="41" width="32" height="5" rx="2.5" fill="#2EE6D0"/></svg><span>SimpleTranslate</span></a>
     <div class="sp"></div>
+    <nav class="secnav" aria-label="Разделы" data-ta="aria-label:navAria"><a href="#pricing" data-t="navPrice">Цены</a><a href="#faq" data-t="navFaq">Вопросы</a><a href="#contact" data-t="navContact">Контакты</a></nav>
     <div class="langs" role="group" aria-label="Язык страницы" data-ta="aria-label:pageLang">
-      <button type="button" data-lang="ru" lang="ru" aria-pressed="true">Русский</button>
-      <button type="button" data-lang="uz" lang="uz" aria-pressed="false">O‘zbekcha</button>
-      <button type="button" data-lang="en" lang="en" aria-pressed="false">English</button>
+      <a href="/" hreflang="ru" data-lang="ru" lang="ru">Русский</a>
+      <a href="/uz/" hreflang="uz" data-lang="uz" lang="uz">O‘zbekcha</a>
+      <a href="/en/" hreflang="en" data-lang="en" lang="en">English</a>
     </div>
     <a class="btn-ghost" id="login" href="https://simpletranslate.me/" data-t="login">Войти</a>
   </div>
@@ -647,10 +665,12 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       <div class="h-text">
         <h1 class="rv" style="--d:.05s"><span data-t="h1a">Переведём на любой язык.</span> <span class="a" data-t="h1b">В один клик.</span></h1>
         <p class="lead rv" style="--d:.1s" data-t="lead">Книги, научные статьи, документы и видео с субтитрами.</p>
+        <p class="answer hero-answer rv" style="--d:.12s" data-t="heroAns">SimpleTranslate — это сервис перевода документов: Word, PDF, Excel, PowerPoint и сканы. Файл переводит языковая модель, каждую строку проверяет обратный перевод и сверка чисел, а обратно вы получаете документ в исходном оформлении. Цена — от $0.5 за страницу в 250 слов.</p>
       </div>
       <div class="h-form">
 
         <form class="tr rv" style="--d:.15s" id="tr" action="https://simpletranslate.me/" method="get" novalidate>
+          <input type="hidden" name="start" value="translate"><input type="hidden" name="lang" value="__LANG__">
           <p class="step"><b>01</b><span data-t="step1">Ваш файл</span></p>
           <label class="drop" id="tr-drop" for="tr-file">
             <input class="vh" type="file" id="tr-file" accept=".docx,.xlsx,.pptx,.odt,.ods,.odp,.pdf,.txt,.md,.markdown,.csv,.tsv,.html,.htm,.xml,.json,.rtf,.srt,.vtt,.po,.yml,.yaml,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif,.mp4,.m4v,.mov,.mkv,.webm,.avi,.wmv,.flv,.mpg,.mpeg,.ts,.mts,.m2ts,.3gp,.ogv,.mp3,.wav,.m4a,.aac,.ogg,.oga,.opus,.flac,.wma,.amr">
@@ -723,7 +743,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       <div class="tiles">
         <article class="tile rv" data-tile="book" data-src="RU" data-img="ph-book-">
           <div class="stage shot ts" aria-hidden="true" style="--ar:1000/564">
-            <img class="ts-o" src="media/ph-book-ru.webp" width="1000" height="564" alt="" loading="lazy" decoding="async">
+            <img class="ts-o" src="/media/ph-book-ru.webp" width="1000" height="564" alt="" loading="lazy" decoding="async">
             <img class="ts-n" width="1000" height="564" alt="" decoding="async">
             <span class="ts-beam" aria-hidden="true"></span>
           </div>
@@ -732,7 +752,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
         </article>
         <article class="tile rv" data-tile="article" data-src="EN" data-img="ph-paper-" style="--d:.08s">
           <div class="stage shot ts ts-page" aria-hidden="true" style="--ar:1000/527">
-            <img class="ts-o" src="media/ph-paper-en.webp" width="1000" height="527" alt="" loading="lazy" decoding="async">
+            <img class="ts-o" src="/media/ph-paper-en.webp" width="1000" height="527" alt="" loading="lazy" decoding="async">
             <img class="ts-n" width="1000" height="527" alt="" decoding="async">
             <span class="ts-beam" aria-hidden="true"></span>
           </div>
@@ -741,7 +761,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
         </article>
         <article class="tile rv" data-tile="video" data-src="EN">
           <div class="stage shot ts" id="tile-vid" style="--ar:900/506">
-            <img class="ts-o" src="media/tile-video-vision.webp" width="900" height="506" alt="" loading="lazy" decoding="async">
+            <img class="ts-o" src="/media/tile-video-vision.webp" width="900" height="506" alt="" loading="lazy" decoding="async">
             <img class="ts-n" width="900" height="506" alt="" decoding="async">
             <button type="button" class="play" id="tile-play" aria-controls="pane-video" aria-label="Смотреть видео с субтитрами" data-ta="aria-label:tileWatch"><svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg></button><span class="subt" aria-hidden="true"><span class="ts-sub" lang="en">Even during a trip as short as two weeks, vision changes occur for about a third of American astronauts.</span></span>
             <span class="ts-beam" aria-hidden="true"></span>
@@ -751,7 +771,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
         </article>
         <article class="tile rv" data-tile="scan" data-src="RU" data-img="ph-typed-" style="--d:.08s">
           <div class="stage shot ts" aria-hidden="true" style="--ar:1000/456">
-            <img class="ts-o" src="media/ph-typed-ru.webp" width="1000" height="456" alt="" loading="lazy" decoding="async">
+            <img class="ts-o" src="/media/ph-typed-ru.webp" width="1000" height="456" alt="" loading="lazy" decoding="async">
             <img class="ts-n" width="1000" height="456" alt="" decoding="async">
             <span class="ts-beam" aria-hidden="true"></span>
           </div>
@@ -803,7 +823,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
         <div class="pane" id="pane-video" data-k="video" role="tabpanel" aria-labelledby="tab-video" hidden>
           <div class="player" id="player">
             <div class="screen">
-              <video id="vp-v" src="media/vision-in-space.mp4" poster="media/vision-poster.webp" width="960" height="540" muted playsinline preload="none"></video>
+              <video id="vp-v" src="/media/vision-in-space.mp4" poster="/media/vision-poster.webp" width="960" height="540" muted playsinline preload="none"></video>
               <div class="subs"><p class="s2" id="sub2" hidden><span></span></p><p class="s1" id="sub1"><span></span></p></div>
               <button type="button" class="bigplay" id="vp-big" aria-label="Смотреть" data-ta="aria-label:play"><svg width="30" height="30" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13l11-6.5z"/></svg></button>
             </div>
@@ -827,7 +847,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
             <span class="sc-cap" id="sc-cap" aria-live="polite"></span>
             <button type="button" class="sc-nav" id="sc-next" data-ta="aria-label:scNext" aria-label="Следующее фото"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button>
           </div>
-          <div class="desk" id="desk"><img class="sc-o" id="sc-o" src="media/sign-ru.webp" width="1000" height="991" alt="Табличка в музее, оригинал" data-ta="alt:scAltO"><img class="sc-t" id="sc-t" src="media/sign-en.webp" width="1000" height="991" alt="" loading="lazy"><span class="sbeam"></span></div>
+          <div class="desk" id="desk"><img class="sc-o" id="sc-o" src="/media/sign-ru.webp" width="1000" height="991" alt="Табличка в музее, оригинал" data-ta="alt:scAltO"><img class="sc-t" id="sc-t" src="/media/sign-en.webp" width="1000" height="991" alt="" loading="lazy"><span class="sbeam"></span></div>
           <div class="sc-dots" id="sc-dots"></div>
           <button type="button" class="act" id="sc-btn"><span data-t="scanGo">Прочитать и перевести</span></button>
           <div class="ctrls"><span class="lbl" data-t="langInto">Перевод на:</span><span class="ctrls" id="sc-langs"></span></div>
@@ -884,11 +904,11 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
         </div>
       </div>
       <figure class="oc-real rv">
-        <video id="oc-video" controls muted playsinline preload="none" poster="media/one-click-poster.webp" width="1280" height="800">
-          <source src="media/one-click-real.mp4" type="video/mp4">
-          <track kind="captions" srclang="ru" label="Русский" src="media/one-click-ru.vtt">
-          <track kind="captions" srclang="uz" label="Oʻzbekcha" src="media/one-click-uz.vtt">
-          <track kind="captions" srclang="en" label="English" src="media/one-click-en.vtt">
+        <video id="oc-video" controls muted playsinline preload="none" poster="/media/one-click-poster.webp" width="1280" height="800">
+          <source src="/media/one-click-real.mp4" type="video/mp4">
+          <track kind="captions" srclang="ru" label="Русский" src="/media/one-click-ru.vtt">
+          <track kind="captions" srclang="uz" label="Oʻzbekcha" src="/media/one-click-uz.vtt">
+          <track kind="captions" srclang="en" label="English" src="/media/one-click-en.vtt">
         </video>
         <figcaption data-t="ocRealCap">Настоящая запись экрана: файл с сайта → готовый перевод. Без монтажа, ускорено только ожидание.</figcaption>
       </figure>
@@ -937,6 +957,96 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     </div>
   </section>
 
+  <section id="pricing" aria-labelledby="h-pricing">
+    <div class="wrap">
+      <h2 class="h2 rv" id="h-pricing" data-t="prH">Сколько стоит перевод?</h2>
+      <p class="sub rv key-answer" data-t="prLead">От $0.5 за страницу. Страница — 250 слов исходника, одна норма для всех языков. Смета считается по файлу до загрузки и фиксируется: сколько страниц, по какой цене, итого. Подписки нет, платите за объём.</p>
+      <div class="tiers">
+        <article class="tier rv" style="--d:0.00s">
+          <h3 data-t="prN0">Старт</h3>
+          <p class="for" data-t="prF0">Разовые документы: статья, справка, договор</p>
+          <p class="price"><b>$0.5</b> <span data-t="prPer">за страницу</span></p>
+          <ul>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI00">Перевод и полный набор автопроверок</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI01">Выгрузка в исходном формате 1 в 1</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI02">Оплата только за объём, без подписки</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI03">Один пользователь</span></li>
+          </ul>
+          <a class="btn-ghost" data-cta="price-start" href="https://simpletranslate.me/" target="_blank" rel="noopener" data-t="prB0">Начать со «Старта»</a>
+        </article>
+        <article class="tier rv hot" style="--d:0.08s">
+          <span class="tag" data-t="prHot">Рекомендуем</span>
+          <h3 data-t="prN1">Профи</h3>
+          <p class="for" data-t="prF1">Авторы, кафедры, бюро переводов</p>
+          <p class="price"><b>$0.9</b> <span data-t="prPer">за страницу</span></p>
+          <ul>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI10">Всё из «Старта»</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI11">Ревизия второй моделью: читает пару целиком</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI12">Свой глоссарий и память переводов</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI13">Команда до 5 человек с ролями</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI14">Приоритетная очередь</span></li>
+          </ul>
+          <a class="go" data-cta="price-pro" href="https://simpletranslate.me/" target="_blank" rel="noopener" data-t="prB1">Выбрать «Профи»</a>
+        </article>
+        <article class="tier rv" style="--d:0.16s">
+          <h3 data-t="prN2">Издательство</h3>
+          <p class="for" data-t="prF2">Книги, серии, учебники, регулярные объёмы</p>
+          <p class="price"><b data-t="prDeal">Договорная</b></p>
+          <ul>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI20">Всё из «Профи»</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI21">Отдельные словари на каждый проект</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI22">Чтение и перевод текста на картинках и сканах</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI23">Счёт на организацию, закрывающие документы</span></li>
+            <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI24">Персональный менеджер</span></li>
+          </ul>
+          <a class="btn-ghost" data-cta="price-volume" href="#contact" data-t="prB2">Обсудить объём</a>
+        </article>
+      </div>
+      <div class="cmp-wrap rv"><table class="cmp">
+        <caption data-t="cmpCap">Чем перевод с проверками отличается от бесплатного переводчика и бюро</caption>
+        <thead><tr><th scope="col" data-t="cmpH0">Что сравниваем</th><th scope="col">SimpleTranslate</th><th scope="col" data-t="cmpH2">Бесплатный онлайн-переводчик</th><th scope="col" data-t="cmpH3">Бюро переводов</th></tr></thead>
+        <tbody>
+          <tr><th scope="row" data-t="cmp00">Цена за страницу</th><td data-t="cmp01">от $0.5</td><td>$0</td><td data-t="cmp03">$8–20, ориентировочно</td></tr>
+          <tr><th scope="row" data-t="cmp10">Оформление файла</th><td data-t="cmp11">возвращается 1 в 1</td><td data-t="cmp12">теряется, текст копируют</td><td data-t="cmp13">верстальщик вручную</td></tr>
+          <tr><th scope="row" data-t="cmp20">Сверка чисел и единиц</th><td data-t="cmp21">каждая строка, без модели</td><td data-t="cmp22">нет</td><td data-t="cmp23">редактор, выборочно</td></tr>
+          <tr><th scope="row" data-t="cmp30">Единый термин по всей книге</th><td data-t="cmp31">глоссарий и память переводов</td><td data-t="cmp32">нет</td><td data-t="cmp33">зависит от редактора</td></tr>
+          <tr><th scope="row" data-t="cmp40">Проверка смысла</th><td data-t="cmp41">обратный перевод и вторая модель</td><td data-t="cmp42">нет</td><td data-t="cmp43">редактор</td></tr>
+          <tr><th scope="row" data-t="cmp50">Книга на 300 страниц</th><td data-t="cmp51">часы</td><td data-t="cmp52">минуты, без проверок</td><td data-t="cmp53">недели</td></tr>
+        </tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <section id="faq" aria-labelledby="h-faq">
+    <div class="wrap">
+      <h2 class="h2 rv" id="h-faq" data-t="faqH">Вопросы и ответы</h2>
+      <div class="faq-list">
+        <article class="faq rv"><h3 data-t="fq0">Какие форматы документов можно перевести?</h3><p data-t="fa0">Word (.docx), PDF, Excel, PowerPoint, HTML, текстовые файлы, картинки и сканы. Любой формат сначала превращается в .docx, переводится, а потом возвращается: Word, Excel, PowerPoint и текстовые файлы — в своём формате, PDF с текстовым слоем — как PDF, сканы и картинки — с перерисованными надписями. Что теряется при обратной сборке, названо на файле до оплаты.</p></article>
+        <article class="faq rv"><h3 data-t="fq1">Сохранится ли оформление документа?</h3><p data-t="fa1">Да. Перевод пишется в исходный файл, а не собирается заново: стили, таблицы, рисунки, колонтитулы и оглавление остаются на месте, номера страниц пересчитывает Word. Надписи на картинках читаются отдельно и переводятся поверх картинки, когда фон однороден; иначе перевод становится подписью под ней.</p></article>
+        <article class="faq rv"><h3 data-t="fq2">Как проверяется, что перевод точный?</h3><p data-t="fa2">Три проверки на каждой строке. Обратный перевод: текст переводится назад другой моделью и сравнивается с оригиналом. Числа, единицы, диапазоны и отрицания сверяются без модели, и такое расхождение сильнее любого мнения. Термины сверяются с глоссарием, а на тарифе «Профи» вторая модель читает пару целиком. Что не прошло, попадает в список вопросов, а не прячется в готовом файле.</p></article>
+        <article class="faq rv"><h3 data-t="fq3">Нужно ли знать язык перевода, чтобы проверить результат?</h3><p data-t="fa3">Нет. Сервис показывает, что читается обратно из перевода, на вашем языке, и подсвечивает расхождения с оригиналом с обеих сторон. Оценивать сам перевод не требуется: вы отвечаете только на вопросы, которые лежат на вашем языке. Спорную строку можно отдать коллеге в команде, который язык знает.</p></article>
+        <article class="faq rv"><h3 data-t="fq4">Как считается страница и цена?</h3><p data-t="fa4">Страница — 250 слов исходника, одна норма для всех языков; для письма без пробелов (китайский, японский) считаются знаки. Смета считается по файлу до загрузки и фиксируется: сколько страниц, по какой цене, итого. Повторная загрузка того же файла на ту же пару языков не списывается. Цена — от $0.5 за страницу на тарифе «Старт» и $0.9 на «Профи».</p></article>
+        <article class="faq rv"><h3 data-t="fq5">Что происходит с моими документами?</h3><p data-t="fa5">Текст документа уходит поставщикам языковых моделей (OpenAI и Anthropic, США) для перевода и проверок; это прямо сказано в политике персональных данных. Файлы хранятся в вашей организации и недоступны другим клиентам сервиса. Проект можно удалить вместе с файлами и экспортами в любой момент.</p></article>
+        <article class="faq rv"><h3 data-t="fq6">На какие языки переводите?</h3><p data-t="fa6">На любую пару из каталога языков сервиса: русский, узбекский, английский, немецкий, испанский, французский, китайский и другие. Интерфейс доступен на русском, узбекском и английском. Если для какой-то пары часть проверок молчит, сервис говорит об этом заранее, а не показывает выдуманную оценку.</p></article>
+        <article class="faq rv"><h3 data-t="fq7">Сколько времени занимает перевод?</h3><p data-t="fa7">Перевод и проверки идут на сервере без вашего участия: статья на 10 страниц готова за минуты, учебник на 300 страниц — за часы, а не за недели. Вкладку можно закрыть: прогон продолжится на сервере, а результат будет ждать в проекте вместе со списком вопросов, если они появились.</p></article>
+      </div>
+    </div>
+  </section>
+
+  <section id="contact" aria-labelledby="h-contact">
+    <div class="wrap contact">
+      <div>
+        <h2 class="h2 rv" id="h-contact" data-t="ctH">Как с нами связаться?</h2>
+        <p class="sub rv" data-t="ctLead">Отвечаем в рабочие часы по Ташкенту. Для объёмов от 500 страниц посчитаем смету и подготовим договор на организацию.</p>
+      </div>
+      <ul class="contact-list rv">
+        <li><span class="k" data-t="ctMail">Почта</span><a href="mailto:hello@simpletranslate.me">hello@simpletranslate.me</a></li>
+        <li><span class="k" data-t="ctSvc">Сервис</span><a href="https://simpletranslate.me" target="_blank" rel="noopener">simpletranslate.me</a></li>
+        <li><span class="k" data-t="ctOff">Офис</span><span data-t="ctCity">Ташкент, Узбекистан</span></li>
+        <li><span class="k" data-t="ctDocs">Документы</span><span><a href="https://simpletranslate.me/terms" target="_blank" rel="noopener" data-t="terms">Оферта</a> · <a href="https://simpletranslate.me/privacy" target="_blank" rel="noopener" data-t="privacy">Персональные данные</a></span></li>
+      </ul>
+    </div>
+  </section>
   <section id="go" style="padding-top:0">
     <div class="wrap">
       <div class="cta rv">
@@ -958,19 +1068,10 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     <a href="https://simpletranslate.me/terms" data-t="terms">Оферта</a>
     <a href="https://simpletranslate.me/privacy" data-t="privacy">Персональные данные</a>
     <a href="https://simpletranslate.me/" id="login2" data-t="login">Войти</a>
+    <span class="upd"><span data-t="updated">Последнее обновление:</span> <time datetime="__DATE_ISO__">__DATE_LOC__</time></span>
   </div>
 </footer>
 
-<div class="mock" id="mock" role="dialog" aria-modal="true" aria-labelledby="mock-h" hidden>
-  <div class="box">
-    <div class="win" aria-hidden="true"><i></i><div><b></b><b></b><b></b><b></b><b></b><b></b></div></div>
-    <h3 id="mock-h" data-t="mockH">Открываем редактор</h3>
-    <p class="mf" id="mock-file"></p>
-    <p class="mp"><span id="mock-src"></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg><span id="mock-tgt"></span></p>
-    <p class="mn" data-t="mockNote">Это макет. На сайте файл сразу откроется в редакторе с выбранными языками.</p>
-    <button type="button" class="go" id="mock-close" data-t="mockClose">Понятно</button>
-  </div>
-</div>
 
 <script>
 (function () {
@@ -981,7 +1082,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   /* Макет: «Перевести» открывает окно-заглушку, файл никуда не уходит.
      Боевая передача (фрейм /handoff) ниже уже написана и выключена этим
      флагом; включение и проверка: пункт 1 в design/start/BACKLOG.md. */
-  var MOCK = true;
+
   /* Потолки те же, что у frontend/js/handoff.js: больший файл приложение
      не примет, и честнее сказать это здесь, чем после входа. */
   var MAX_DOC = 32 * 1024 * 1024, MAX_MEDIA = 2.5 * 1024 * 1024 * 1024;
@@ -995,7 +1096,13 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
 
   var UI = {
     ru: {
-      title: "SimpleTranslate: перевод на любой язык в один клик",
+      bigAgain: "видео выберете в сервисе ещё раз",
+      navAria: "Разделы",
+      navContact: "Контакты",
+      navFaq: "Вопросы",
+      navPrice: "Цены",
+      prH: "Сколько стоит перевод?", prLead: "От $0.5 за страницу. Страница — 250 слов исходника, одна норма для всех языков. Смета считается по файлу до загрузки и фиксируется: сколько страниц, по какой цене, итого. Подписки нет, платите за объём.", prN0: "Старт", prF0: "Разовые документы: статья, справка, договор", prPer: "за страницу", prI00: "Перевод и полный набор автопроверок", prI01: "Выгрузка в исходном формате 1 в 1", prI02: "Оплата только за объём, без подписки", prI03: "Один пользователь", prB0: "Начать со «Старта»", prHot: "Рекомендуем", prN1: "Профи", prF1: "Авторы, кафедры, бюро переводов", prI10: "Всё из «Старта»", prI11: "Ревизия второй моделью: читает пару целиком", prI12: "Свой глоссарий и память переводов", prI13: "Команда до 5 человек с ролями", prI14: "Приоритетная очередь", prB1: "Выбрать «Профи»", prN2: "Издательство", prF2: "Книги, серии, учебники, регулярные объёмы", prDeal: "Договорная", prI20: "Всё из «Профи»", prI21: "Отдельные словари на каждый проект", prI22: "Чтение и перевод текста на картинках и сканах", prI23: "Счёт на организацию, закрывающие документы", prI24: "Персональный менеджер", prB2: "Обсудить объём", cmpCap: "Чем перевод с проверками отличается от бесплатного переводчика и бюро", cmpH0: "Что сравниваем", cmpH2: "Бесплатный онлайн-переводчик", cmpH3: "Бюро переводов", cmp00: "Цена за страницу", cmp01: "от $0.5", cmp03: "$8–20, ориентировочно", cmp10: "Оформление файла", cmp11: "возвращается 1 в 1", cmp12: "теряется, текст копируют", cmp13: "верстальщик вручную", cmp20: "Сверка чисел и единиц", cmp21: "каждая строка, без модели", cmp22: "нет", cmp23: "редактор, выборочно", cmp30: "Единый термин по всей книге", cmp31: "глоссарий и память переводов", cmp32: "нет", cmp33: "зависит от редактора", cmp40: "Проверка смысла", cmp41: "обратный перевод и вторая модель", cmp42: "нет", cmp43: "редактор", cmp50: "Книга на 300 страниц", cmp51: "часы", cmp52: "минуты, без проверок", cmp53: "недели", faqH: "Вопросы и ответы", fq0: "Какие форматы документов можно перевести?", fa0: "Word (.docx), PDF, Excel, PowerPoint, HTML, текстовые файлы, картинки и сканы. Любой формат сначала превращается в .docx, переводится, а потом возвращается: Word, Excel, PowerPoint и текстовые файлы — в своём формате, PDF с текстовым слоем — как PDF, сканы и картинки — с перерисованными надписями. Что теряется при обратной сборке, названо на файле до оплаты.", fq1: "Сохранится ли оформление документа?", fa1: "Да. Перевод пишется в исходный файл, а не собирается заново: стили, таблицы, рисунки, колонтитулы и оглавление остаются на месте, номера страниц пересчитывает Word. Надписи на картинках читаются отдельно и переводятся поверх картинки, когда фон однороден; иначе перевод становится подписью под ней.", fq2: "Как проверяется, что перевод точный?", fa2: "Три проверки на каждой строке. Обратный перевод: текст переводится назад другой моделью и сравнивается с оригиналом. Числа, единицы, диапазоны и отрицания сверяются без модели, и такое расхождение сильнее любого мнения. Термины сверяются с глоссарием, а на тарифе «Профи» вторая модель читает пару целиком. Что не прошло, попадает в список вопросов, а не прячется в готовом файле.", fq3: "Нужно ли знать язык перевода, чтобы проверить результат?", fa3: "Нет. Сервис показывает, что читается обратно из перевода, на вашем языке, и подсвечивает расхождения с оригиналом с обеих сторон. Оценивать сам перевод не требуется: вы отвечаете только на вопросы, которые лежат на вашем языке. Спорную строку можно отдать коллеге в команде, который язык знает.", fq4: "Как считается страница и цена?", fa4: "Страница — 250 слов исходника, одна норма для всех языков; для письма без пробелов (китайский, японский) считаются знаки. Смета считается по файлу до загрузки и фиксируется: сколько страниц, по какой цене, итого. Повторная загрузка того же файла на ту же пару языков не списывается. Цена — от $0.5 за страницу на тарифе «Старт» и $0.9 на «Профи».", fq5: "Что происходит с моими документами?", fa5: "Текст документа уходит поставщикам языковых моделей (OpenAI и Anthropic, США) для перевода и проверок; это прямо сказано в политике персональных данных. Файлы хранятся в вашей организации и недоступны другим клиентам сервиса. Проект можно удалить вместе с файлами и экспортами в любой момент.", fq6: "На какие языки переводите?", fa6: "На любую пару из каталога языков сервиса: русский, узбекский, английский, немецкий, испанский, французский, китайский и другие. Интерфейс доступен на русском, узбекском и английском. Если для какой-то пары часть проверок молчит, сервис говорит об этом заранее, а не показывает выдуманную оценку.", fq7: "Сколько времени занимает перевод?", fa7: "Перевод и проверки идут на сервере без вашего участия: статья на 10 страниц готова за минуты, учебник на 300 страниц — за часы, а не за недели. Вкладку можно закрыть: прогон продолжится на сервере, а результат будет ждать в проекте вместе со списком вопросов, если они появились.", ctH: "Как с нами связаться?", ctLead: "Отвечаем в рабочие часы по Ташкенту. Для объёмов от 500 страниц посчитаем смету и подготовим договор на организацию.", ctMail: "Почта", ctSvc: "Сервис", ctOff: "Офис", ctCity: "Ташкент, Узбекистан", ctDocs: "Документы", heroAns: "SimpleTranslate — это сервис перевода документов: Word, PDF, Excel, PowerPoint и сканы. Файл переводит языковая модель, каждую строку проверяет обратный перевод и сверка чисел, а обратно вы получаете документ в исходном оформлении. Цена — от $0.5 за страницу в 250 слов.", updated: "Последнее обновление:", 
+      title: "Перевод документов онлайн: Word, PDF | SimpleTranslate",
       pageLang: "Язык страницы", login: "Войти",
       h1a: "Переведём на любой язык.", h1b: "В один клик.",
       lead: "Книги, научные статьи, документы и видео с субтитрами.",
@@ -1016,38 +1123,46 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       g3: "Термины едины", g3s: "Одно слово переводится одинаково на всех страницах.",
       ctaH: "Попробуйте на своём файле", ctaBtn: "Перевести файл",
       about: "О сервисе", terms: "Оферта", privacy: "Персональные данные",
-      mockH: "Открываем редактор", mockNoFile: "Файл выберете в редакторе", mockClose: "Понятно",
-      mockNote: "Это макет. На сайте файл сразу откроется в редакторе с выбранными языками.",
       tr1: "Первая страница бесплатно", tr2: "Ваш файл закрыт от других", tr3: "Без подписки: платите за страницы", tr4: "Цифры сверяем автоматически", exH: "Примеры работ", exSub: "Нажимайте и смотрите.", sample: "Настоящий перевод", tabBook: "Книга", tabPaper: "Статья", tabVideo: "Видео", tabScan: "Фото", bookOpen: "Открыть книгу", bookNext: "Перелистнуть", bookClose: "Закрыть книгу", langInto: "Перевод на:", baOrig: "Оригинал", baTr: "Перевод", baBoth: "Сравнить", baHint: "Потяните ползунок", vidSubs: "Субтитры:", vidBoth: "Два языка", play: "Смотреть", pause: "Пауза", scanGo: "Прочитать и перевести", scanBack: "Показать оригинал", chkO: "Оригинал", chkRaw: "Перевод без проверки", chkFix: "После проверки", chkFound: "В оригинале 300, а не 30", chkOk: "Исправлено", chkBtn: "Проверить цифры", chkAgain: "Ещё раз", revH: "Что говорят о нас", revNote: "Образцы. Заменим на настоящие отзывы.", rev1n: "Дилноза Каримова", rev1i: "ДК", rev2n: "Рустам Юсупов", rev2i: "РЮ", rev3n: "Анна Ли", rev3i: "АЛ", rev1: "Перевела учебник на 300 страниц за один день. Таблицы остались на месте.", rev1r: "Доцент, Самарканд", rev2: "Субтитры к лекции на трёх языках. Студенты наконец всё понимают.", rev2r: "Методист, Бухара", rev3: "Перевела инструкцию к оборудованию: подписи на схемах тоже переведены, прямо на картинках.", rev3r: "Переводчик, Ташкент", tlOrig: "оригинал", tlMore: "Другие языки", scAltO: "Табличка в музее, оригинал", scAltT: "Та же табличка, перевод:", scCapSign: "Табличка в музее", scCapNote: "Конспект от руки", scCapTyped: "Машинопись, 1940 г.", scCapBook: "Книга, 1886 г.", scCapPaper: "Научная статья", scPrev: "Предыдущее фото", scNext: "Следующее фото", exPrev: "Предыдущий пример", exNext: "Следующий пример", vpPrev: "Предыдущее видео", vpNext: "Следующее видео", vpCapVision: "Зрение в космосе", vpCapTomato: "Помидоры на орбите", vpCapCoffee: "Кофе в невесомости", tileWatch: "Смотреть видео с субтитрами", ocH: "Один клик — дальше без вас", ocSub: "Выбрали файл и язык, нажали «Перевести». Пока идёт перевод, от вас ничего не нужно.", ocMore: "Ваших нажатий, пока идёт перевод", ocDropPh: "Перетащите файл сюда", ocFile: "Учебник.pdf", ocQ: "На какой язык?", ocL1: "English", ocLang: "O‘zbekcha (lotin)", ocS1: "Читаем файл и картинки", ocS2: "Переводим, термины — едино", ocS3: "Сверяем цифры и термины", ocS4: "Собираем файл в том же виде", ocFast: "Показано ускоренно", ocOut: "Учебник_UZ.pdf", ocDone: "Готово, в том же виде", ocDl: "Скачать", ocOne: "1 клик", ocYou: "Вы", ocY1: "Выбираете файл", ocY2: "Выбираете язык", ocY3: "Нажимаете «Перевести» — один раз", ocSvc: "Сервис, без вас", ocNote: "В первый раз — регистрация: почта, пароль и код из письма. Это минута.", ocAgain: "Показать ещё раз", ocRealCap: "Настоящая запись экрана: файл с сайта → готовый перевод. Без монтажа, ускорено только ожидание.", credits: "Все примеры переведены нашим сервисом. Источники: А. П. Чехов, «Толстый и тонкий» (1883) и фото разворота «Пёстрых рассказов» (1886) — общественное достояние, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Статья: K. Okano и др., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, лицензия <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Видео — NASA, общественное достояние; NASA не связано с сервисом: ScienceCasts «<a href=\"https://images.nasa.gov/details/317_VisionChangesInSpace\" target=\"_blank\" rel=\"noopener\">Vision Changes in Space</a>», фрагмент 26 с; «<a href=\"https://images.nasa.gov/details/How%20Do%20We%20Do%20Research%20in%20Zero%20Gravity\" target=\"_blank\" rel=\"noopener\">How Do We Do Research in Zero Gravity | We Asked a NASA Expert</a>», фрагмент 20 с; ScienceCasts «The Zero Gravity Coffee Cup», фрагмент 25 с. Документ на плитке «Сканы и фото»: справка о подготовке к открытию ВСХВ, 5 мая 1940 г., машинопись, Главархив Москвы, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; показан фрагмент с переводом. Фото таблички: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0. Конспект от руки: фото автора сервиса, публикуется с согласия автора."
     },
     uz: {
-      title: "SimpleTranslate: istalgan tilga bir bosishda tarjima",
+      bigAgain: "videoni xizmatda yana bir bor tanlaysiz",
+      navAria: "Boʻlimlar",
+      navContact: "Aloqa",
+      navFaq: "Savollar",
+      navPrice: "Narxlar",
+      prH: "Tarjima qancha turadi?", prLead: "Bet uchun $0.5 dan. Bet — asl matnning 250 soʻzi, barcha tillar uchun bitta meʼyor. Hisob-kitob fayl boʻyicha yuklashdan oldin qilinadi va qayd etiladi: nechta bet, qanday narxda, jami qancha. Obuna yoʻq, hajm uchun toʻlaysiz.", prN0: "Start", prF0: "Bir martalik hujjatlar: maqola, maʼlumotnoma, shartnoma", prPer: "bet uchun", prI00: "Tarjima va avtomatik tekshiruvlarning toʻliq toʻplami", prI01: "Asl formatda 1 ga 1 yuklab olish", prI02: "Faqat hajm uchun toʻlov, obunasiz", prI03: "Bitta foydalanuvchi", prB0: "«Start» bilan boshlash", prHot: "Tavsiya etamiz", prN1: "Profi", prF1: "Mualliflar, kafedralar, tarjima byurolari", prI10: "«Start»dagi hamma narsa", prI11: "Ikkinchi model bilan qayta koʻrik: juftlikni toʻliq oʻqiydi", prI12: "Oʻz lugʻati va tarjima xotirasi", prI13: "Rollari bilan 5 kishigacha jamoa", prI14: "Ustuvor navbat", prB1: "«Profi»ni tanlash", prN2: "Nashriyot", prF2: "Kitoblar, turkumlar, darsliklar, muntazam hajmlar", prDeal: "Kelishuv boʻyicha", prI20: "«Profi»dagi hamma narsa", prI21: "Har bir loyiha uchun alohida lugʻatlar", prI22: "Rasm va skanlardagi matnni oʻqish va tarjima qilish", prI23: "Tashkilotga hisob-faktura, yopuvchi hujjatlar", prI24: "Shaxsiy menejer", prB2: "Hajmni muhokama qilish", cmpCap: "Tekshiruvli tarjima bepul tarjimon va byurodan nimasi bilan farq qiladi", cmpH0: "Nimani solishtiramiz", cmpH2: "Bepul onlayn tarjimon", cmpH3: "Tarjima byurosi", cmp00: "Bet narxi", cmp01: "$0.5 dan", cmp03: "$8–20, taxminan", cmp10: "Fayl koʻrinishi", cmp11: "1 ga 1 qaytariladi", cmp12: "yoʻqoladi, matn koʻchiriladi", cmp13: "sahifalovchi qoʻlda", cmp20: "Sonlar va birliklarni solishtirish", cmp21: "har bir satr, modelsiz", cmp22: "yoʻq", cmp23: "muharrir, tanlab", cmp30: "Butun kitob boʻylab yagona atama", cmp31: "lugʻat va tarjima xotirasi", cmp32: "yoʻq", cmp33: "muharrirga bogʻliq", cmp40: "Maʼnoni tekshirish", cmp41: "teskari tarjima va ikkinchi model", cmp42: "yoʻq", cmp43: "muharrir", cmp50: "300 betlik kitob", cmp51: "soatlar", cmp52: "daqiqalar, tekshiruvsiz", cmp53: "haftalar", faqH: "Savol va javoblar", fq0: "Qaysi hujjat formatlarini tarjima qilish mumkin?", fa0: "Word (.docx), PDF, Excel, PowerPoint, HTML, matnli fayllar, rasm va skanlar. Har qanday format avval .docx ga aylantiriladi, tarjima qilinadi, soʻng qaytariladi: Word, Excel, PowerPoint va matnli fayllar — oʻz formatida, matn qatlamli PDF — PDF sifatida, skan va rasmlar — yozuvlari qayta chizilgan holda. Teskari yigʻishda nima yoʻqolishi toʻlovdan oldin fayl ustida aytiladi.", fq1: "Hujjat koʻrinishi saqlanadimi?", fa1: "Ha. Tarjima qaytadan yigʻilmaydi, balki asl faylga yoziladi: uslublar, jadvallar, rasmlar, kolontitullar va mundarija oʻz oʻrnida qoladi, bet raqamlarini Word qayta hisoblaydi. Rasmlardagi yozuvlar alohida oʻqiladi va fon bir xil boʻlganda rasm ustiga tarjima qilinadi; aks holda tarjima uning ostidagi izohga aylanadi.", fq2: "Tarjimaning aniqligi qanday tekshiriladi?", fa2: "Har bir satrda uchta tekshiruv. Teskari tarjima: matn boshqa model tomonidan orqaga tarjima qilinadi va asl matn bilan solishtiriladi. Sonlar, birliklar, oraliqlar va inkorlar modelsiz solishtiriladi, bunday nomuvofiqlik esa har qanday fikrdan kuchliroq. Atamalar lugʻat bilan solishtiriladi, «Profi» tarifida esa ikkinchi model juftlikni toʻliq oʻqiydi. Oʻtmagan narsa tayyor fayl ichida yashirinmaydi, savollar roʻyxatiga tushadi.", fq3: "Natijani tekshirish uchun tarjima tilini bilish kerakmi?", fa3: "Yoʻq. Xizmat tarjimadan teskari oʻqiladigan narsani sizning tilingizda koʻrsatadi va asl matndan farqlarni ikkala tomonda ham ajratib beradi. Tarjimaning oʻzini baholash talab qilinmaydi: siz faqat oʻz tilingizdagi savollarga javob berasiz. Bahsli satrni tilni biladigan jamoadoshingizga berish mumkin.", fq4: "Bet va narx qanday hisoblanadi?", fa4: "Bet — asl matnning 250 soʻzi, barcha tillar uchun bitta meʼyor; probelsiz yozuv (xitoy, yapon) uchun belgilar sanaladi. Hisob-kitob fayl boʻyicha yuklashdan oldin qilinadi va qayd etiladi: nechta bet, qanday narxda, jami qancha. Oʻsha faylni oʻsha til juftligiga qayta yuklash uchun hisobdan yechilmaydi. Narxi — «Start» tarifida bet uchun $0.5 dan, «Profi»da $0.9.", fq5: "Mening hujjatlarim bilan nima boʻladi?", fa5: "Hujjat matni tarjima va tekshiruvlar uchun til modellari yetkazib beruvchilariga (OpenAI va Anthropic, AQSH) yuboriladi; bu shaxsiy maʼlumotlar siyosatida ochiq aytilgan. Fayllar tashkilotingizda saqlanadi va xizmatning boshqa mijozlari uchun yopiq. Loyihani fayllari va eksportlari bilan birga istalgan vaqtda oʻchirish mumkin.", fq6: "Qaysi tillarga tarjima qilasiz?", fa6: "Xizmat til katalogidagi istalgan juftlikka: rus, oʻzbek, ingliz, nemis, ispan, fransuz, xitoy va boshqalar. Interfeys rus, oʻzbek va ingliz tillarida mavjud. Agar biror juftlik uchun tekshiruvlarning bir qismi jim tursa, xizmat buni oldindan aytadi va oʻylab topilgan bahoni koʻrsatmaydi.", fq7: "Tarjima qancha vaqt oladi?", fa7: "Tarjima va tekshiruvlar sizning ishtirokingizsiz serverda bajariladi: 10 betlik maqola bir necha daqiqada, 300 betlik darslik haftalarda emas, soatlarda tayyor boʻladi. Sahifani yopishingiz mumkin: ish serverda davom etadi, natija esa savollar roʻyxati bilan birga loyihada kutib turadi.", ctH: "Biz bilan qanday bogʻlanish mumkin?", ctLead: "Toshkent vaqti boʻyicha ish soatlarida javob beramiz. 500 betdan ortiq hajmlar uchun hisob-kitob qilamiz va tashkilotga shartnoma tayyorlaymiz.", ctMail: "Pochta", ctSvc: "Xizmat", ctOff: "Ofis", ctCity: "Toshkent, Oʻzbekiston", ctDocs: "Hujjatlar", heroAns: "SimpleTranslate — bu hujjatlarni tarjima qilish xizmati: Word, PDF, Excel, PowerPoint va skanlar. Faylni til modeli tarjima qiladi, har bir satrni teskari tarjima va sonlarni solishtirish tekshiradi, siz esa hujjatni asl koʻrinishida qaytarib olasiz. Narxi — 250 soʻzlik bet uchun $0.5 dan.", updated: "Oxirgi yangilanish:", 
+      title: "Hujjatlarni onlayn tarjima qilish | SimpleTranslate",
       pageLang: "Sahifa tili", login: "Kirish",
       h1a: "Istalgan tilga tarjima qilamiz.", h1b: "Bir bosishda.",
       lead: "Kitoblar, ilmiy maqolalar, hujjatlar va subtitrli videolar.",
       step1: "Faylingiz", dropT: "Faylni shu yerga torting", dropS: "yoki tanlash uchun bosing", dropTt: "Faylni tanlang", dropSt: "Shu yerni bosing",
       dropF: "Hujjatlar 32 MB gacha, video 2,5 GB gacha", change: "Almashtirish uchun bosing",
-      step2: "Qaysi tilga?", other: "Boshqa til", popular: "Ko‘p so‘raladigan", all: "Barcha tillar",
-      srcLabel: "Fayl tili:", srcChange: "o‘zgartirish", go: "Tarjima qilish", free: "Birinchi bet bepul",
+      step2: "Qaysi tilga?", other: "Boshqa til", popular: "Koʻp soʻraladigan", all: "Barcha tillar",
+      srcLabel: "Fayl tili:", srcChange: "oʻzgartirish", go: "Tarjima qilish", free: "Birinchi bet bepul",
       eTgt: "Qaysi tilga tarjima qilishni tanlang.", eSame: "Fayl tili va tarjima tili bir xil.",
       eBig: "Fayl juda katta: hujjatlar 32 MB gacha, video 2,5 GB gacha.", eBusy: "Muharrir ochilmoqda…",
       docName: "Ilmiy maqola", docKind: "Jonli misol", keep: "Raqamlar va birliklar joyida",
-      whatH: "Nimani tarjima qilamiz", t1: "Kitoblar", t1s: "To‘liq, bobma-bob", t2: "Ilmiy maqolalar", t2s: "Formulalar va raqamlar joyida",
-      t3: "Video", t3s: "Tayyor subtitrlar bilan", t4: "Skan va rasmlar", t4s: "Rasmdagi matnni ham o‘qiymiz",
+      whatH: "Nimani tarjima qilamiz", t1: "Kitoblar", t1s: "Toʻliq, bobma-bob", t2: "Ilmiy maqolalar", t2s: "Formulalar va raqamlar joyida",
+      t3: "Video", t3s: "Tayyor subtitrlar bilan", t4: "Skan va rasmlar", t4s: "Rasmdagi matnni ham oʻqiymiz",
       langsH: "Dunyoning istalgan tili", langsN: "til", langsSub: "Keraklisini bosing va boshlaymiz.",
-      s2s: "Ro‘yxatdagi istalgani",
-      s3s: "Asl nusxadagi ko‘rinishda",
-      getsH: "Siz nimaga ega bo‘lasiz", g1: "Asl nusxadagi ko‘rinish", g1s: "Jadvallar, rasmlar va shriftlar o‘z joyida.",
+      s2s: "Roʻyxatdagi istalgani",
+      s3s: "Asl nusxadagi koʻrinishda",
+      getsH: "Siz nimaga ega boʻlasiz", g1: "Asl nusxadagi koʻrinish", g1s: "Jadvallar, rasmlar va shriftlar oʻz joyida.",
       g2: "Raqamlar tekshirilgan", g2s: "Har bir son va birlikni asl nusxa bilan solishtiramiz.",
-      g3: "Atamalar bir xil", g3s: "Bitta so‘z barcha betlarda bir xil tarjima qilinadi.",
-      ctaH: "O‘z faylingizda sinab ko‘ring", ctaBtn: "Faylni tarjima qilish",
-      about: "Xizmat haqida", terms: "Oferta", privacy: "Shaxsiy ma'lumotlar",
-      mockH: "Muharrir ochilmoqda", mockNoFile: "Faylni muharrirda tanlaysiz", mockClose: "Tushunarli",
-      mockNote: "Bu maket. Saytda fayl tanlangan tillar bilan darhol muharrirda ochiladi.",
-      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun to‘lov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va ko‘ring.", sample: "Haqiqiy tarjima", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Ko‘rish", pause: "Pauza", scanGo: "O‘qish va tarjima qilish", scanBack: "Asl nusxani ko‘rsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Ma’ruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Uskuna yoʻriqnomasini tarjima qildim: chizmalardagi yozuvlar ham rasmning oʻzida tarjima qilindi.", rev3r: "Tarjimon, Toshkent", tlOrig: "asl nusxa", tlMore: "Boshqa tillar", scAltO: "Muzeydagi lavha, asl nusxa", scAltT: "Oʻsha lavha, tarjima:", scCapSign: "Muzeydagi lavha", scCapNote: "Qoʻlda yozilgan konspekt", scCapTyped: "Mashinkada yozilgan hujjat, 1940", scCapBook: "Kitob, 1886", scCapPaper: "Ilmiy maqola", scPrev: "Oldingi rasm", scNext: "Keyingi rasm", exPrev: "Oldingi namuna", exNext: "Keyingi namuna", vpPrev: "Oldingi video", vpNext: "Keyingi video", vpCapVision: "Kosmosda koʻrish", vpCapTomato: "Orbitadagi pomidorlar", vpCapCoffee: "Vaznsizlikda qahva", tileWatch: "Subtitrli videoni koʻrish", ocH: "Bir marta bosing — qolganini xizmat qiladi", ocSub: "Fayl va tilni tanladingiz, «Tarjima qilish»ni bosdingiz. Tarjima ketayotganda sizdan hech narsa talab qilinmaydi.", ocMore: "Tarjima paytida bosishlaringiz", ocDropPh: "Faylni shu yerga torting", ocFile: "Darslik.pdf", ocQ: "Qaysi tilga?", ocL1: "Русский", ocLang: "English", ocS1: "Fayl va rasmlarni oʻqiymiz", ocS2: "Atamalarni bir xil saqlab tarjima qilamiz", ocS3: "Raqam va atamalarni tekshiramiz", ocS4: "Faylni asl koʻrinishida yigʻamiz", ocFast: "Tezlashtirib koʻrsatilgan", ocOut: "Darslik_EN.pdf", ocDone: "Tayyor, asl koʻrinishida", ocDl: "Yuklab olish", ocOne: "1 bosish", ocYou: "Siz", ocY1: "Faylni tanlaysiz", ocY2: "Tilni tanlaysiz", ocY3: "«Tarjima qilish»ni bosasiz — bir marta", ocSvc: "Xizmat, sizsiz", ocNote: "Birinchi marta — roʻyxatdan oʻtish: pochta, parol va xatdagi kod. Bir daqiqa.", ocAgain: "Yana koʻrsatish", ocRealCap: "Haqiqiy ekran yozuvi: saytdagi fayl → tayyor tarjima. Montajsiz, faqat kutish tezlashtirilgan.", credits: "Barcha misollarni xizmatimiz tarjima qilgan. Manbalar: A. P. Chexov, «Semiz va ozgʻin» (1883) va «Rang-barang hikoyalar» (1886) kitobi sahifalari surati — jamoat mulki, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Maqola: K. Okano va boshq., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, litsenziya <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Videolar — NASA, jamoat mulki; NASA xizmatga aloqador emas: ScienceCasts «<a href=\"https://images.nasa.gov/details/317_VisionChangesInSpace\" target=\"_blank\" rel=\"noopener\">Vision Changes in Space</a>», 26 soniyalik parcha; «<a href=\"https://images.nasa.gov/details/How%20Do%20We%20Do%20Research%20in%20Zero%20Gravity\" target=\"_blank\" rel=\"noopener\">How Do We Do Research in Zero Gravity | We Asked a NASA Expert</a>», 20 soniyalik parcha; ScienceCasts «The Zero Gravity Coffee Cup», 25 soniyalik parcha. «Skan va rasmlar» plitkasidagi hujjat: Butunittifoq qishloq xoʻjaligi koʻrgazmasini ochishga tayyorgarlik haqida maʼlumotnoma, 1940-yil 5-may, mashinkada yozilgan, Moskva Bosh arxivi, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Lavha surati: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0. Qoʻlda yozilgan konspekt: xizmat muallifining surati, uning roziligi bilan eʼlon qilinadi."
+      g3: "Atamalar bir xil", g3s: "Bitta soʻz barcha betlarda bir xil tarjima qilinadi.",
+      ctaH: "Oʻz faylingizda sinab koʻring", ctaBtn: "Faylni tarjima qilish",
+      about: "Xizmat haqida", terms: "Oferta", privacy: "Shaxsiy maʼlumotlar",
+      tr1: "Birinchi bet bepul", tr2: "Faylingiz boshqalardan yopiq", tr3: "Obunasiz: faqat betlar uchun toʻlov", tr4: "Raqamlar avtomatik tekshiriladi", exH: "Ishlarimizdan namunalar", exSub: "Bosing va koʻring.", sample: "Haqiqiy tarjima", tabBook: "Kitob", tabPaper: "Maqola", tabVideo: "Video", tabScan: "Rasm", bookOpen: "Kitobni ochish", bookNext: "Varaqlash", bookClose: "Kitobni yopish", langInto: "Tarjima tili:", baOrig: "Asl nusxa", baTr: "Tarjima", baBoth: "Solishtirish", baHint: "Slayderni torting", vidSubs: "Subtitrlar:", vidBoth: "Ikki til", play: "Koʻrish", pause: "Pauza", scanGo: "Oʻqish va tarjima qilish", scanBack: "Asl nusxani koʻrsatish", chkO: "Asl nusxa", chkRaw: "Tekshiruvsiz tarjima", chkFix: "Tekshiruvdan keyin", chkFound: "Asl nusxada 30 emas, 300", chkOk: "Tuzatildi", chkBtn: "Raqamlarni tekshirish", chkAgain: "Yana bir bor", revH: "Biz haqimizda fikrlar", revNote: "Namunalar. Haqiqiy fikrlar bilan almashtiramiz.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "300 betlik darslikni bir kunda tarjima qildim. Jadvallar joyida qoldi.", rev1r: "Dotsent, Samarqand", rev2: "Maʼruzaga uch tilda subtitrlar. Talabalar endi hammasini tushunishadi.", rev2r: "Metodist, Buxoro", rev3: "Uskuna yoʻriqnomasini tarjima qildim: chizmalardagi yozuvlar ham rasmning oʻzida tarjima qilindi.", rev3r: "Tarjimon, Toshkent", tlOrig: "asl nusxa", tlMore: "Boshqa tillar", scAltO: "Muzeydagi lavha, asl nusxa", scAltT: "Oʻsha lavha, tarjima:", scCapSign: "Muzeydagi lavha", scCapNote: "Qoʻlda yozilgan konspekt", scCapTyped: "Mashinkada yozilgan hujjat, 1940", scCapBook: "Kitob, 1886", scCapPaper: "Ilmiy maqola", scPrev: "Oldingi rasm", scNext: "Keyingi rasm", exPrev: "Oldingi namuna", exNext: "Keyingi namuna", vpPrev: "Oldingi video", vpNext: "Keyingi video", vpCapVision: "Kosmosda koʻrish", vpCapTomato: "Orbitadagi pomidorlar", vpCapCoffee: "Vaznsizlikda qahva", tileWatch: "Subtitrli videoni koʻrish", ocH: "Bir marta bosing — qolganini xizmat qiladi", ocSub: "Fayl va tilni tanladingiz, «Tarjima qilish»ni bosdingiz. Tarjima ketayotganda sizdan hech narsa talab qilinmaydi.", ocMore: "Tarjima paytida bosishlaringiz", ocDropPh: "Faylni shu yerga torting", ocFile: "Darslik.pdf", ocQ: "Qaysi tilga?", ocL1: "Русский", ocLang: "English", ocS1: "Fayl va rasmlarni oʻqiymiz", ocS2: "Atamalarni bir xil saqlab tarjima qilamiz", ocS3: "Raqam va atamalarni tekshiramiz", ocS4: "Faylni asl koʻrinishida yigʻamiz", ocFast: "Tezlashtirib koʻrsatilgan", ocOut: "Darslik_EN.pdf", ocDone: "Tayyor, asl koʻrinishida", ocDl: "Yuklab olish", ocOne: "1 bosish", ocYou: "Siz", ocY1: "Faylni tanlaysiz", ocY2: "Tilni tanlaysiz", ocY3: "«Tarjima qilish»ni bosasiz — bir marta", ocSvc: "Xizmat, sizsiz", ocNote: "Birinchi marta — roʻyxatdan oʻtish: pochta, parol va xatdagi kod. Bir daqiqa.", ocAgain: "Yana koʻrsatish", ocRealCap: "Haqiqiy ekran yozuvi: saytdagi fayl → tayyor tarjima. Montajsiz, faqat kutish tezlashtirilgan.", credits: "Barcha misollarni xizmatimiz tarjima qilgan. Manbalar: A. P. Chexov, «Semiz va ozgʻin» (1883) va «Rang-barang hikoyalar» (1886) kitobi sahifalari surati — jamoat mulki, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Maqola: K. Okano va boshq., «Sleep quality, duration, and consistency are associated with better academic performance in college students», npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, litsenziya <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Videolar — NASA, jamoat mulki; NASA xizmatga aloqador emas: ScienceCasts «<a href=\"https://images.nasa.gov/details/317_VisionChangesInSpace\" target=\"_blank\" rel=\"noopener\">Vision Changes in Space</a>», 26 soniyalik parcha; «<a href=\"https://images.nasa.gov/details/How%20Do%20We%20Do%20Research%20in%20Zero%20Gravity\" target=\"_blank\" rel=\"noopener\">How Do We Do Research in Zero Gravity | We Asked a NASA Expert</a>», 20 soniyalik parcha; ScienceCasts «The Zero Gravity Coffee Cup», 25 soniyalik parcha. «Skan va rasmlar» plitkasidagi hujjat: Butunittifoq qishloq xoʻjaligi koʻrgazmasini ochishga tayyorgarlik haqida maʼlumotnoma, 1940-yil 5-may, mashinkada yozilgan, Moskva Bosh arxivi, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; tarjimasi bilan parcha koʻrsatilgan. Lavha surati: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0. Qoʻlda yozilgan konspekt: xizmat muallifining surati, uning roziligi bilan eʼlon qilinadi."
     },
     en: {
-      title: "SimpleTranslate: translate into any language in one click",
+      bigAgain: "you will pick the video again in the service",
+      navAria: "Sections",
+      navContact: "Contact",
+      navFaq: "FAQ",
+      navPrice: "Pricing",
+      prH: "How much does a translation cost?", prLead: "From $0.5 per page. A page is 250 words of the source, one standard for every language. The estimate is calculated from the file before the upload and then fixed: how many pages, at what price, and the total. There is no subscription — you pay for the volume.", prN0: "Start", prF0: "One-off documents: an article, a certificate, a contract", prPer: "per page", prI00: "Translation and the full set of automatic checks", prI01: "Export in the original format, one to one", prI02: "Pay for the volume only, no subscription", prI03: "One user", prB0: "Begin with Start", prHot: "Recommended", prN1: "Pro", prF1: "Authors, university departments, translation agencies", prI10: "Everything in Start", prI11: "Review by a second model: it reads the whole pair", prI12: "Your own glossary and translation memory", prI13: "A team of up to 5 people with roles", prI14: "Priority queue", prB1: "Choose Pro", prN2: "Publisher", prF2: "Books, series, textbooks, regular volumes", prDeal: "By agreement", prI20: "Everything in Pro", prI21: "Separate glossaries for each project", prI22: "Reading and translating text inside images and scans", prI23: "An invoice to the company with closing documents", prI24: "A personal manager", prB2: "Discuss the volume", cmpCap: "How a checked translation differs from a free translator and from an agency", cmpH0: "What we compare", cmpH2: "Free online translator", cmpH3: "Translation agency", cmp00: "Price per page", cmp01: "from $0.5", cmp03: "$8–20, approximately", cmp10: "File layout", cmp11: "comes back one to one", cmp12: "lost, the text is copied out", cmp13: "a designer redoes it by hand", cmp20: "Checking numbers and units", cmp21: "every line, without a model", cmp22: "no", cmp23: "an editor, selectively", cmp30: "One term across the whole book", cmp31: "glossary and translation memory", cmp32: "no", cmp33: "depends on the editor", cmp40: "Checking the meaning", cmp41: "back-translation and a second model", cmp42: "no", cmp43: "an editor", cmp50: "A 300-page book", cmp51: "hours", cmp52: "minutes, with no checks", cmp53: "weeks", faqH: "Questions and answers", fq0: "Which document formats can be translated?", fa0: "Word (.docx), PDF, Excel, PowerPoint, HTML, text files, images and scans. Every format is first converted to .docx, translated, and then returned: Word, Excel, PowerPoint and text files in their own format, a PDF with a text layer as a PDF, scans and images with their captions redrawn. Whatever is lost on the way back is stated on the file before you pay.", fq1: "Will the document layout be preserved?", fa1: "Yes. The translation is written into the original file rather than assembled from scratch: styles, tables, figures, headers and the table of contents stay in place, and Word recomputes the page numbers. Captions inside images are read separately and painted over the image when the background is uniform; otherwise the translation becomes a caption beneath it.", fq2: "How is the translation checked for accuracy?", fa2: "Three checks on every line. The back-translation: the text is translated back by a different model and compared with the source. Numbers, units, ranges and negations are compared without a model, and a discrepancy of that kind outweighs any opinion. Terms are checked against the glossary, and on the Pro plan a second model reads the whole pair. Whatever fails ends up in a list of questions instead of hiding inside a finished file.", fq3: "Do I need to know the target language to check the result?", fa3: "No. The service shows you what reads back out of the translation, in your own language, and highlights the differences from the source on both sides. You are not asked to judge the translation itself: you only answer questions that are written in a language you know. A disputed line can be handed to a teammate who does know the language.", fq4: "How are a page and the price calculated?", fa4: "A page is 250 words of the source, one standard for every language; for scripts without spaces (Chinese, Japanese) characters are counted instead. The estimate is calculated from the file before the upload and then fixed: how many pages, at what price, and the total. Uploading the same file again for the same language pair is not charged. The price is from $0.5 per page on Start and $0.9 on Pro.", fq5: "What happens to my documents?", fa5: "The document text goes to the language model providers (OpenAI and Anthropic, USA) for translation and checks; the privacy policy says so plainly. Files are stored in your organization and are closed to the service's other clients. You can delete a project together with its files and exports at any time.", fq6: "Which languages do you translate into?", fa6: "Into any pair from the service language catalogue: Russian, Uzbek, English, German, Spanish, French, Chinese and others. The interface is available in Russian, Uzbek and English. If some of the checks stay silent for a given pair, the service says so in advance instead of showing an invented score.", fq7: "How long does a translation take?", fa7: "Translation and the checks run on the server without you: a 10-page article is ready in minutes, a 300-page textbook in hours rather than weeks. You can close the tab: the run continues on the server, and the result waits in the project together with a list of questions, if any came up.", ctH: "How can you reach us?", ctLead: "We reply during Tashkent business hours. For volumes from 500 pages we will prepare an estimate and a contract for your organisation.", ctMail: "Email", ctSvc: "Service", ctOff: "Office", ctCity: "Tashkent, Uzbekistan", ctDocs: "Documents", heroAns: "SimpleTranslate is a document translation service: Word, PDF, Excel, PowerPoint and scans. A language model translates the file, every line is checked by a back-translation and a comparison of the numbers, and you get the document back in its original layout. The price starts at $0.5 per 250-word page.", updated: "Last updated:", 
+      title: "Document Translation Online, Same Layout | SimpleTranslate",
       pageLang: "Page language", login: "Log in",
       h1a: "We translate into any language.", h1b: "In one click.",
       lead: "Books, research papers, documents and videos with subtitles.",
@@ -1068,8 +1183,6 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       g3: "Consistent terms", g3s: "One word is translated the same way on every page.",
       ctaH: "Try it on your own file", ctaBtn: "Translate a file",
       about: "About", terms: "Terms", privacy: "Privacy",
-      mockH: "Opening the editor", mockNoFile: "You will pick the file in the editor", mockClose: "Got it",
-      mockNote: "This is a mockup. On the live site, the file opens in the editor right away with the languages you picked.",
       tr1: "First page free", tr2: "Your file stays private", tr3: "No subscription: pay per page", tr4: "Numbers checked automatically", exH: "Examples of our work", exSub: "Tap and see.", sample: "Real translation", tabBook: "Book", tabPaper: "Paper", tabVideo: "Video", tabScan: "Photo", bookOpen: "Open the book", bookNext: "Turn the page", bookClose: "Close the book", langInto: "Translated into:", baOrig: "Original", baTr: "Translation", baBoth: "Compare", baHint: "Drag the slider", vidSubs: "Subtitles:", vidBoth: "Two languages", play: "Play", pause: "Pause", scanGo: "Read and translate", scanBack: "Show the original", chkO: "Original", chkRaw: "Unchecked translation", chkFix: "After the check", chkFound: "The original says 300, not 30", chkOk: "Fixed", chkBtn: "Check the numbers", chkAgain: "Once more", revH: "What people say", revNote: "Samples. We will replace them with real reviews.", rev1n: "Dilnoza Karimova", rev1i: "DK", rev2n: "Rustam Yusupov", rev2i: "RY", rev3n: "Anna Li", rev3i: "AL", rev1: "I translated a 300-page textbook in one day. The tables stayed in place.", rev1r: "Associate professor, Samarkand", rev2: "Lecture subtitles in three languages. Students finally understand everything.", rev2r: "Curriculum specialist, Bukhara", rev3: "I translated an equipment manual: even the labels on the diagrams were translated, right on the images.", rev3r: "Translator, Tashkent", tlOrig: "original", tlMore: "Other languages", scAltO: "A museum sign, original", scAltT: "The same sign, translated into", scCapSign: "Museum sign", scCapNote: "Handwritten notes", scCapTyped: "Typewritten memo, 1940", scCapBook: "Book, 1886", scCapPaper: "Research paper", scPrev: "Previous photo", scNext: "Next photo", exPrev: "Previous example", exNext: "Next example", vpPrev: "Previous video", vpNext: "Next video", vpCapVision: "Vision in space", vpCapTomato: "Tomatoes in orbit", vpCapCoffee: "Coffee in zero gravity", tileWatch: "Watch the video with subtitles", ocH: "One click — the rest is on us", ocSub: "Pick a file and a language, press “Translate”. While it translates, nothing more is needed from you.", ocMore: "Your clicks while it translates", ocDropPh: "Drop your file here", ocFile: "Textbook.pdf", ocQ: "Into which language?", ocL1: "Русский", ocLang: "O‘zbekcha (lotin)", ocS1: "Reading the file and images", ocS2: "Translating, terms kept consistent", ocS3: "Checking numbers and terms", ocS4: "Rebuilding the file as it was", ocFast: "Shown sped up", ocOut: "Textbook_UZ.pdf", ocDone: "Done, same layout", ocDl: "Download", ocOne: "1 click", ocYou: "You", ocY1: "Pick a file", ocY2: "Pick a language", ocY3: "Press “Translate” — once", ocSvc: "The service, without you", ocNote: "The first time you sign up: email, password and a code from the letter. It takes a minute.", ocAgain: "Show again", ocRealCap: "A real screen recording: a file from the website → a finished translation. No editing; only the wait is sped up.", credits: "Every example was translated by our service. Sources: A. P. Chekhov, “The Fat and the Thin” (1883), and a photo of a spread of “Motley Stories” (1886) — public domain, <a href=\"https://commons.wikimedia.org/wiki/File:Chekhov_Smert_chinovnika_Pyostrye_rasskazy_1886.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>. Paper: K. Okano et al., “Sleep quality, duration, and consistency are associated with better academic performance in college students”, npj Science of Learning 4:16 (2019), <a href=\"https://doi.org/10.1038/s41539-019-0055-z\" target=\"_blank\" rel=\"noopener\">doi:10.1038/s41539-019-0055-z</a>, licensed <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Videos — NASA, public domain; NASA is not affiliated with the service: ScienceCasts “<a href=\"https://images.nasa.gov/details/317_VisionChangesInSpace\" target=\"_blank\" rel=\"noopener\">Vision Changes in Space</a>”, a 26-second excerpt; “<a href=\"https://images.nasa.gov/details/How%20Do%20We%20Do%20Research%20in%20Zero%20Gravity\" target=\"_blank\" rel=\"noopener\">How Do We Do Research in Zero Gravity | We Asked a NASA Expert</a>”, a 20-second excerpt; ScienceCasts “The Zero Gravity Coffee Cup”, a 25-second excerpt. Document on the “Scans and photos” tile: a memo on preparations for opening the All-Union Agricultural Exhibition, 5 May 1940, typewritten, Moscow Main Archive, <a href=\"https://commons.wikimedia.org/wiki/File:VSKHV_document_May_1940.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, <a href=\"https://creativecommons.org/licenses/by/4.0/\" target=\"_blank\" rel=\"noopener\">CC BY 4.0</a>; an excerpt is shown with its translation. Sign photo: <a href=\"https://commons.wikimedia.org/wiki/File:Lada_vaz_2105_spec_rpd.jpg\" target=\"_blank\" rel=\"noopener\">Wikimedia Commons</a>, CC0. Handwritten notes: a photo by the author of the service, published with the author’s consent."
     }
   };
@@ -1123,13 +1236,13 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
 
   /* ---------- Язык страницы ---------- */
   function pickLang() {
+    /* Язык страницы задаёт её адрес (сборщик пишет его в <html lang>):
+       текст уже на нём, и поисковик видит ровно то, что человек. ?lang=
+       остаётся ручной просьбой — так ведут старые ссылки /start/?lang=uz. */
     var q = (new URLSearchParams(location.search).get("lang") || "").toLowerCase();
     if (UI[q]) return q;
-    try { var s = localStorage.getItem("mct-start-lang"); if (UI[s]) return s; } catch (e) { /* хранилище закрыто */ }
-    var nav = (navigator.languages || [navigator.language || ""]).join(",").toLowerCase();
-    if (/(^|,)uz/.test(nav)) return "uz";
-    if (/(^|,)(ru|be|kk|ky|tg|uk)/.test(nav)) return "ru";
-    return /(^|,)en/.test(nav) ? "en" : "ru";
+    var h = (document.documentElement.getAttribute("lang") || "").toLowerCase();
+    return UI[h] ? h : "ru";
   }
   function fillOptions(sel, first, popular) {
     var keep = sel.value;
@@ -1173,8 +1286,14 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     [].slice.call(document.querySelectorAll("[data-ta]")).forEach(function (el) {
       var p = el.getAttribute("data-ta").split(":"); el.setAttribute(p[0], t(p[1]));
     });
-    [].slice.call(document.querySelectorAll(".langs button")).forEach(function (b) {
-      b.setAttribute("aria-pressed", b.getAttribute("data-lang") === lang ? "true" : "false");
+    /* Язык страницы — это её АДРЕС (/, /uz/, /en/): ссылки ведут туда,
+       текущая отмечена; ?lang= сохраняется, если пришёл. */
+    [].slice.call(document.querySelectorAll(".langs a")).forEach(function (b) {
+      if (b.getAttribute("data-lang") === lang) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+      /* Метки адреса (приглашение ?ref=, utm) едут и на другой язык. */
+      var q = new URLSearchParams(location.search); q.delete("lang");
+      var base = b.getAttribute("href").split("?")[0];
+      b.setAttribute("href", base + (q.toString() ? "?" + q.toString() : ""));
     });
     var loginUrl = APP + "/?lang=" + lang;
     $("login").href = loginUrl; $("login2").href = loginUrl;
@@ -1188,9 +1307,6 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     demoReset();
     langHooks.forEach(function (f) { f(); });
   }
-  [].slice.call(document.querySelectorAll(".langs button")).forEach(function (b) {
-    b.addEventListener("click", function () { applyLang(b.getAttribute("data-lang"), true); });
-  });
 
   /* ---------- Выбор языка перевода ---------- */
   function syncTarget() {
@@ -1257,16 +1373,21 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
       });
     });
   }
+  function ymGoal(g) { try { if (window.ym && window.METRIKA_ID) window.ym(window.METRIKA_ID, "reachGoal", g); } catch (e) { /* нет счётчика */ } }
+  /* Файл больше, чем приложение принимает через фрейм (frontend/js/handoff.js,
+     MAX_BYTES), — обычно видео: его человек выберет в сервисе ещё раз.
+     Сказать это ДО нажатия, а не оставить его без файла молча. */
+  var HANDOFF_MAX = 32 * 1024 * 1024;
   function pick(f) {
     if (!f) return;
     if (f.size > limitFor(f.name)) { picked = null; drop.classList.remove("has"); say("eBig"); return; }
-    picked = f; say("");
+    picked = f; say(""); ymGoal("tr_file");
     nameEl.textContent = f.name;
-    hintEl.textContent = fmtSize(f.size) + " · " + t("change");
+    hintEl.textContent = fmtSize(f.size) + " · " + (f.size > HANDOFF_MAX ? t("bigAgain") : t("change"));
     drop.classList.add("has");
     $("doc-name").textContent = f.name;
     $("doc-name").parentNode.parentNode.querySelector(".fi").textContent = (f.name.split(".").pop() || "").slice(0, 4).toUpperCase();
-    if (!MOCK) ensureFrame();
+    ensureFrame();
   }
   fileIn.addEventListener("change", function () { pick(fileIn.files && fileIn.files[0]); });
   ["dragenter", "dragover"].forEach(function (ev) {
@@ -1297,26 +1418,16 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     if (src === tgt) { say("eSame"); return; }
     /* Всё, что пришло в адресе (метка приглашения, utm), едет дальше. */
     var q = new URLSearchParams(location.search);
-    q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang); q.set("from", "start");
+    q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang); q.set("from", lang === "ru" ? "index" : lang);
     var url = APP + "/?" + q.toString();
-    if (MOCK) { showMock(src, tgt); return; }
-    if (!picked) { location.href = url; return; }
+    ymGoal("tr_submit");
+    if (!picked || picked.size > HANDOFF_MAX) { location.href = url; return; }
     goBtn.disabled = true; say("eBusy");
     handoff(picked, src, tgt).then(function (ok) {
       try { if (window.LANDTRACK) window.LANDTRACK.goal(ok ? "tr_handoff_ok" : "tr_handoff_fail"); } catch (e) { /* учёт не мешает */ }
       location.href = url;
     });
   });
-  var mock = $("mock"), mockBack = null;
-  function showMock(src, tgt) {
-    $("mock-file").textContent = picked ? picked.name : t("mockNoFile");
-    $("mock-src").textContent = NATIVE[src] || src; $("mock-tgt").textContent = NATIVE[tgt] || tgt;
-    mockBack = document.activeElement; mock.hidden = false; $("mock-close").focus();
-  }
-  function hideMock() { mock.hidden = true; if (mockBack && mockBack.focus) mockBack.focus(); }
-  $("mock-close").addEventListener("click", hideMock);
-  mock.addEventListener("click", function (e) { if (e.target === mock) hideMock(); });
-  document.addEventListener("keydown", function (e) { if (e.key === "Escape" && !mock.hidden) hideMock(); });
   function toForm() {
     var top = form.getBoundingClientRect().top + window.scrollY - 90;
     window.scrollTo({ top: Math.max(0, top), behavior: reduced() ? "auto" : "smooth" });
@@ -1541,7 +1652,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
 
   /* Статья: шторка между оригиналом и переводом; кнопки для тех, кто не тянет. */
   var PAPER = {"EN": {"j": "npj Science of Learning · 2019 · 4:16", "title": "Sleep quality, duration, and consistency are associated with better academic performance in college students", "au": "Kana Okano, Jakub R. Kaczmarzyk, Neha Dave, John D. E. Gabrieli and Jeffrey C. Grossman", "absH": "Abstract", "abs": "Overall, better quality, longer duration, and greater consistency of sleep correlated with better grades. … Sleep measures accounted for nearly 25% of the variance in academic performance.", "introH": "INTRODUCTION", "intro": "The relationship between sleep and cognitive function has been a topic of interest for over a century.", "cap": "Fig. 1 Correlations between sleep measures and overall score."}, "RU": {"j": "npj Science of Learning · 2019 · 4:16", "title": "Качество, продолжительность и регулярность сна связаны с лучшей академической успеваемостью студентов колледжей", "au": "Кана Окано, Якуб Р. Качмаржик, Неха Даве, Джон Д. Э. Габриэли и Джеффри К. Гроссман", "absH": "Аннотация", "abs": "В целом более высокое качество, большая продолжительность и большая регулярность сна коррелировали с более высокими оценками. … На показатели сна приходилось почти 25% дисперсии академической успеваемости.", "introH": "ВВЕДЕНИЕ", "intro": "Связь между сном и когнитивными функциями представляет интерес уже более столетия.", "cap": "Рис. 1 Корреляции между показателями сна и общим баллом."}, "UZ": {"j": "npj Science of Learning · 2019 · 4:16", "title": "Uyqu sifati, davomiyligi va muntazamligi oliy taʼlim talabalarida yaxshiroq akademik koʻrsatkichlar bilan bogʻliq", "au": "Kana Okano, Jakub R. Kaczmarzyk, Neha Dave, John D. E. Gabrieli va Jeffrey C. Grossman", "absH": "Annotatsiya", "abs": "Umuman olganda, uyquning yaxshiroq sifati, uzoqroq davomiyligi va yuqoriroq muntazamligi yaxshiroq baholar bilan bogʻliq edi. … Uyqu koʻrsatkichlari oʻquvdagi natijalar tafovutining qariyb 25% ini izohladi.", "introH": "KIRISH", "intro": "Uyqu va kognitiv funksiya o‘rtasidagi munosabat bir asrdan ortiq vaqt davomida qiziqish mavzusi bo‘lib kelgan.", "cap": "1-Rasm. Uyqu koʻrsatkichlari va umumiy ball oʻrtasidagi korrelyatsiyalar."}};
-  var FIG = '<img src="media/paper-fig1.webp" width="640" height="464" alt="" loading="lazy">';
+  var FIG = '<img src="/media/paper-fig1.webp" width="640" height="464" alt="" loading="lazy">';
   function layHtml(d) {
     return '<div class="j">' + esc(d.j) + '</div><h5>' + esc(d.title) + '</h5><div class="au">' + esc(d.au) + '</div>'
       + '<div class="abs"><b>' + esc(d.absH) + '</b>' + mark(d.abs) + '</div>'
@@ -1604,9 +1715,9 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   /* Видео: несколько роликов NASA (общественное достояние), субтитры по времени,
      язык меняется на лету, можно два языка сразу. Ролик кончился — идёт следующий. */
   var VIDS = [
-    { src: "media/vision-in-space.mp4", poster: "media/vision-poster.webp", len: 26.0, cap: "vpCapVision", cues: [[0.2, 6.7], [6.8, 11.85], [11.95, 19.3], [19.4, 25.8]], subs: {"EN": ["Even during a trip as short as two weeks, vision changes occur for about a third of American astronauts.", "When the trip is longer — say, four to six months — that figure may double.", "But before potential solutions can be proposed, scientists first have to understand what's causing these changes.", "On Earth, gravity forces a body's natural blood volume downward, below the waist."], "RU": ["Даже за две недели зрение меняется примерно у трети американских астронавтов.", "При более длительной поездке — скажем, четыре-шесть месяцев — этот показатель может удвоиться.", "Но прежде чем предлагать возможные решения, учёным надо понять, что вызывает эти изменения.", "На Земле гравитация смещает естественный объём крови в теле вниз, ниже пояса."], "UZ": ["Hatto ikki haftalik parvozda ham amerikalik astronavtlarning uchdan birida koʻrish oʻzgaradi.", "Parvoz uzoq — deylik, toʻrt-olti oy — boʻlsa, raqam ikki baravar oshishi mumkin.", "Ammo ehtimoliy yechimlarni taklif qilishdan oldin olimlar bu oʻzgarishlar sababini tushunishlari kerak.", "Yerda tortishish kuchi tanadagi qonning tabiiy hajmini beldan pastga qarab tortadi."], "ZH": ["即使仅两周行程，约三分之一美国宇航员也会出现视力变化。", "当任务时长较长时——比如四到六个月——这一比例或翻倍。", "提出潜在方案前，科学家须先了解变化成因。", "地球上，重力将人体自然血容量压至腰部以下。"], "KK": ["Екі аптадай қысқа сапарда да америкалық ғарышкерлердің үштен бірінің көруі өзгереді.", "Сапар төрт-алты айға созылса, бұл көрсеткіш екі есе артуы мүмкін.", "Ықтимал шешімдер ұсынбас бұрын, ғалымдар бұл өзгерістердің себебін түсінуі керек.", "Жерде тартылыс денедегі табиғи қан көлемін белден төменгі аймаққа қарай ығыстырады."], "AR": ["حتى في رحلة لا تزيد مدتها عن أسبوعين، تحدث تغيرات في البصر لدى نحو ثلث رواد الفضاء الأمريكيين.", "وعندما تطول الرحلة — لنقل، أربعة إلى ستة أشهر — قد يتضاعف ذلك الرقم.", "لكن قبل اقتراح حلول محتملة، يجب أن يفهم العلماء أولاً سبب هذه التغيرات.", "على الأرض، تدفع الجاذبية حجم الدم الطبيعي في الجسم إلى الأسفل، تحت الخصر."]} },
-    { src: "media/tomatoes-in-orbit.mp4", poster: "media/tomatoes-poster.webp", len: 19.6, cap: "vpCapTomato", cues: [[0.1, 5.95], [6.0, 7.45], [7.5, 11.45], [11.55, 15.95], [16.05, 19.5]], subs: {"EN": ["The very microgravity we're trying to study up there can make experiments really difficult, for a bunch of different reasons.", "First of all, stuff floats.", "So losing things on the ISS is a very real possibility.", "For example, there was a set of tomatoes harvested in 2022.", "We put it in a bag, it floated away, and we couldn't find it for eight months."], "RU": ["Изучаемая там микрогравитация сильно затрудняет эксперименты по разным причинам.", "Во-первых, всё парит.", "Так что потерять вещи на МКС вполне реально.", "Например, в 2022 году собрали партию помидоров.", "Мы положили его в пакет, он уплыл — и восемь месяцев мы не могли его найти."], "UZ": ["Biz u yerda o‘rganmoqchi bo‘lgan mikrogravitatsiyaning o‘zi turli sabablarga ko‘ra tajribalarni juda qiyinlashtirishi mumkin.", "Avvalo, narsalar suzadi.", "XKSda narsalarni yo‘qotish juda ham mumkin.", "Masalan, 2022-yilda terilgan bir to‘plam pomidor bor edi.", "Biz uni paketga solib qo‘ydik, u suzib ketdi va sakkiz oy topa olmadik."], "ZH": ["而我们要研究的微重力，会因种种原因让实验很难做。", "首先，东西会飘。", "所以，在国际空间站丢东西真有可能。", "比如，2022年收获过一批番茄。", "装袋后飘走，八个月才找到。"], "KK": ["Ондағы зерттелетін микрогравитацияның өзі түрлі себеппен тәжірибені қиындатады.", "Әуелі, заттар қалқиды.", "Сондықтан ХҒС-та зат жоғалту әбден мүмкін.", "Мысалы, 2022 жылы жиналған қызанақтар болды.", "Дорбаға салдық, қалқып кетті, оны сегіз ай бойы таба алмадық."], "AR": ["انعدام الجاذبية الذي ندرسه هناك قد يصعّب التجارب لأسباب كثيرة.", "أولاً، الأشياء تطفو.", "لذا، فقدان الأشياء على محطة الفضاء الدولية احتمال حقيقي.", "مثلاً، حُصدت مجموعة من الطماطم في 2022.", "وضعناها في كيس، فطفا بعيدًا، ولم نتمكن من إيجاده لمدة ثمانية أشهر."]} },
-    { src: "media/zero-gravity-coffee.mp4", poster: "media/video-poster.webp", len: 25.4, cap: "vpCapCoffee", cues: [[1.16, 7.78], [8.8, 10.86], [11.62, 13.6], [14.58, 17.28], [18.44, 24.38]], subs: {"EN": ["High above our planet in the realm of satellites and space stations, the familiar rules of Earth do not apply.", "The midday sky is as black as night.", "There is no up and no down.", "Dropped objects don't fall and hot air doesn't rise.", "Of all the strange things that happen up there, however, it is possible that the strangest happens to coffee."], "RU": ["Высоко над Землёй, среди спутников и станций, привычные земные правила не действуют.", "В полдень небо черно, как ночью.", "Нет ни верха, ни низа.", "Вещи не падают, горячий воздух не поднимается.", "Но из всего странного, что там происходит, самое странное, возможно, случается с кофе."], "UZ": ["Sayyoramiz uzra yoʻldoshlar va kosmik stansiyalarda Yerning odatiy qoidalari amal qilmaydi.", "Peshin osmoni tun kabi qop-qora.", "Tepa ham yoʻq, past ham yoʻq.", "Tushirilgan jismlar tushmaydi, issiq havo esa koʻtarilmaydi.", "Ammo u yerdagi gʻalati hodisalarning eng gʻalatisi qahva bilan yuz berishi mumkin."], "ZH": ["在卫星和空间站环绕的高空，地球的常规不适用。", "正午天空漆黑如夜。", "没有上下之分。", "掉落的物体不会下落，热空气也不会上升。", "那里怪事虽多，咖啡的遭遇或许最奇特。"], "AR": ["عالياً فوق كوكبنا، في عالم الأقمار الصناعية ومحطات الفضاء، لا تنطبق قواعد الأرض المألوفة.", "سماء الظهيرة سوداء كالليل.", "لا يوجد أعلى ولا أسفل.", "الأشياء التي تُسقط لا تسقط، ولا يصعد الهواء الساخن.", "لكن لعل أغرب ما يحدث هناك يحدث للقهوة."], "KK": ["Ғаламшарымыздан жоғары, серіктер мен ғарыш станциялары әлемінде Жердің таныс заңдары жүрмейді.", "Тал түс аспаны түндей қара.", "Жоғары да, төмен де жоқ.", "Құлаған заттар түспейді, ыстық ауа көтерілмейді.", "Ал ондағы тосын жайттардың ең тосыны кофенің басына түсуі мүмкін."]} }
+    { src: "/media/vision-in-space.mp4", poster: "/media/vision-poster.webp", len: 26.0, cap: "vpCapVision", cues: [[0.2, 6.7], [6.8, 11.85], [11.95, 19.3], [19.4, 25.8]], subs: {"EN": ["Even during a trip as short as two weeks, vision changes occur for about a third of American astronauts.", "When the trip is longer — say, four to six months — that figure may double.", "But before potential solutions can be proposed, scientists first have to understand what's causing these changes.", "On Earth, gravity forces a body's natural blood volume downward, below the waist."], "RU": ["Даже за две недели зрение меняется примерно у трети американских астронавтов.", "При более длительной поездке — скажем, четыре-шесть месяцев — этот показатель может удвоиться.", "Но прежде чем предлагать возможные решения, учёным надо понять, что вызывает эти изменения.", "На Земле гравитация смещает естественный объём крови в теле вниз, ниже пояса."], "UZ": ["Hatto ikki haftalik parvozda ham amerikalik astronavtlarning uchdan birida koʻrish oʻzgaradi.", "Parvoz uzoq — deylik, toʻrt-olti oy — boʻlsa, raqam ikki baravar oshishi mumkin.", "Ammo ehtimoliy yechimlarni taklif qilishdan oldin olimlar bu oʻzgarishlar sababini tushunishlari kerak.", "Yerda tortishish kuchi tanadagi qonning tabiiy hajmini beldan pastga qarab tortadi."], "ZH": ["即使仅两周行程，约三分之一美国宇航员也会出现视力变化。", "当任务时长较长时——比如四到六个月——这一比例或翻倍。", "提出潜在方案前，科学家须先了解变化成因。", "地球上，重力将人体自然血容量压至腰部以下。"], "KK": ["Екі аптадай қысқа сапарда да америкалық ғарышкерлердің үштен бірінің көруі өзгереді.", "Сапар төрт-алты айға созылса, бұл көрсеткіш екі есе артуы мүмкін.", "Ықтимал шешімдер ұсынбас бұрын, ғалымдар бұл өзгерістердің себебін түсінуі керек.", "Жерде тартылыс денедегі табиғи қан көлемін белден төменгі аймаққа қарай ығыстырады."], "AR": ["حتى في رحلة لا تزيد مدتها عن أسبوعين، تحدث تغيرات في البصر لدى نحو ثلث رواد الفضاء الأمريكيين.", "وعندما تطول الرحلة — لنقل، أربعة إلى ستة أشهر — قد يتضاعف ذلك الرقم.", "لكن قبل اقتراح حلول محتملة، يجب أن يفهم العلماء أولاً سبب هذه التغيرات.", "على الأرض، تدفع الجاذبية حجم الدم الطبيعي في الجسم إلى الأسفل، تحت الخصر."]} },
+    { src: "/media/tomatoes-in-orbit.mp4", poster: "/media/tomatoes-poster.webp", len: 19.6, cap: "vpCapTomato", cues: [[0.1, 5.95], [6.0, 7.45], [7.5, 11.45], [11.55, 15.95], [16.05, 19.5]], subs: {"EN": ["The very microgravity we're trying to study up there can make experiments really difficult, for a bunch of different reasons.", "First of all, stuff floats.", "So losing things on the ISS is a very real possibility.", "For example, there was a set of tomatoes harvested in 2022.", "We put it in a bag, it floated away, and we couldn't find it for eight months."], "RU": ["Изучаемая там микрогравитация сильно затрудняет эксперименты по разным причинам.", "Во-первых, всё парит.", "Так что потерять вещи на МКС вполне реально.", "Например, в 2022 году собрали партию помидоров.", "Мы положили его в пакет, он уплыл — и восемь месяцев мы не могли его найти."], "UZ": ["Biz u yerda o‘rganmoqchi bo‘lgan mikrogravitatsiyaning o‘zi turli sabablarga ko‘ra tajribalarni juda qiyinlashtirishi mumkin.", "Avvalo, narsalar suzadi.", "XKSda narsalarni yo‘qotish juda ham mumkin.", "Masalan, 2022-yilda terilgan bir to‘plam pomidor bor edi.", "Biz uni paketga solib qo‘ydik, u suzib ketdi va sakkiz oy topa olmadik."], "ZH": ["而我们要研究的微重力，会因种种原因让实验很难做。", "首先，东西会飘。", "所以，在国际空间站丢东西真有可能。", "比如，2022年收获过一批番茄。", "装袋后飘走，八个月才找到。"], "KK": ["Ондағы зерттелетін микрогравитацияның өзі түрлі себеппен тәжірибені қиындатады.", "Әуелі, заттар қалқиды.", "Сондықтан ХҒС-та зат жоғалту әбден мүмкін.", "Мысалы, 2022 жылы жиналған қызанақтар болды.", "Дорбаға салдық, қалқып кетті, оны сегіз ай бойы таба алмадық."], "AR": ["انعدام الجاذبية الذي ندرسه هناك قد يصعّب التجارب لأسباب كثيرة.", "أولاً، الأشياء تطفو.", "لذا، فقدان الأشياء على محطة الفضاء الدولية احتمال حقيقي.", "مثلاً، حُصدت مجموعة من الطماطم في 2022.", "وضعناها في كيس، فطفا بعيدًا، ولم نتمكن من إيجاده لمدة ثمانية أشهر."]} },
+    { src: "/media/zero-gravity-coffee.mp4", poster: "/media/video-poster.webp", len: 25.4, cap: "vpCapCoffee", cues: [[1.16, 7.78], [8.8, 10.86], [11.62, 13.6], [14.58, 17.28], [18.44, 24.38]], subs: {"EN": ["High above our planet in the realm of satellites and space stations, the familiar rules of Earth do not apply.", "The midday sky is as black as night.", "There is no up and no down.", "Dropped objects don't fall and hot air doesn't rise.", "Of all the strange things that happen up there, however, it is possible that the strangest happens to coffee."], "RU": ["Высоко над Землёй, среди спутников и станций, привычные земные правила не действуют.", "В полдень небо черно, как ночью.", "Нет ни верха, ни низа.", "Вещи не падают, горячий воздух не поднимается.", "Но из всего странного, что там происходит, самое странное, возможно, случается с кофе."], "UZ": ["Sayyoramiz uzra yoʻldoshlar va kosmik stansiyalarda Yerning odatiy qoidalari amal qilmaydi.", "Peshin osmoni tun kabi qop-qora.", "Tepa ham yoʻq, past ham yoʻq.", "Tushirilgan jismlar tushmaydi, issiq havo esa koʻtarilmaydi.", "Ammo u yerdagi gʻalati hodisalarning eng gʻalatisi qahva bilan yuz berishi mumkin."], "ZH": ["在卫星和空间站环绕的高空，地球的常规不适用。", "正午天空漆黑如夜。", "没有上下之分。", "掉落的物体不会下落，热空气也不会上升。", "那里怪事虽多，咖啡的遭遇或许最奇特。"], "AR": ["عالياً فوق كوكبنا، في عالم الأقمار الصناعية ومحطات الفضاء، لا تنطبق قواعد الأرض المألوفة.", "سماء الظهيرة سوداء كالليل.", "لا يوجد أعلى ولا أسفل.", "الأشياء التي تُسقط لا تسقط، ولا يصعد الهواء الساخن.", "لكن لعل أغرب ما يحدث هناك يحدث للقهوة."], "KK": ["Ғаламшарымыздан жоғары, серіктер мен ғарыш станциялары әлемінде Жердің таныс заңдары жүрмейді.", "Тал түс аспаны түндей қара.", "Жоғары да, төмен де жоқ.", "Құлаған заттар түспейді, ыстық ауа көтерілмейді.", "Ал ондағы тосын жайттардың ең тосыны кофенің басына түсуі мүмкін."]} }
   ];
   var vpI = 0, CUES = VIDS[0].cues, VLEN = VIDS[0].len, SUBS = VIDS[0].subs;
   var player = $("player"), prog = $("prog"), fill = $("fill");
@@ -1714,13 +1825,13 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   function scRender() {
     var s = SC_SLIDES[scI], im = $("sc-t");
     if (s.langs.indexOf(scLang) < 0) scLang = s.langs.indexOf(LANG0 === "uz" ? "UZ" : "EN") >= 0 ? (LANG0 === "uz" ? "UZ" : "EN") : s.langs[0];
-    im.src = "media/" + s.f + scLang.toLowerCase() + ".webp";
+    im.src = "/media/" + s.f + scLang.toLowerCase() + ".webp";
     im.alt = t(s.cap) + " — " + t("baTr") + ": " + (NATIVE[scLang] || scLang);
   }
   function scSlide(i) {
     scI = (i + SC_SLIDES.length) % SC_SLIDES.length;
     var s = SC_SLIDES[scI], o = $("sc-o");
-    o.src = "media/" + s.f + s.o + ".webp";
+    o.src = "/media/" + s.f + s.o + ".webp";
     o.width = s.w; o.height = s.h; $("sc-t").width = s.w; $("sc-t").height = s.h;
     o.alt = t(s.cap) + " — " + t("baOrig");
     o.removeAttribute("data-ta");
@@ -1902,7 +2013,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
      одна картинка. Вторая копия собиралась отдельно и отставала от правил
      перерисовки (буквица Чехова с завитком осталась на плитке, Х8). */
   var TL_LANGS = ["EN", "UZ", "ZH", "KK", "AR"], TL_DUR = 1250;
-  function tlUrl(T, c) { return "media/" + (T.img || "tile-" + T.k + "-") + c.toLowerCase() + ".webp"; }
+  function tlUrl(T, c) { return "/media/" + (T.img || "tile-" + T.k + "-") + c.toLowerCase() + ".webp"; }
   function tlReady(img) {
     if (img.complete && img.naturalWidth) return Promise.resolve();
     return new Promise(function (ok) {
@@ -1912,7 +2023,7 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
   }
   function tlServiceUrl(src, tgt) {
     var q = new URLSearchParams(location.search);
-    q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang); q.set("from", "start");
+    q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang); q.set("from", lang === "ru" ? "index" : lang);
     return APP + "/?" + q.toString();
   }
   var tiles = [].slice.call(document.querySelectorAll("[data-tile]")).map(function (el, n) {
@@ -2033,6 +2144,13 @@ html[lang="en"] .rev q { quotes: "“" "”"; }
     }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
     rv.forEach(function (el) { io.observe(el); });
   } else { rv.forEach(function (el) { el.classList.add("in"); }); }
+
+  /* Якоря прежней главной (до 18.10.2026) ведут на близкие разделы этой. */
+  var OLD_ANCHORS = { demo: "how", steps: "how", why: "what", lens: "examples", result: "examples", calc: "pricing", top: "top" };
+  var hsh = (location.hash || "").slice(1);
+  if (OLD_ANCHORS[hsh] && !document.getElementById(hsh)) {
+    var tgtEl = $(OLD_ANCHORS[hsh]); if (tgtEl) setTimeout(function () { tgtEl.scrollIntoView(); }, 0);
+  }
 
   applyLang(pickLang(), false);
 })();

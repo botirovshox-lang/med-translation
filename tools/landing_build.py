@@ -1,20 +1,24 @@
 # -*- coding: utf-8 -*-
-"""Сборка лендинга click.simpletranslate.me из landing/src/ в landing/.
+"""Сборка лендинга click.simpletranslate.me из landing/src/home.html в landing/.
+
+Страница одна (бывшая /start/, с 18.10.2026 — главная), языков три: /, /uz/, /en/.
+Текст каждой версии ПРЕДВАРИТЕЛЬНО переведён сборщиком по словарю самой
+страницы (`var UI = {…}` в её скрипте, ключи `data-t`/`data-th`/`data-ta`):
+поисковик и человек без скрипта видят ту же страницу, что и человек со
+скриптом, а не русскую, которую скрипт перекрашивает. Скрипт страницы потом
+делает то же самое — значения совпадают, мигания нет.
 
 Зачем сборщик, а не один файл руками:
-  * FAQ-разметка (FAQPage) выводится ИЗ ВИДИМЫХ вопросов и ответов тела
-    страницы. Разметка, написанная отдельно, разошлась бы с текстом первой
-    же правкой, а разметка невидимого текста — нарушение правил Google;
-  * дата обновления — одна константа (UPDATED): она уходит и в видимый
-    футер («Последнее обновление»), и в dateModified схемы, и в lastmod
-    sitemap. Три места руками — три разные даты;
-  * цены тарифов — одна таблица (TIERS): страница, JSON-LD Offer,
-    pricing.md и llms.txt читают её одну. Цена в трёх файлах врозь —
-    это агент, который называет клиенту не ту цену.
+  * FAQ-разметка (FAQPage) выводится ИЗ ВИДИМЫХ вопросов и ответов страницы.
+    Разметка, написанная отдельно, разошлась бы с текстом первой же правкой,
+    а разметка невидимого текста — нарушение правил Google;
+  * дата обновления — одна константа (UPDATED): видимый подвал, dateModified
+    схемы и lastmod sitemap;
+  * цены тарифов — одна таблица (TIERS): JSON-LD Offer, pricing.md и llms.txt
+    читают её; видимые цены страницы сверяет с ней тест.
 
-Запуск: python tools/landing_build.py   (пишет landing/index.html, sitemap.xml,
-llms.txt, pricing.md). Сторожит tests/test_landing.py: собранное в репозитории
-обязано совпадать со свежей сборкой.
+Запуск: python tools/landing_build.py. Сторожит tests/test_landing.py:
+собранное в репозитории обязано совпадать со свежей сборкой.
 """
 import json
 import re
@@ -26,17 +30,11 @@ SRC = ROOT / "landing" / "src"
 OUT = ROOT / "landing"
 
 # ─── Языки страницы ──────────────────────────────────────────────────
-# Русский — ЯЗЫК КЛЮЧЕЙ: словаря у него нет, его текст и есть body.html.
-# Тот же закон, что у словаря приложения (frontend/i18n): ключ — сама
-# русская строка, поэтому на русском сборка ничего не подменяет побитово,
-# а забытый перевод виден сразу — он роняет сборку, а не показывает
-# русскую строку среди узбекских.
-#
-# Языки ВЫВОДЯТСЯ из имён файлов в landing/src/i18n (en.json → en), а не
-# пишутся списком: список пришлось бы править в сборщике, в sitemap и
-# в тесте, и первый же забытый язык собирался бы наполовину русским.
+# Русский — язык исходника: его текст и есть home.html. Языки ВЫВОДЯТСЯ
+# из словаря страницы (блоки `ru: {`, `uz: {` … в `var UI`), а не пишутся
+# списком: забытый язык иначе собирался бы наполовину русским. Ключ без
+# перевода роняет сборку, а не показывает русскую строку среди узбекских.
 KEY_LANG = "ru"
-LANG_NAMES = {"ru": "Русский", "uz": "O‘zbekcha", "en": "English"}
 # Адрес языка: русский лежит в корне (на него ведут все старые ссылки),
 # остальные — в своей папке. Менять корень нельзя: это canonical.
 LANG_DIRS = {"ru": "", "uz": "uz/", "en": "en/"}
@@ -44,7 +42,7 @@ LANG_DIRS = {"ru": "", "uz": "uz/", "en": "en/"}
 SITE = "https://click.simpletranslate.me"
 APP = "https://simpletranslate.me"
 BRAND = "SimpleTranslate"
-UPDATED = "2026-09-24"            # ISO; меняется вместе с правкой текста
+UPDATED = "2026-10-18"            # ISO; меняется вместе с правкой текста
 PUBLISHED = "2026-09-17"
 EMAIL = "hello@simpletranslate.me"
 
@@ -74,12 +72,10 @@ FREE_PAGES = 1
 # Язык оригинала в форме по умолчанию — язык страницы: его человек знает
 # (инвариант 32), и чаще всего переводит именно с него. Языка ПЕРЕВОДА
 # по умолчанию нет намеренно (см. форму в body.html).
-FORM_SRC = {"ru": "RU", "uz": "UZ", "en": "EN"}
 # Частые языки — первыми в списке, в том же порядке, что у приложения
 # (IMP_POPULAR_LANGS в tab_import.jsx): семьдесят языков по алфавиту
 # прячут русский и узбекский в середине.
-FORM_POPULAR = ["RU", "EN", "UZ", "UZ-CYRL", "ZH", "ES", "AR", "FR", "DE", "TR", "KK", "KO", "JA",
-                "PT", "IT", "HI"]
+
 
 MONTHS_RU = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля",
              "августа", "сентября", "октября", "ноября", "декабря"]
@@ -129,22 +125,22 @@ META = {
     "uz": {
         "title": "Hujjatlarni onlayn tarjima qilish | SimpleTranslate",
         "desc": "Word, PDF, Excel va PowerPoint fayllarini formatini saqlagan holda onlayn tarjima "
-                "qiling. Birinchi bet bepul, keyin $0.5 dan. Sonlar va lug‘at tekshiruvi.",
+                "qiling. Birinchi bet bepul, keyin $0.5 dan. Sonlar va lugʻat tekshiruvi.",
         "keywords": "hujjat tarjimasi, hujjatlarni tarjima qilish, onlayn tarjima, pdf tarjima, "
-                    "word faylni tarjima qilish, rus tilidan o‘zbek tiliga tarjima, "
+                    "word faylni tarjima qilish, rus tilidan oʻzbek tiliga tarjima, "
                     "ingliz tiliga tarjima, ilmiy maqola tarjimasi",
         "locale": "uz_UZ",
         "ogTitle": "Hujjatlarni onlayn tarjima qilish bir bosishda — SimpleTranslate",
-        "ogDesc": "Word, PDF, Excel va PowerPoint o‘sha ko‘rinishda: teskari tarjima, "
-                  "sonlarni solishtirish va lug‘at. Birinchi bet bepul.",
+        "ogDesc": "Word, PDF, Excel va PowerPoint oʻsha koʻrinishda: teskari tarjima, "
+                  "sonlarni solishtirish va lugʻat. Birinchi bet bepul.",
         "ogAlt": "SimpleTranslate: hujjatlarni bir bosishda onlayn tarjima qilish, "
                  "bet uchun $0.5 dan",
         "ldDesc": "Hujjatlarni til modeli bilan tarjima qilish va har bir satrni tekshirish: "
-                  "teskari tarjima, son va birliklarni solishtirish, lug‘at. Word, PDF, Excel, "
-                  "PowerPoint va skanlar asl ko‘rinishida qaytariladi. 250 so‘zlik bet $0.5 dan.",
+                  "teskari tarjima, son va birliklarni solishtirish, lugʻat. Word, PDF, Excel, "
+                  "PowerPoint va skanlar asl koʻrinishida qaytariladi. 250 soʻzlik bet $0.5 dan.",
         "orgDesc": "Avtomatik tekshiruvli hujjat tarjimasi xizmati: teskari tarjima, son va "
-                   "birliklarni solishtirish, lug‘at. Fayl asl ko‘rinishida qaytariladi.",
-        "unit": "bet (asl matnning 250 so‘zi)",
+                   "birliklarni solishtirish, lugʻat. Fayl asl koʻrinishida qaytariladi.",
+        "unit": "bet (asl matnning 250 soʻzi)",
     },
     "en": {
         "title": "Document Translation Online, Same Layout | SimpleTranslate",
@@ -201,86 +197,75 @@ def _date_of(iso, lang):
     return f"{name} {d}, {y}" if lang == "en" else f"{d} {name} {y}"
 
 
+def _home():
+    return (SRC / "home.html").read_text(encoding="utf-8")
+
+
+def ui_dict(src=None):
+    """Словарь страницы {язык: {ключ: строка}} из `var UI = {…}` её скрипта.
+    Значения — строки JS в двойных кавычках; это подмножество JSON."""
+    src = src if src is not None else _home()
+    i = src.index("var UI = {")
+    j = src.index("\n  };", i)
+    block = src[i:j]
+    out = {}
+    for m in re.finditer(r"\n    ([a-z]{2}): \{(.*?)\n    \}", block, re.S):
+        out[m.group(1)] = {k: json.loads(v) for k, v in
+                           re.findall(r'(\w+): ("(?:[^"\\]|\\.)*")', m.group(2))}
+    if KEY_LANG not in out:
+        raise SystemExit("в home.html нет словаря языка ключей")
+    return out
+
+
 def langs():
-    """Языки страницы, выведенные из имён файлов словаря. Русский первым:
-    он язык ключей и лежит в корне."""
-    found = sorted(p.stem for p in (SRC / "i18n").glob("*.json"))
-    return [KEY_LANG] + [c for c in found if c != KEY_LANG]
+    """Языки страницы — по словарю. Русский первым: он лежит в корне."""
+    return [KEY_LANG] + sorted(c for c in ui_dict() if c != KEY_LANG)
 
 
-def dictionary(lang):
-    """Словарь языка. У языка ключей его нет и быть не должно: его текст
-    и есть body.html."""
-    if lang == KEY_LANG:
-        return {}
-    data = json.loads((SRC / "i18n" / (lang + ".json")).read_text(encoding="utf-8"))
-    return {k: v for k, v in data.items() if k != "_"}
+def _esc_text(v):
+    return v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-# Строки, которые ПЕРЕВОДИТЬ НЕЛЬЗЯ: они работают данными, а не надписью.
-# Тот же закон, что у `tools/i18n_wrap.py` в приложении: переведённый
-# операнд сравнения молча ломает то, у чего нет ни одного видимого
-# признака поломки.
-NO_TRANSLATE = re.compile(r"^(?:[\s\d.,:%$—–-]+|[A-Za-z0-9_.&;+-]+)$")
+def _esc_attr(v):
+    return _esc_text(v).replace('"', "&quot;")
 
 
-def _tr(text, table, lang, missing):
-    """Перевод одного видимого куска. Пустое значение в словаре означает
-    «оставить как есть» (имя файла, формула); отсутствие ключа — забытый
-    перевод, и о нём сборка кричит."""
-    key = text.strip()
-    if not key or lang == KEY_LANG:
-        return text
-    if not re.search("[А-Яа-яЁё]", key) or NO_TRANSLATE.match(key):
-        return text
-    if key not in table:
-        missing.add(key)
-        return text
-    val = table[key]
-    if not val:                     # «переводить не надо» — решение автора словаря
-        return text
-    # Пробелы по краям сохраняются: куски склеиваются с числами и тегами,
-    # и съеденный пробел слепляет слова («Стоимость страницы —от $0.5»).
-    lead = text[:len(text) - len(text.lstrip())]
-    tail = text[len(text.rstrip()):]
-    return lead + val + tail
-
-
-def translate_body(body, lang):
-    """Перевод ВИДИМОГО текста тела и атрибутов `__T:…__`.
-
-    Разбор регуляркой, а не разбором HTML: тело своё, оно в репозитории
-    и меняется вместе с этим файлом, а зависимость сборки лендинга
-    от чужого парсера здесь ничего не окупает. Скрипт и его содержимое
-    НЕ трогаются вовсе (там код), кроме списка LENS_PAIRS, который
-    подставляется отдельно.
-    """
-    table, missing = dictionary(lang), set()
-
-    # 1. Атрибуты и прочее, размеченное явно.
-    body = re.sub(r"__T:(.+?)__",
-                  lambda m: _tr(m.group(1), table, lang, missing), body)
-
-    # 2. Видимый текст между тегами. Куски внутри <script> не трогаем:
-    #    перевод строки кода — это сломанный скрипт.
-    out, in_script = [], False
-    for part in re.split(r"(<[^>]+>)", body):
-        if part.startswith("<"):
-            tag = part.lower()
-            if tag.startswith("<script"):
-                in_script = True
-            elif tag.startswith("</script"):
-                in_script = False
-            out.append(part)
-        else:
-            out.append(part if in_script else _tr(part, table, lang, missing))
-    body = "".join(out)
-
+def prerender(html, lang):
+    """Текст страницы на языке `lang` — тем же словарём, что у её скрипта.
+    Ключа нет на этом языке — сборка падает (скрипт показал бы русский)."""
+    table, base = ui_dict(html)[lang], ui_dict(html)[KEY_LANG]
+    missing = set()
+    def val(k):
+        if k not in base:
+            missing.add(k)
+            return ""
+        if k not in table:
+            missing.add(k)
+            return base[k]
+        return table[k]
+    # data-t: текст элемента целиком (у таких элементов детей нет)
+    def sub_t(m):
+        return m.group(1) + _esc_text(val(m.group(3))) + m.group(5)
+    html = re.sub(r'(<([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?\sdata-t="(\w+)"[^>]*>)([^<]*)(</\2>)', sub_t, html)
+    # data-th: HTML-содержимое (подпись источников со ссылками)
+    def sub_th(m):
+        return m.group(1) + val(m.group(3)) + m.group(5)
+    html = re.sub(r'(<([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?\sdata-th="(\w+)"[^>]*>)(.*?)(</\2>)', sub_th, html, flags=re.S)
+    # data-ta="атрибут:ключ"
+    def sub_ta(m):
+        tag = m.group(0)
+        for spec in re.findall(r'data-ta="([^"]+)"', tag):
+            attr, key = spec.split(":", 1)
+            v = _esc_attr(val(key))
+            if re.search(r'\s%s="[^"]*"' % re.escape(attr), tag):
+                tag = re.sub(r'(\s%s=")[^"]*(")' % re.escape(attr), lambda x: x.group(1) + v + x.group(2), tag, count=1)
+            else:
+                tag = tag[:-1] + ' %s="%s">' % (attr, v)
+        return tag
+    html = re.sub(r'<[a-zA-Z][^>]*\sdata-ta="[^"]+"[^>]*>', sub_ta, html)
     if missing:
-        raise SystemExit("нет перевода на «%s» для %d строк:\n  %s"
-                         % (lang, len(missing),
-                            "\n  ".join(sorted(missing)[:10])))
-    return body
+        raise SystemExit("нет перевода на «%s» для ключей: %s" % (lang, ", ".join(sorted(missing)[:20])))
+    return html
 
 
 def _text(html):
@@ -294,15 +279,13 @@ def faq_items(body):
     sec = re.search(r'<section id="faq".*?</section>', body, re.S)
     if not sec:
         raise SystemExit("FAQ section not found")
-    items = re.findall(r"<article class=\"faq\">\s*<h3>(.*?)</h3>\s*<p>(.*?)</p>", sec.group(0), re.S)
+    items = re.findall(r'<article class="faq[^"]*">\s*<h3[^>]*>(.*?)</h3>\s*<p[^>]*>(.*?)</p>', sec.group(0), re.S)
     if len(items) < 5:
         raise SystemExit("FAQ has fewer than 5 questions")
     return [(_text(q), _text(a)) for q, a in items]
 
 
 def page_title(lang=KEY_LANG):
-    """Заголовок берётся из META, а не из шаблона: в шаблоне теперь
-    плейсхолдер, один на все языки."""
     return META[lang]["title"]
 
 
@@ -310,7 +293,7 @@ def page_description(lang=KEY_LANG):
     return META[lang]["desc"]
 
 
-def jsonld(template, body, lang=KEY_LANG):
+def jsonld(body, lang=KEY_LANG):
     m = META[lang]
     org_id = APP + "/#organization"
     app_id = APP + "/#software"
@@ -321,7 +304,7 @@ def jsonld(template, body, lang=KEY_LANG):
         if t["price"] is None:
             continue
         offers.append({
-            "@type": "Offer", "name": t["name"], "url": SITE + "/#pricing",
+            "@type": "Offer", "name": t["name"], "url": SITE + "/" + LANG_DIRS[lang] + "#pricing",
             "price": t["price"], "priceCurrency": "USD", "availability": "https://schema.org/InStock",
             "description": t["for"],
             "priceSpecification": {"@type": "UnitPriceSpecification", "price": t["price"],
@@ -368,75 +351,6 @@ def jsonld(template, body, lang=KEY_LANG):
     return json.dumps({"@context": "https://schema.org", "@graph": graph}, ensure_ascii=False, indent=1)
 
 
-# ─── Линза: пары языков в примере ────────────────────────────────────
-# Один и тот же абзац на четырёх парах. Цифры ВО ВСЕХ парах одни и те же
-# намеренно: подпись под линзой обещает «120, 18–65 и 300 мг/сут сверены
-# с оригиналом», и пара без этих чисел была бы враньём ровно в том,
-# что мы продаём.
-#
-# `code` — метка на кольце (её рисует CSS из data-code), `srcLang`/`tgtLang`
-# уходят в атрибут lang куска документа: читалка обязана произнести
-# узбекский абзац по-узбекски, а не по буквам языка страницы.
-LENS_SRC_RU = [
-    "Аннотация",
-    "Цель исследования — оценить эффективность комбинированной терапии "
-    "у пациентов с впервые выявленным заболеванием.",
-    "В исследование включены 120 пациентов в возрасте 18–65 лет. "
-    "Доза препарата составила 300 мг/сут.",
-    "Различия между группами статистически значимы (p < 0,05).",
-]
-LENS_SRC_EN = [
-    "Abstract",
-    "The aim of the study was to evaluate the efficacy of combination therapy "
-    "in patients with newly diagnosed disease.",
-    "The study enrolled 120 patients aged 18–65 years. "
-    "The drug dose was 300 mg/day.",
-    "The differences between the groups were statistically significant (p < 0.05).",
-]
-LENS_PAIRS = [
-    {"code": "EN", "label": "RU → EN", "srcLang": "ru", "tgtLang": "en",
-     "src": LENS_SRC_RU, "tgt": LENS_SRC_EN},
-    {"code": "UZ", "label": "RU → UZ", "srcLang": "ru", "tgtLang": "uz",
-     "src": LENS_SRC_RU, "tgt": [
-         "Annotatsiya",
-         "Tadqiqot maqsadi — yangi aniqlangan kasallikka chalingan bemorlarda "
-         "kombinatsiyalangan terapiya samaradorligini baholash.",
-         "Tadqiqotga 18–65 yoshdagi 120 nafar bemor kiritildi. "
-         "Dori dozasi 300 mg/kun ni tashkil etdi.",
-         "Guruhlar orasidagi farqlar statistik jihatdan ahamiyatli (p < 0,05).",
-     ]},
-    # Узбекская КИРИЛЛИЦА — отдельная пара, а не та же «UZ»: это другой
-    # алфавит, другой промпт и другая проверка (см. правило про UZ-CYRL
-    # в CLAUDE.md). Показать их одной кнопкой значило бы пообещать выбор,
-    # которого у человека нет.
-    {"code": "UZ", "label": "RU → UZ (кирилл.)", "srcLang": "ru", "tgtLang": "uz-Cyrl",
-     "src": LENS_SRC_RU, "tgt": [
-         "Аннотация",
-         "Тадқиқот мақсади — янги аниқланган касалликка чалинган беморларда "
-         "комбинациялашган терапия самарадорлигини баҳолаш.",
-         "Тадқиқотга 18–65 ёшдаги 120 нафар бемор киритилди. "
-         "Дори дозаси 300 мг/кун ни ташкил этди.",
-         "Гуруҳлар орасидаги фарқлар статистик жиҳатдан аҳамиятли (p < 0,05).",
-     ]},
-    {"code": "RU", "label": "EN → RU", "srcLang": "en", "tgtLang": "ru",
-     "src": LENS_SRC_EN, "tgt": LENS_SRC_RU},
-]
-# Подпись пары («кирилл.») — единственное, что в ней переводится: коды
-# языков языком страницы не меняются, это данные, а не надпись.
-LENS_LABEL_TR = {"uz": {"RU → UZ (кирилл.)": "RU → UZ (kirill)"},
-                 "en": {"RU → UZ (кирилл.)": "RU → UZ (Cyrillic)"}}
-
-
-def lens_script(lang):
-    pairs = []
-    for pr in LENS_PAIRS:
-        p = dict(pr)
-        p["label"] = LENS_LABEL_TR.get(lang, {}).get(p["label"], p["label"])
-        pairs.append(p)
-    return ("<script>window.LENS_PAIRS=%s;</script>"
-            % json.dumps(pairs, ensure_ascii=False, separators=(",", ":")))
-
-
 def hreflang_links(lang):
     """Связка переводов. x-default ведёт на русскую: на неё ведут все
     прежние ссылки, и она же лежит в корне."""
@@ -446,55 +360,6 @@ def hreflang_links(lang):
                    % (code, SITE, LANG_DIRS[code]))
     out.append('<link rel="alternate" hreflang="x-default" href="%s/">' % SITE)
     return "\n".join(out)
-
-
-def lang_switch(lang):
-    """Переключатель языка в шапке. Название языка — НА НЁМ САМОМ
-    («O‘zbekcha», а не «Узбекский»): страницу на чужом языке ищет тот,
-    кто нынешних надписей НЕ ЧИТАЕТ, — тот же закон, что у выбора языка
-    на экране входа в приложение. И флагов тут нет по той же причине:
-    флаг — это страна, а не язык."""
-    out = ['<div class="lang-pick" role="group" aria-label="Til · Язык · Language">']
-    for code in langs():
-        here = ' aria-current="page"' if code == lang else ""
-        out.append('<a href="%s/%s" hreflang="%s" lang="%s"%s>%s</a>'
-                   % (SITE, LANG_DIRS[code], code, code, here, LANG_NAMES[code]))
-    out.append("</div>")
-    return "".join(out)
-
-
-def _languages():
-    """Каталог языков САМОГО СЕРВИСА (backend/languages.json): второй список
-    в лендинге разошёлся бы с ним, и форма предлагала бы пару, которой
-    приложение не знает (тогда экран «Проекты» просто не подставит её)."""
-    data = json.loads((ROOT / "backend" / "languages.json").read_text(encoding="utf-8"))
-    return data["languages"]
-
-
-# Подписи групп списка — надпись ИНТЕРФЕЙСА, а не данные, поэтому
-# на каждом языке страницы своя. Пишутся здесь, а не в словаре тела:
-# список подставляется после перевода.
-FORM_GROUPS = {"ru": ("Частые", "Все языки"), "uz": ("Ko‘p so‘raladigan", "Barcha tillar"),
-               "en": ("Popular", "All languages")}
-
-
-def lang_options(selected="", page=KEY_LANG):
-    """<option> языков. Название — НА НЁМ САМОМ (`native`): тот же закон,
-    что у переключателя языка страницы, — список читает и тот, кто языка
-    страницы не знает. Частые — отдельной группой сверху. Подставляется
-    ПОСЛЕ перевода тела: названия языков не переводятся никогда."""
-    from html import escape
-    by = {x["code"]: x for x in _languages()}
-    def opt(c):
-        x = by[c]
-        name = x.get("native") or x.get("en") or c
-        sel = ' selected' if c == selected else ''
-        return '<option value="%s" lang="%s"%s>%s</option>' % (c, c.lower(), sel, escape(name))
-    top = [c for c in FORM_POPULAR if c in by]
-    rest = sorted((c for c in by if c not in top), key=lambda c: (by[c].get("native") or c).lower())
-    g_top, g_all = FORM_GROUPS.get(page, FORM_GROUPS[KEY_LANG])
-    return ('<optgroup label="%s">%s</optgroup><optgroup label="%s">%s</optgroup>'
-            % (g_top, "".join(opt(c) for c in top), g_all, "".join(opt(c) for c in rest)))
 
 
 def head_meta(lang):
@@ -532,35 +397,57 @@ def metrika():
             % {"id": int(METRIKA_ID)})
 
 
+HEAD_SEO = """<title>__TITLE__</title>
+<meta name="description" content="__DESC__">
+<link rel="canonical" href="__CANON__">
+__HREFLANG__
+__HEADMETA__
+<meta name="theme-color" content="#F2F5FA">
+<link rel="icon" href="/favicon.ico" sizes="48x48">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-96.png" type="image/png" sizes="96x96">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="SimpleTranslate">
+<meta property="og:locale" content="__OGLOCALE__">
+<meta property="og:url" content="__CANON__">
+<meta property="og:title" content="__OGTITLE__">
+<meta property="og:description" content="__OGDESC__">
+<meta property="og:image" content="https://click.simpletranslate.me/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="__OGALT__">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="__OGTITLE__">
+<meta name="twitter:description" content="__OGDESC__">
+<meta name="twitter:image" content="https://click.simpletranslate.me/og.png">
+<script type="application/ld+json">
+__JSONLD__
+</script>"""
+
+
 def build_index(lang=KEY_LANG):
-    template = (SRC / "template.html").read_text(encoding="utf-8")
-    css = (SRC / "styles.css").read_text(encoding="utf-8").rstrip("\n")
-    body = (SRC / "body.html").read_text(encoding="utf-8").rstrip("\n")
-    body = translate_body(body, lang)
-    body = (body.replace("__DATE_ISO__", UPDATED)
-                .replace("__DATE_RU__", _date_of(UPDATED, lang))
-                .replace("__LANGS__", lang_switch(lang))
-                .replace("__PAGE_LANG__", lang)
-                .replace("__SRC_OPTIONS__", lang_options(FORM_SRC.get(lang, "RU"), lang))
-                .replace("__TGT_OPTIONS__", lang_options("", lang)))
-    # Пары линзы уходят ПЕРЕД телом: скрипт тела читает window.LENS_PAIRS
-    # при выполнении, а выполняется он в конце страницы.
-    body = lens_script(lang) + "\n" + body
-    meta = META[lang]
-    html = (template.replace("__JSONLD__", jsonld(template, body, lang))
-            .replace("__CSS__", css).replace("__BODY__", body)
-            .replace("__LANG__", lang)
-            .replace("__TITLE__", meta["title"])
-            .replace("__DESC__", meta["desc"])
-            .replace("__OGLOCALE__", meta["locale"])
-            .replace("__OGTITLE__", meta["ogTitle"])
-            .replace("__OGDESC__", meta["ogDesc"])
-            .replace("__OGALT__", meta["ogAlt"])
+    html = _home()
+    body = prerender(html, lang)
+    body = (body.replace("__LANG__", lang)
+                .replace("__DATE_ISO__", UPDATED)
+                .replace("__DATE_LOC__", _date_of(UPDATED, lang))
+                .replace("__METRIKA__", metrika()))
+    m = META[lang]
+    head = (HEAD_SEO.replace("__TITLE__", m["title"]).replace("__DESC__", m["desc"])
             .replace("__CANON__", SITE + "/" + LANG_DIRS[lang])
             .replace("__HREFLANG__", hreflang_links(lang))
             .replace("__HEADMETA__", head_meta(lang))
-            .replace("__METRIKA__", metrika()))
-    return html
+            .replace("__OGLOCALE__", m["locale"]).replace("__OGTITLE__", m["ogTitle"])
+            .replace("__OGDESC__", m["ogDesc"]).replace("__OGALT__", m["ogAlt"]))
+    head = head.replace("__JSONLD__", jsonld(body, lang))
+    out = body.replace("__HEADSEO__", head)
+    # Заметки разработчика — в исходнике, не в публичной странице.
+    out = re.sub(r"<!--(?!\[if).*?-->\n?", "", out, flags=re.S)
+    out = re.sub(r"(<style>)(.*?)(</style>)",
+                 lambda m: m.group(1) + re.sub(r"/\*.*?\*/\n?", "", m.group(2), flags=re.S) + m.group(3),
+                 out, flags=re.S)
+    return out
 
 
 def build_sitemap():
@@ -614,11 +501,11 @@ def build_llms():
         f"# {BRAND}", "",
         f"> Сервис перевода документов (Word, PDF, Excel, PowerPoint, сканы) языковой моделью с проверкой каждой строки; файл возвращается в исходном оформлении, от ${starter['price']} за страницу.", "",
         "## Products", "",
-        f"- [{BRAND}, лендинг]({SITE}/): что делает сервис, как проходит перевод, почему это не машинный перевод, тарифы, вопросы и ответы, контакты.",
+        f"- [{BRAND}, лендинг]({SITE}/): что переводим (книги, статьи, видео, сканы), примеры настоящих переводов, перевод в один клик и запись экрана, тарифы, вопросы и ответы, контакты.",
         f"- [Тарифы]({SITE}/pricing.md): три тарифа со включёнными возможностями, цена за страницу в долларах, примеры расчёта на 20, 150 и 300 страниц.",
         f"- [Приложение]({APP}): вход и регистрация, загрузка файла, смета по страницам, перевод, проверки, выгрузка готового документа.",
         f"- [Оферта]({APP}/terms): условия использования сервиса, редакция документа фиксируется при регистрации.",
-        f"- [Персональные данные]({APP}/privacy): какие данные обрабатываются, передача текста поставщику языковой модели, права пользователя.", "",
+        f"- [Персональные данные]({APP}/privacy): какие данные обрабатываются, передача текста поставщикам языковых моделей, права пользователя.", "",
         "## Key Facts", "",
         f"- Цена: от ${starter['price']} за страницу; страница равна 250 словам исходника; подписки нет, оплата за объём.",
         "- Форматы: .docx, .pdf, .xlsx, .pptx, .html, .txt/.csv/.md, картинки и сканы; любой формат проходит через .docx и возвращается в своём формате, где это возможно.",
@@ -627,7 +514,7 @@ def build_llms():
         "- Проверено на учебнике из 324 страниц: 2 711 строк, 162 рисунка, глоссарий из 1 307 терминов.",
         "- Языки: любая пара из каталога сервиса, интерфейс на русском, узбекском и английском.",
         "- Рынок: Узбекистан, офис в Ташкенте; работа с организациями по счёту.",
-        "- Обработка данных: текст документов передаётся поставщику языковой модели (OpenAI, США), это названо в политике персональных данных.", "",
+        "- Обработка данных: текст документов передаётся поставщикам языковых моделей (OpenAI и Anthropic, США), это названо в политике персональных данных.", "",
         "## Contact", "",
         f"- Сайт: {APP}",
         f"- Почта: {EMAIL}",
@@ -649,7 +536,7 @@ def build_llms():
 NOT_FOUND = [
     ("ru", "Такой страницы нет", "Возможно, ссылка устарела или в адресе опечатка.",
      "На главную", "Перевести документ"),
-    ("uz", "Bunday sahifa yo‘q", "Havola eskirgan yoki manzilda xato bo‘lishi mumkin.",
+    ("uz", "Bunday sahifa yoʻq", "Havola eskirgan yoki manzilda xato boʻlishi mumkin.",
      "Bosh sahifaga", "Hujjatni tarjima qilish"),
     ("en", "Page not found", "The link may be outdated, or there is a typo in the address.",
      "Home page", "Translate a document"),
@@ -657,14 +544,27 @@ NOT_FOUND = [
 
 
 def _fonts_link():
-    """Те же шрифты, что у страницы: строка берётся ИЗ шаблона, а не
-    переписывается — сменят шрифт в шаблоне, 404 сменит его сама."""
-    tpl = (SRC / "template.html").read_text(encoding="utf-8")
-    return "".join(l + "\n" for l in tpl.splitlines() if "fonts.g" in l)
+    """Те же шрифты, что у главной: строки берутся ИЗ home.html."""
+    return "".join(l + "\n" for l in _home().splitlines()
+                   if "fonts.g" in l and l.startswith("<link"))
+
+
+NF_CSS = """  :root { --canvas: #F2F5FA; --panel: #FBFCFE; --line: #DAE2EE; --ink: #0B1324; --ink-2: #44516A; --accent: #0A5CF0; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--canvas); color: var(--ink); font: 400 17px/1.55 "Manrope", "Segoe UI", system-ui, sans-serif; }
+  .logo { display: inline-flex; gap: 10px; align-items: center; color: var(--ink); text-decoration: none; font-weight: 800; }
+  .logo-mark { width: 28px; height: 28px; border-radius: 8px; background: var(--accent); }
+  .nf-page { min-height: 100vh; display: grid; place-content: center; gap: 44px; padding: 48px 20px; }
+  .nf { display: grid; gap: 12px; max-width: 34rem; }
+  .nf h1, .nf h2 { margin: 0; font: 600 clamp(1.4rem, 3vw, 2rem)/1.2 "Unbounded", "Segoe UI", sans-serif; }
+  .nf p { margin: 0; color: var(--ink-2); }
+  .nf-links { display: flex; flex-wrap: wrap; gap: 10px; }
+  .btn { display: inline-flex; align-items: center; min-height: 46px; padding: 0 20px; border-radius: 999px; font-weight: 700; text-decoration: none; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-ghost { border: 1.5px solid var(--line); color: var(--ink); background: var(--panel); }"""
 
 
 def build_404():
-    css = (SRC / "styles.css").read_text(encoding="utf-8").rstrip("\n")
     blocks = []
     for code, h, p, home, go in NOT_FOUND:
         lvl = 1 if code == KEY_LANG else 2
@@ -680,13 +580,7 @@ def build_404():
             "<link rel=\"icon\" href=\"/favicon.ico\" sizes=\"48x48\">\n"
             "<link rel=\"icon\" href=\"/favicon.svg\" type=\"image/svg+xml\">\n"
             + _fonts_link() +
-            "<style>\n" + css + "\n"
-            "  .nf-page { min-height: 100vh; display: grid; place-content: center; gap: 44px; padding: 48px 20px; }\n"
-            "  .nf { display: grid; gap: 12px; max-width: 34rem; padding: 0; }\n"
-            "  .nf h1, .nf h2 { font-size: clamp(1.4rem, 3vw, 2rem); }\n"
-            "  .nf p { color: var(--muted); }\n"
-            "  .nf-links { display: flex; flex-wrap: wrap; gap: 10px; }\n"
-            "</style>\n" + metrika() + "\n</head>\n<body>\n<main class=\"nf-page\">\n"
+            "<style>\n" + NF_CSS + "\n</style>\n" + metrika() + "\n</head>\n<body>\n<main class=\"nf-page\">\n"
             + '<a class="logo" href="%s/"><span class="logo-mark" aria-hidden="true"></span>'
               '<span class="logo-t">%s</span></a>\n' % (SITE, BRAND)
             + "\n".join(blocks) + "\n</main>\n</body>\n</html>\n")

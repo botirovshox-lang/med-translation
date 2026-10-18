@@ -97,21 +97,12 @@
     if (href.charAt(0) === "#") { ev("cta:anchor"); return; }
   }, true);
 
-  /* Форма: файл, отправка, ошибка, передача файла. Ошибку узнаём по тому,
-     какой из data-* текстов встал в #tr-err: ключи закрыты списком. */
+  /* Форма: файл, отправка, передача файла. */
   var fileIn = document.getElementById("tr-file");
   if (fileIn) fileIn.addEventListener("change", function () { ev("form.file", true); });
   var form = document.getElementById("tr");
   if (form) form.addEventListener("submit", function () { submitted = true; ev("form.submit", true); }, true);
-  var errEl = document.getElementById("tr-err");
-  if (errEl && window.MutationObserver) {
-    new MutationObserver(function () {
-      if (errEl.hidden || !errEl.textContent) return;
-      var key = "other", t = errEl.textContent;
-      ["big", "tgt", "same", "busy"].forEach(function (n) { if (errEl.getAttribute("data-" + n) === t) key = n; });
-      if (key !== "busy") ev("form.err:" + key, true);
-    }).observe(errEl, { childList: true, characterData: true, subtree: true, attributes: true });
-  }
+  /* Ошибки формы считает сама страница: LANDTRACK.err(ключ) ниже. */
 
   /* Уход: до какой глубины дочитал и отправил ли форму. Один раз за
      страницу; `visibilitychange` надёжнее `pagehide` на телефоне. */

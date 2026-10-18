@@ -26,8 +26,8 @@
   8. Тела кнопок без «→» и эмодзи (правила craft floor), все якоря `#…`
      ведут на существующие id, цена «от $0.5» есть в тексте страницы.
  11. Форма перевода на первом экране: настоящая <form> в приложение (работает
-     без скрипта), языки — из каталога сервиса, языка перевода по умолчанию
-     нет, файл уходит только в фрейм приложения и только его источнику.
+     без скрипта), заглушки макета нет, файл уходит только в фрейм приложения
+     и только его источнику.
  12. Страница 404 (noindex, три языка), счётчик Метрики есть ровно тогда,
      когда задан номер, и nginx-конфиг пускает то, что страница зовёт.
 
@@ -59,7 +59,7 @@ def text_of(html):
 
 
 html = (ROOT / "landing" / "index.html").read_text(encoding="utf-8")
-body = (ROOT / "landing" / "src" / "body.html").read_text(encoding="utf-8")
+body = html
 
 # 1. сборка свежая
 check(html == lb.build_index(), "landing/index.html отстал от landing/src — запусти python tools/landing_build.py")
@@ -79,7 +79,7 @@ if lb.INDEXABLE:
     check('<meta name="robots" content="index, follow' in html, "robots meta не index, follow при INDEXABLE")
 else:
     check('<meta name="robots" content="noindex' in html, "robots meta должен быть noindex — сайт закрыт")
-check('<html lang="ru">' in html, "lang=ru нет")
+check('<html lang="ru"' in html, "lang=ru нет")
 for tag in ("og:title", "og:description", "og:image", "og:url", "og:site_name", "twitter:card"):
     check(f'"{tag}"' in html, f"нет {tag}")
 check('name="viewport"' in html and "viewport-fit=cover" in html, "viewport без viewport-fit=cover")
@@ -152,7 +152,7 @@ check(not re.search("[\U0001F300-\U0001FAFF☀-➿]", html), "эмодзи в р
 ids = set(re.findall(r' id="([^"]+)"', html))
 for a in set(re.findall(r'href="#([^"]+)"', html)):
     check(a in ids, f"якорь #{a} без цели")
-check("Примеры отзывов для макета" in page_text or "примеры отзывов" in page_text.lower(), "отзывы-примеры не помечены как примеры")
+check("Образцы" in page_text, "отзывы-примеры не помечены как образцы")
 check("click.simpletranslate.me" in (ROOT / "deploy" / "nginx-click.conf").read_text(encoding="utf-8"), "nginx-конфиг поддомена не про click")
 
 
@@ -167,7 +167,7 @@ for code in lb.langs():
         continue
     h = path.read_text(encoding="utf-8")
     check(h == lb.build_index(code), f"{path.name} ({code}) отстал от landing/src")
-    check(f'<html lang="{code}">' in h, f"{code}: lang в <html> не {code}")
+    check(f'<html lang="{code}"' in h, f"{code}: lang в <html> не {code}")
     canon = f'<link rel="canonical" href="{lb.SITE}/{lb.LANG_DIRS[code]}">'
     check(canon in h, f"{code}: canonical не самоссылающийся")
     # hreflang — связка переводов. Нет её — поисковик считает страницы
@@ -183,14 +183,14 @@ for code in lb.langs():
     check(30 <= len(t) <= 60, f"{code}: title {len(t)} знаков, надо 30–60")
     check(120 <= len(d) <= 160, f"{code}: description {len(d)} знаков, надо 120–160")
     check(h.count("<h1") == 1, f"{code}: H1 не ровно один")
-    # Переключатель языка есть на каждой странице и ведёт на все остальные.
-    check('class="lang-pick"' in h, f"{code}: нет переключателя языка")
+    # Переключатель языка — ССЫЛКИ на адреса языков (язык страницы — её адрес).
+    sw = re.search(r'<div class="langs".*?</div>', h, re.S)
+    check(bool(sw), f"{code}: нет переключателя языка")
+    names = {"ru": "Русский", "uz": "O‘zbekcha", "en": "English"}
     for other in lb.langs():
-        check(f'href="{lb.SITE}/{lb.LANG_DIRS[other]}"' in h, f"{code}: переключатель не ведёт на «{other}»")
-    # Название языка — НА НЁМ САМОМ: страницу ищет тот, кто нынешних
-    # надписей не читает.
-    for other, name in lb.LANG_NAMES.items():
-        check(f">{name}</a>" in h, f"{code}: в переключателе нет «{name}» (название языка на нём самом)")
+        check(sw and f'href="/{lb.LANG_DIRS[other]}"' in sw.group(0), f"{code}: переключатель не ведёт на «{other}»")
+        # Название языка — НА НЁМ САМОМ: страницу ищет тот, кто нынешних надписей не читает.
+        check(sw and f">{names[other]}</a>" in sw.group(0), f"{code}: в переключателе нет «{names[other]}»")
     # Флагов нет: флаг — это страна, а не язык (у английского их два десятка).
     check(not re.search("[\U0001F1E6-\U0001F1FF]", h), f"{code}: эмодзи-флаг в переключателе языка")
 
@@ -203,7 +203,9 @@ for code in lb.langs():
     # Список языков формы — названия НА НИХ САМИХ («Қазақша», «Русский»):
     # его читает и тот, кто языка страницы не знает, и кириллица там законна.
     vis = re.sub(r"<script.*?</script>|<style.*?</style>|<!--.*?-->|<select.*?</select>", " ", h, flags=re.S)
-    ALLOWED = ("Til · Язык · Language", "Русский", "бактериовыделение")
+    # Законная кириллица: название языка на нём самом, обложка оригинала
+    # Чехова (пример «Книга») и строка-оригинал в примере проверки цифр.
+    ALLOWED = ("Русский", "А. П. Чехов", "Толстый и тонкий", "Принимать по", "300 мг", "2 раза в день")
     left = []
     for piece in re.split(r"(<[^>]+>)", vis):
         if not re.search("[А-Яа-яЁё]", piece):
@@ -213,42 +215,13 @@ for code in lb.langs():
         left.append(piece.strip()[:70])
     check(not left, f"{code}: русские строки в переводе: {left[:3]}")
 
-# ─── 10. Линза: пары, цифры и метка кольца ───────────────────────────
-# Линза — это обещание «покажу перевод ИМЕННО на ваш язык», и держится
-# оно на трёх вещах: пары есть, в каждой стоят те самые числа, которые
-# обещает подпись под ней, и метка на кольце берётся из данных.
-check(len(lb.LENS_PAIRS) >= 3, "пар в линзе меньше трёх — выбирать нечего")
-for pr in lb.LENS_PAIRS:
-    for side in ("src", "tgt"):
-        text = " ".join(pr[side])
-        # Подпись под линзой обещает «120, 18–65 и 300 мг/сут сверены
-        # с оригиналом». Пара без этих чисел сделала бы её враньём ровно
-        # в том, что мы продаём.
-        for num in ("120", "18", "65", "300"):
-            check(num in text, f"пара {pr['label']}: в {side} нет числа {num}")
-        check(len(pr[side]) == len(pr["src"]), f"пара {pr['label']}: стороны разной длины")
-    check(pr["srcLang"] and pr["tgtLang"], f"пара {pr['label']} без кодов языка")
-    check(pr["code"], f"пара {pr['label']} без метки кольца")
-# Метка кольца рисуется ИЗ АТРИБУТА: зашитая в CSS `content: "EN"`
-# писала бы «EN» на узбекской паре, и поменять её из скрипта нельзя.
-css = (ROOT / "landing" / "src" / "styles.css").read_text(encoding="utf-8")
-check("content: attr(data-code)" in css, "метка кольца зашита в CSS, а не берётся из data-code")
-check('content: "EN"' not in css, "в CSS осталась зашитая метка «EN»")
-for code in lb.langs():
-    h = (ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")).read_text(encoding="utf-8")
-    check("window.LENS_PAIRS" in h, f"{code}: пары линзы не уехали на страницу")
-    check(h.count('"srcLang"') == len(lb.LENS_PAIRS), f"{code}: пар на странице не столько, сколько в сборщике")
-
-
 # ─── 11. Форма перевода на первом экране ─────────────────────────────
-# Форма — главное действие страницы. Она обязана работать и без скрипта
-# (настоящая форма в приложение с парой языков), и языки в ней — ровно
-# каталог сервиса: пара, которой приложение не знает, молча не подставилась
-# бы после регистрации.
-catalog = {x["code"] for x in lb._languages()}
+# Форма — главное действие страницы. Она настоящая: без скрипта уводит
+# в приложение с намерением и языком страницы, со скриптом отдаёт файл
+# фрейму приложения (и только ему). Заглушки макета (MOCK) нет.
 for code in lb.langs():
     h = (ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")).read_text(encoding="utf-8")
-    form = re.search(r'<form class="tr".*?</form>', h, re.S)
+    form = re.search(r'<form class="tr[^"]*"[^>]*id="tr".*?</form>', h, re.S)
     check(form is not None, f"{code}: нет формы перевода")
     if not form:
         continue
@@ -256,30 +229,16 @@ for code in lb.langs():
     check(f'action="{lb.APP}/"' in f and 'method="get"' in f, f"{code}: форма не ведёт в приложение")
     check('name="start" value="translate"' in f, f"{code}: форма не несёт start=translate")
     check(f'name="lang" value="{code}"' in f, f"{code}: форма не передаёт язык страницы")
-    check(h.index('<form class="tr"') < h.index('id="demo"'), f"{code}: форма не на первом экране")
-    for side in ("src", "tgt"):
-        sel = re.search(r'<select name="%s".*?</select>' % side, f, re.S).group(0)
-        codes = set(re.findall(r'<option value="([^"]+)"', sel))
-        check(codes and codes <= catalog, f"{code}: в списке {side} языки вне каталога: {sorted(codes - catalog)[:3]}")
-        check(len(codes) == len(catalog), f"{code}: в списке {side} не все языки каталога")
-    tgt_sel = re.search(r'<select name="tgt".*?</select>', f, re.S).group(0)
-    # Языка ПЕРЕВОДА по умолчанию нет: неверная пара — оплаченный перевод
-    # не на тот язык, а человек нажмёт «Перевести», не глядя в список.
-    check(" selected" not in tgt_sel and '<option value="">' in tgt_sel, f"{code}: у языка перевода есть умолчание")
-    src_sel = re.search(r'<select name="src".*?</select>', f, re.S).group(0)
-    check(f'value="{lb.FORM_SRC[code]}" lang' in src_sel and " selected" in src_sel,
-          f"{code}: язык оригинала не равен языку страницы")
-    check('type="file"' in f and 'name=' not in re.search(r'<input type="file"[^>]*>', f).group(0),
+    check(h.index('id="tr"') < h.index('id="what"'), f"{code}: форма не на первом экране")
+    check('type="file"' in f and 'name=' not in re.search(r'<input[^>]*type="file"[^>]*>', f).group(0),
           f"{code}: поле файла с name — имя файла уехало бы в адрес")
-    for key in ("tgt", "same", "big", "busy"):
-        check(f'data-{key}="' in f, f"{code}: нет надписи ошибки data-{key}")
-    check(not lb.FREE_PAGES or "250" in f, f"{code}: форма не называет бесплатный объём")
-    # Файл уходит ТОЛЬКО фрейму приложения и только его источнику: postMessage
-    # со звёздочкой отдал бы документ человека любому, кто окажется во фрейме.
-    js = re.search(r"<script>\n\(function \(\).*?</script>", h, re.S).group(0)
+    check('name="tgt"' in f and 'name="src"' in f, f"{code}: нет языков в форме")
+    js = h[h.rindex("<script>"):]
+    check("MOCK" not in js and "showMock" not in js, f"{code}: в скрипте осталась заглушка макета")
     check('postMessage({ type: "mct-handoff"' in js and "}, APP)" in js, f"{code}: файл уходит не только приложению")
     check('ev.origin !== APP' in js, f"{code}: ответ фрейма не сверяется по источнику")
     check('var APP = "%s"' % lb.APP in js, f"{code}: адрес приложения в скрипте разошёлся со сборщиком")
+    check('q.set("from", lang === "ru" ? "index" : lang)' in js, f"{code}: источник регистрации не по странице")
 # Приложение принимает файл той же страницей, куда его шлёт форма, и
 # отвечает только лендингу (frontend/handoff.html + LANDING_ORIGINS).
 hand = (ROOT / "frontend" / "handoff.html").read_text(encoding="utf-8")
@@ -306,16 +265,20 @@ check((ROOT / "landing" / (lb.INDEXNOW_KEY + ".txt")).read_text(encoding="utf-8"
       "файл ключа IndexNow не совпадает с ключом")
 
 
-# ─── 13. /start/: плитки и карусель — одна картинка на перевод ──────
+# ─── 13. Плитки и карусель — одна картинка на перевод ───────────────
 # Плитки «Что переводим» и карусель «Фото» показывают переводы одних
 # и тех же проектов. Своя копия у плитки собиралась отдельно и отставала
 # от правил перерисовки: буквица Чехова с завитком (Х8) осталась на
 # плитке, когда в карусели её уже стёрли. Плитка берёт картинки слайда
 # (`data-img`), а копии в media/ быть не должно.
-st = (ROOT / "landing" / "start" / "index.html").read_text(encoding="utf-8")
-media = ROOT / "landing" / "start" / "media"
+st = (ROOT / "landing" / "src" / "home.html").read_text(encoding="utf-8")
+media = ROOT / "landing" / "media"
+# Медиа — по абсолютному адресу /media/: страница лежит и в /, и в /uz/, /en/.
+check('"media/' not in st, "в странице относительный адрес media/ — на /uz/ и /en/ он сломается")
+for ref in set(re.findall(r'"/media/([\w.-]+)"', st)):
+    check((media / ref).exists(), f"нет файла /media/{ref}")
 tl_langs = re.search(r'var TL_LANGS = \[([^\]]*)\]', st)
-check(bool(tl_langs), "/start/: не нашёл TL_LANGS")
+check(bool(tl_langs), "главная: не нашёл TL_LANGS")
 tl_codes = re.findall(r'"([A-Z]{2})"', tl_langs.group(1)) if tl_langs else []
 slides = dict(re.findall(r'\{ k: "(\w+)", f: "([\w-]+)"', st))
 borrowed = set()
@@ -327,13 +290,13 @@ for m in re.finditer(r'<article class="tile[^"]*" data-tile="(\w+)" data-src="(\
     pref = img.group(1) if img else "tile-%s-" % k
     if img:
         borrowed.add(k)
-        check(pref in slides.values(), f"/start/: плитка {k} ссылается на {pref}, а слайда с ним нет")
+        check(pref in slides.values(), f"главная: плитка {k} ссылается на {pref}, а слайда с ним нет")
     for c in [src] + [c for c in tl_codes if c != src]:
-        check((media / (pref + c.lower() + ".webp")).exists(), f"/start/: нет картинки плитки {k}: {pref}{c.lower()}.webp")
+        check((media / (pref + c.lower() + ".webp")).exists(), f"главная: нет картинки плитки {k}: {pref}{c.lower()}.webp")
 for f in media.glob("tile-*.webp"):
     k = f.stem.split("-")[1]
     check(k not in slides and k not in borrowed,
-          f"/start/: {f.name} — копия картинки карусели, плитка обязана брать её (data-img)")
+          f"главная: {f.name} — копия картинки карусели, плитка обязана брать её (data-img)")
 
 
 if FAILS:

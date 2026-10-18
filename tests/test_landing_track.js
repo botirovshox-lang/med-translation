@@ -76,12 +76,16 @@ tick();
 console.log("=== 3. Форма ===");
 els.file.listeners.change();
 els.form.listeners.submit();
-errEl.hidden = false; errEl.textContent = "Выберите язык"; moCb && moCb([]);
+/* Ошибки формы считает страница (LANDTRACK.err); наблюдатель #tr-err снят:
+   он считал «Открываем редактор…» и любую ошибку без data-* как other. */
+errEl.hidden = false; errEl.textContent = "Открываем редактор…"; moCb && moCb([]);
+win.LANDTRACK.err("eTgt");
 win.LANDTRACK.goal("tr_handoff_fail");
 win.LANDTRACK.err("eBig");
 tick();
 ["form.file", "form.submit", "form.err:tgt", "form.err:big", "form.handoff_fail"].forEach(c =>
   check(all().indexOf(c) >= 0, "форма: " + c));
+check(all().indexOf("form.err:other") < 0, "«Открываем редактор…» ошибкой не считается");
 
 console.log("=== 4. Уход ===");
 doc.visibilityState = "hidden";

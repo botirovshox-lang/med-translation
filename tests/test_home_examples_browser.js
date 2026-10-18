@@ -61,10 +61,15 @@ window.addEventListener("load", function () {
         document.getElementById("ex-next").click();
         say("next", sel());
         say("lblRu", document.getElementById("ex-next").getAttribute("aria-label"));
-        var en = document.querySelector('.langs button[data-lang="en"]'); if (en) en.click();
-        say("lblEn", document.getElementById("ex-next").getAttribute("aria-label"));
-        var d = document.createElement("div"); d.id = "_probe"; d.textContent = out.join("|");
-        document.body.appendChild(d);
+        var fr = document.createElement("iframe"); fr.src = "/en/";
+        fr.onload = function () {
+          setTimeout(function () {
+            say("lblEn", fr.contentDocument.getElementById("ex-next").getAttribute("aria-label"));
+            var d = document.createElement("div"); d.id = "_probe"; d.textContent = out.join("|");
+            document.body.appendChild(d);
+          }, 800);
+        };
+        document.body.appendChild(fr);
       }, 7000);
     }, 3000);
   }, 3300);
@@ -89,7 +94,7 @@ server.listen(0, "127.0.0.1", () => {
   const proc = spawn(bin, ["--headless=new", "--disable-gpu", "--window-size=1400,1000", "--no-sandbox", "--no-first-run",
     "--no-default-browser-check", "--disable-background-networking", "--disable-component-update",
     "--user-data-dir=" + profile, "--virtual-time-budget=30000", "--dump-dom",
-    `http://127.0.0.1:${port}/start/`]);
+    `http://127.0.0.1:${port}/`]);
   let dom = "";
   proc.stdout.on("data", b => { dom += b.toString("utf8"); });
   const killer = setTimeout(() => { try { proc.kill(); } catch (e) {} }, 60000);

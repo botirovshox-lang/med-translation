@@ -340,6 +340,8 @@ def page_lines(page) -> tuple:
     dos: list = []                      # на каждый Do: вошли ли в форму (для `va`)
     ftext: list = []                    # текст, выданный внутри формы (по вложенности)
     dups: set = set()                   # номера кусков-повторов текста формы
+    fb_last: list = [None]              # Ц1: прошлый оператор показа текста (подпись, точка)
+    fb_pairs: list = []                 # Ц1: (y, знаков) операторов-повторов в той же точке
     fmats: list = []                    # матрица формы на листе (Matrix × cm у Do)
     stack: list = []
     astack: list = []
@@ -644,7 +646,19 @@ def page_lines(page) -> tuple:
                 except Exception:
                     got = None
                 try:
-                    op_recs.append(op_rec(op, args, cm, _tm, got))
+                    rec_ = op_rec(op, args, cm, _tm, got)
+                    op_recs.append(rec_)
+                    sig_ = (op, repr(args[0] if args else None), font_key(state.get("fd"))
+                            if state.get("fd") is not None else None)
+                    lst_ = fb_last[0]
+                    s_ = max(float(rec_[3] or 0), 1.0)
+                    if (lst_ is not None and lst_[0] == sig_ and rec_[4] > 0
+                            and abs(lst_[1][0] - rec_[0]) <= FAUX_BOLD_TOL * s_
+                            and abs(lst_[1][1] - rec_[1]) <= FAUX_BOLD_TOL * s_):
+                        fb_pairs.append((rec_[1], rec_[4]))
+                        fb_last[0] = None
+                    else:
+                        fb_last[0] = (sig_, rec_)
                 except Exception:
                     pass
                 box = state["box"]
@@ -817,6 +831,18 @@ def page_lines(page) -> tuple:
     except TypeError:
         # Старый pypdf или подмена без посетителей — строки без геометрии.
         return (page.extract_text() or "").splitlines(), None
+    if FAUX_BOLD_DEDUP and fb_pairs:
+        # Ц1: текст, напечатанный дважды в одной точке («ложный полужирный»:
+        # обводка `1 Tr` и заливка `0 Tr` поверх), — ОДИН текст. pypdf
+        # склеивает обе копии в один кусок, поэтому повтор вырезается из
+        # текста куска по длинам операторов-повторов, а кусок — полужирный.
+        # Число и порядок кусков не меняются (номера `dups` остаются верны).
+        lines_ = out.splitlines()
+        for keep_ in (lambda k: True, lambda k: k not in dups):
+            if "".join(c[0] for k, c in enumerate(chunks) if keep_(k)).splitlines() == lines_:
+                chunks = _faux_bold_strip(chunks, fb_pairs)
+                out = "".join(c[0] for k, c in enumerate(chunks) if keep_(k))
+                break
     lines = out.splitlines()
     try:
         vrules, hrules = _grid_rules(vrules, hrules)
@@ -835,6 +861,86 @@ def page_lines(page) -> tuple:
     except Exception:
         geom = None
     return lines, geom
+
+
+# Ц1. Текст, напечатанный ДВАЖДЫ в одной точке. Симптом (статья «Бюллетеня
+# сибирской медицины», проекты 105/106/110): колонтитул на каждой странице
+# читался «Бюллетень сибирской медицины. Бюллетень сибирской медицины. 2026;
+# 25 (3)2026; 25 (3): : 34–4034–40», перевод задваивался, а сам колонтитул,
+# не похожий на себя на соседних страницах, не узнавался колонтитулом и
+# вклеивался в абзац текста. Причина: вёрстка рисует «ложный полужирный» —
+# тот же кусок обводкой (`1 Tr`) и сразу заливкой (`0 Tr`) с `0 0 TD`, и
+# pypdf отдаёт текст дважды. Правило: кусок с тем же текстом тем же кеглем
+# в той же точке (не дальше `FAUX_BOLD_TOL` кегля), идущий в пределах трёх
+# кусков после такого же, — повтор: он выбрасывается из кусков и из ответа,
+# а оставшийся считается полужирным (так его и видит читатель).
+# `PDF_FAUX_BOLD=0` — без отбора.
+FAUX_BOLD_DEDUP = os.environ.get("PDF_FAUX_BOLD", "1") != "0"
+FAUX_BOLD_TOL = 0.25
+
+
+def _undouble(text: str, lens: list) -> "tuple[str, int]":
+    """Текст куска без повторов: `lens` — числа знаков (без пробелов)
+    операторов-повторов по порядку. Ответ — (текст, сколько повторов снято)."""
+    out, pos, got = [], 0, 0
+    for n in lens:
+        found = None
+        for s0 in range(pos, len(text)):
+            if text[s0].isspace() and n:
+                continue
+            cnt, m = 0, 0
+            while s0 + m < len(text) and cnt < n:
+                if not text[s0 + m].isspace():
+                    cnt += 1
+                m += 1
+            if cnt < n:
+                break
+            # Хвостовые пробелы — часть оператора («медицины. »).
+            for m2 in range(m, min(len(text) - s0, m + 4) + 1):
+                if m2 and text[s0:s0 + m2] == text[s0 + m2:s0 + 2 * m2]:
+                    found = (s0, m2)
+                    break
+            if found:
+                break
+        if not found:
+            continue
+        s0, m = found
+        out.append(text[pos:s0 + m])
+        pos = s0 + 2 * m
+        got += 1
+    out.append(text[pos:])
+    return "".join(out), got
+
+
+def _faux_bold_strip(chunks: list, pairs: list) -> list:
+    """Куски без повторов «ложного полужирного» (Ц1): повторы ищутся в кусках
+    своей базовой линии; кусок, где что-то снято, — полужирный."""
+    res = []
+    left = list(pairs)
+    for c in chunks:
+        if c[2] is None or not left:
+            res.append(c)
+            continue
+        s = max(float(c[3] or 0), 1.0)
+        mine = [p for p in left if abs(p[0] - c[2]) <= FAUX_BOLD_TOL * s]
+        if not mine:
+            res.append(c)
+            continue
+        t, got = _undouble(c[0] or "", [p[1] for p in mine])
+        if not got:
+            res.append(c)
+            continue
+        for p in mine[:got]:
+            left.remove(p)
+        res.append(_bold_chunk((t,) + tuple(c[1:])))
+    return res
+
+
+def _bold_chunk(c: tuple) -> tuple:
+    st = c[5] if len(c) > 5 else ""
+    if len(c) <= 5 or "b" in (st or ""):
+        return c
+    return c[:5] + (("b" + (st or "")) if st != "i" else "bi",) + c[6:]
 
 
 # Над- и подстрочные знаки куском МЕЛЬЧЕ и выше/ниже строки (Т9): сноска
@@ -963,7 +1069,19 @@ EXACT_CHAIN_GAP = 0.6
 EXACT_CHAIN_RISE = 0.6
 
 
-def _exact_ends(geo_lines: list, op_ends) -> None:
+def _other_row_at(row_starts: dict, x: float, y: float, me: int) -> bool:
+    """Ц4: с этой точки начинается ДРУГАЯ строка ответа — её оператор не
+    продолжает нашу («1, 2» надстрочником у «Брагина Е.Ю.» — своя строка
+    pypdf, и цепочка через неё растягивала конец «Брагина» на индекс)."""
+    xi, yi = int(round(x)), int(round(y))
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            if any(r != me for r in row_starts.get((xi + dx, yi + dy), ())):
+                return True
+    return False
+
+
+def _exact_ends(geo_lines: list, op_ends, op_recs=()) -> None:
     """Точный конец строки — по концам ОПЕРАТОРОВ показа текста (`op_end`).
 
     Оператор принадлежит строке, если стоит на её базовой линии, начался
@@ -975,6 +1093,17 @@ def _exact_ends(geo_lines: list, op_ends) -> None:
     куска (`xl`): иначе какой-то оператор строки посчитать не удалось.
     Поле 8 строки — «точный», 9 (ключи шрифтов) после сверки снимается."""
     rows = [(k, g) for k, g in enumerate(geo_lines) if g]
+    # Ц4: кегль оператора по его точке — чтобы надстрочник («¹» строки
+    # авторов) не «продолжался» оператором ОСНОВНОГО текста ниже себя.
+    op_sz: dict = {}
+    for r_ in op_recs or ():
+        try:
+            op_sz[(int(round(r_[0])), int(round(r_[1])))] = float(r_[3] or 0)
+        except (TypeError, ValueError, IndexError):
+            continue
+    row_starts = {}
+    for _k, g_ in rows:
+        row_starts.setdefault((int(round(g_[0])), int(round(g_[1]))), []).append(id(g_))
     for k, g in rows:
         keys = g[9] if len(g) > 9 else set()
         # 9 — цвет краски, 10 — разрывы строки (`_line_gaps`).
@@ -1016,7 +1145,13 @@ def _exact_ends(geo_lines: list, op_ends) -> None:
                         continue
                     if (ex > best and best - 0.5 <= sx <= best + EXACT_CHAIN_GAP * size
                             and abs(sy - y) <= EXACT_CHAIN_RISE * size and key in keys
-                            and (lim is None or ex <= lim)):
+                            and (lim is None or ex <= lim)
+                            and not (abs(sy - y) > 0.3 * size
+                                     and op_sz.get((int(round(o[0])), int(round(sy))), 0.0) > 0.85 * size)
+                            and not _other_row_at(row_starts, sx, sy, id(g))):
+                        # Ц4: на ДРУГОЙ базовой линии цепочка идёт только через
+                        # оператор МЕЛЬЧЕ строки (надстрочная ссылка посреди
+                        # строки, Т33), а не через основной текст под надстрочником.
                         best, grown = ex, True
         if best is not None and best >= xl and (lim is None or best <= lim):
             g[3] = round(best, 1)
@@ -1235,6 +1370,7 @@ def _line_parts(body: list, chunks: list, size: float, cw: float):
 
 def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=(), icons=(), rules=((), ())):
     text = "".join(c[0] for c in chunks)
+    _set_chunk_starts(chunks)
     if text.splitlines() != lines:
         return None                      # куски не сложились в ответ — не гадаем
     owner = []                          # номер куска на каждый знак
@@ -1306,7 +1442,7 @@ def _geometry(lines, out, chunks, figs, rects, page, op_ends=(), op_recs=(), ico
     # Одна строка ответа — одна строка геометрии; иначе смысла в ней нет.
     if len(geo_lines) != len(lines):
         return None
-    _exact_ends(geo_lines + [sg[1] for subs in splits.values() for sg in subs[1:]], op_ends)
+    _exact_ends(geo_lines + [sg[1] for subs in splits.values() for sg in subs[1:]], op_ends, op_recs)
     try:
         mb = page.mediabox
         box = [float(mb.left), float(mb.bottom), float(mb.right), float(mb.top)]
@@ -1413,16 +1549,78 @@ def _chunk_end_exact(c, ends: dict):
 
 
 def _chunk_end(c, cw: float, ends: dict) -> float:
-    """Конец краски куска: по оператору, начатому в его точке, иначе оценка."""
-    est = c[1] + len(c[0].strip()) * cw * max(c[3] or 1.0, 1.0)
+    """Конец краски куска: по оператору, начатому в его точке, иначе оценка.
+
+    Ц3: кусок pypdf бывает собран из НЕСКОЛЬКИХ операторов подряд («С»,
+    «развитием … вариант», «rs10905277 гена»): конец первого — не конец
+    куска, и оценка «конец = первый оператор» объявляла пропастью весь
+    остаток строки (курсивное «GATA3» после неё становилось отдельной
+    надписью). Операторы, начатые вплотную к концу предыдущего (не дальше
+    `CHAIN_GAP` кегля) на той же базовой линии, идут цепочкой — до границы
+    оценки куска с запасом."""
+    size = max(c[3] or 1.0, 1.0)
+    est = c[1] + len(c[0].strip()) * cw * size
     if ends:
         x, y = int(round(c[1])), int(round(c[2]))
         for dx in (0, -1, 1):
             for dy in (0, -1, 1):
                 e = ends.get((x + dx, y + dy))
                 if e is not None and e > c[1]:
+                    ch = (_chain_end(ends, e, c[2], size, est + 0.3 * max(0.0, est - c[1]) + 2 * size,
+                                     _next_start(c))
+                          if CHAIN_GAP > 0 else e)
+                    if ch > e:
+                        return ch
                     return min(est, e) if est > c[1] else e
     return est
+
+
+CHAIN_GAP = float(os.environ.get("PDF_CHAIN_GAP", "0.6"))  # 0 — выключить (Ц3)
+
+
+# Начала кусков страницы по высоте — чтобы цепочка операторов (Ц3) не
+# заходила в СОСЕДНИЙ кусок той же строки («Loss (intermediate)» и ячейка
+# «Beneﬁt:» вплотную справа в инфографике проекта 14). Ставит `_geometry`.
+_CHUNK_STARTS: dict = {}
+
+
+def _set_chunk_starts(chunks: list) -> None:
+    _CHUNK_STARTS.clear()
+    for c in chunks:
+        if c[1] is not None and c[2] is not None and (c[0] or "").strip():
+            _CHUNK_STARTS.setdefault(int(round(c[2])), []).append(float(c[1]))
+    for v in _CHUNK_STARTS.values():
+        v.sort()
+
+
+def _next_start(c) -> "float | None":
+    """Начало ближайшего куска правее `c` на той же базовой линии."""
+    yy = int(round(c[2]))
+    best = None
+    for dy in (-1, 0, 1):
+        for x in _CHUNK_STARTS.get(yy + dy, ()):
+            if x > c[1] + 0.5 and (best is None or x < best):
+                best = x
+                break
+    return best
+
+
+def _chain_end(ends: dict, e: float, y: float, size: float, bound: float, stop: "float | None" = None) -> float:
+    """Конец цепочки операторов, начатых вплотную один за другим (Ц3); оператор,
+    начатый в начале СЛЕДУЮЩЕГО куска (`stop`) и дальше, — уже не наш."""
+    yy = int(round(y))
+    for _ in range(200):
+        nxt = None
+        for kx in range(int(e) - 1, int(e + CHAIN_GAP * size) + 2):
+            for dy in (0, -1, 1):
+                v = ends.get((kx, yy + dy))
+                if (v is not None and v > e + 0.1 and kx >= e - 1.0 and v <= bound
+                        and (stop is None or kx < stop - 0.5)):
+                    nxt = v if nxt is None else max(nxt, v)
+        if nxt is None:
+            return e
+        e = nxt
+    return e
 
 
 def _col_starts(text: str, owner: list, starts: list, chunks: list, cw: float,
@@ -1535,6 +1733,27 @@ def _grid_rules(vrules: list, hrules: list) -> tuple:
     return vs, hs
 
 
+# Ц3. Две надписи одной базовой линии В ОДНОМ куске. Симптом (колонтитул
+# журнала: слева «Мелентьева А.П., … и др.», справа «Ассоциация полиморфизма
+# гена GATA3 (rs10905277)»): pypdf отдаёт обе надписи одним куском, и у строки
+# одно начало и одна оценка конца — левой надписи. Правая оказывалась вне
+# строки: курсивный «GATA3 (rs10905277)» становился отдельным абзацем, а
+# прямой «Ассоциация полиморфизма гена» — «краской вне слоя», которую разбор
+# картинок читал заново и печатал поверх. Правило: кусок режется по
+# операторам показа текста и там, где следующий оператор начат дальше
+# `OP_GAP_SPLIT` кегля от КОНЦА предыдущего (такого межсловного пробела
+# не бывает и в разрядке): дальше разбор видит две надписи (`_h_groups`).
+# `PDF_OP_GAP_SPLIT=0` — не резать.
+OP_GAP_SPLIT = float(os.environ.get("PDF_OP_GAP_SPLIT", "3.0"))
+
+
+def _op_gap(o1, o2, size: float) -> bool:
+    if not OP_GAP_SPLIT or len(o1) < 6 or not o1[5]:
+        return False
+    return (abs(o2[1] - o1[1]) <= 0.3 * size
+            and o2[0] - float(o1[5][0]) > OP_GAP_SPLIT * size)
+
+
 def _split_at_rules(chunks: list, op_recs: list, vrules: list) -> list:
     """Т34. pypdf отдаёт строку ряда таблицы ОДНИМ куском («SNP (ген) Гено- »),
     хотя внутри она нарисована отдельными операторами в разных ячейках.
@@ -1545,8 +1764,11 @@ def _split_at_rules(chunks: list, op_recs: list, vrules: list) -> list:
     на два с началом второго в точке его оператора. Текст строки от этого
     не меняется (половинки подряд дают тот же текст); не сошлось число
     знаков — кусок не трогаем: резать наугад нельзя."""
-    if not vrules or not op_recs:
+    if not op_recs or (not vrules and not OP_GAP_SPLIT):
         return chunks
+    at: dict = {}
+    for k_, o_ in enumerate(op_recs):
+        at.setdefault(int(round(o_[0])), []).append(k_)
     out, pos = [], 0
     for c in chunks:
         if c[1] is None or c[4] or not c[0].strip() or len(c) < 8 or c[7]:
@@ -1554,8 +1776,10 @@ def _split_at_rules(chunks: list, op_recs: list, vrules: list) -> list:
             continue
         size = max(c[3] or 1.0, 1.0)
         want = sum(1 for ch in c[0] if not ch.isspace())
-        j = next((k for k in range(pos, len(op_recs))
-                  if abs(op_recs[k][0] - c[1]) <= 0.6 and abs(op_recs[k][1] - c[2]) <= 0.3 * size), None)
+        xi = int(round(c[1]))
+        j = min((k for dx in (-1, 0, 1) for k in at.get(xi + dx, ())
+                 if k >= pos and abs(op_recs[k][0] - c[1]) <= 0.6 and abs(op_recs[k][1] - c[2]) <= 0.3 * size),
+                default=None)
         if j is None:
             out.append(c)
             continue
@@ -1579,7 +1803,7 @@ def _split_at_rules(chunks: list, op_recs: list, vrules: list) -> list:
         acc = 0
         for o1, o2 in zip(ops, ops[1:]):
             acc += o1[4]
-            if _rule_between(vrules, o1[0], o2[0], (o1[1] + o2[1]) / 2.0, size):
+            if _rule_between(vrules, o1[0], o2[0], (o1[1] + o2[1]) / 2.0, size) or _op_gap(o1, o2, size):
                 cuts.append((acc, o2[0]))
         if not cuts:
             out.append(c)
@@ -1630,6 +1854,38 @@ def _rule_between(vrules, xa, xb, y, size) -> bool:
     return False
 
 
+_ENDS_BY_Y: list = [None, None]
+
+
+def _ends_by_y(ends: dict) -> dict:
+    """{y: [(x начала, конец)]} — индекс `ends` по высоте; последний помнится."""
+    if _ENDS_BY_Y[0] is not ends:
+        idx: dict = {}
+        for (kx, ky), e in ends.items():
+            idx.setdefault(ky, []).append((kx, e))
+        _ENDS_BY_Y[0], _ENDS_BY_Y[1] = ends, idx
+    return _ENDS_BY_Y[1]
+
+
+def _abuts(ends, gx0: float, c) -> bool:
+    """Кусок `c` начат в конце оператора, который начат не левее `gx0`
+    (допуск — пробел, `ABUT_TOL` кегля: ячейки таблицы без линий стоят
+    дальше)."""
+    if not ends or c[1] is None or ABUT_TOL <= 0:
+        return False
+    yy = int(round(c[2]))
+    tol = max(0.8, ABUT_TOL * max(c[3] or 1.0, 1.0))
+    idx = _ends_by_y(ends)
+    for dy in (-1, 0, 1):
+        for kx, e in idx.get(yy + dy, ()):
+            if abs(e - c[1]) <= tol and gx0 - 1.0 <= kx < c[1]:
+                return True
+    return False
+
+
+ABUT_TOL = float(os.environ.get("PDF_ABUT_TOL", "0.3"))  # 0 — выключить (Ц3)
+
+
 def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None, vrules=()) -> list:
     """Куски строки (номера по порядку потока), разбитые на РАЗНЫЕ надписи
     одной базовой линии: следующий кусок отделён от уже собранной части
@@ -1657,6 +1913,12 @@ def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None, vrules=()
         gap = SPLIT_GAP * max(size, sz)
         same = abs(c[2] - y) <= 0.5 * size
         far = c[1] > gx1c + gap or cx1 + gap < gx0
+        abut = same and c[1] > gx0 and _abuts(ends, gx0, c)
+        if abut:
+            # Ц3: кусок начат РОВНО там, где кончился оператор, начатый в этой
+            # части (курсивное «GATA3» после «…гена»), — продолжение надписи,
+            # а не другая надпись: оценка конца по ширине знака тут врёт.
+            far = False
         if _rule_between(vrules, chunks[groups[-1][-1]][1], c[1], (c[2] + y) / 2.0, max(size, sz)):
             # Т34: между началом прошлого куска и началом этого стоит линия
             # таблицы, проходящая через строку, — это другая ячейка, каким
@@ -1672,7 +1934,7 @@ def _h_groups(body: list, chunks: list, cw: float, cols=(), ends=None, vrules=()
         # Колонка таблицы — по ТОЧНОМУ концу краски, где он известен.
         col = (c[1] > gx1c + COL_GAP * max(size, sz)
                and any(abs(c[1] - x) <= COL_TOL for x in cols)
-               and _in_ruled(vrules, c[2], sz, c[1]))
+               and _in_ruled(vrules, c[2], sz, c[1])) and not abut
         has_alpha = any(ch.isalpha() for ch in c[0])
         if (not same and has_alpha and len(c[0].strip()) > 3 and sz >= 0.85 * size
                 and (c[1] > gx1c + V_SPLIT_GAP * sz or cx1 + V_SPLIT_GAP * sz < gx0)

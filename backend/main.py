@@ -1547,6 +1547,17 @@ def _lang_conventions(code: str) -> str:
     на своих книгах. Нет ни того, ни другого — блока нет."""
     r = _lang_rule(code)
     lines = [str(x).strip() for x in (r.get("conventions") or []) if str(x).strip()]
+    dec = (r.get("decimal") or "").strip()
+    if dec in (".", ","):
+        # Ц10: дробное число — разделителем ЯЗЫКА ПЕРЕВОДА: «10,1 года» из
+        # русского оригинала в английском — «10.1 years». Прежде запятая
+        # оставалась: сверка чисел считала «10,1» и «10.1» разными числами
+        # (критичная находка), и ремонт возвращал запятую.
+        lines.append(("Decimal separator is a point: write decimal fractions as 10.1, 0.34–0.77 (convert a decimal"
+                      " comma from the source); section numbers, versions, dates and identifiers stay as they are."
+                      if dec == "." else
+                      "Decimal separator is a comma: write decimal fractions as 10,1, 0,34–0,77 (convert a decimal"
+                      " point from the source); section numbers, versions, dates and identifiers stay as they are."))
     lines += [x for x in _org_lang_rules(code) if x not in lines]
     if not lines:
         return ""
@@ -4334,6 +4345,13 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         "   actually uses for that term; keep it unchanged only if both languages write it\n"
         f"   the same way; if {tgt} has no accepted abbreviation, spell the term out. NEVER\n"
         "   render a source abbreviation letter by letter in the target script.\n"
+        # Ц11: символ гена, белка, варианта, кода (латиница с цифрой) —
+        # не аббревиатура для перевода: китайский перевод статьи расшифровал
+        # «GATA3» нуклеотидами («鸟嘌呤—腺嘌呤—胸腺嘧啶—腺嘌呤结合蛋白3»),
+        # а «STAT5B» — словами. Правило 7 об аббревиатурах этому не мешало.
+        "   Symbols that mix Latin letters and digits — gene, protein and variant symbols,\n"
+        "   codes and identifiers (GATA3, STAT5B, IL10, rs10905277, CD4) — are copied exactly\n"
+        "   as in the source: never expand, spell out, translate or transliterate them.\n"
         # Регистр букв. Без этого правила перевод молча терял заглавную в начале
         # заголовка и подписи, а КАПС заголовка становился обычной строкой: на
         # боевом учебнике так вышло у 36 сегментов. Правило сказано с ДВУХ сторон
@@ -4550,7 +4568,7 @@ def _openai_translate(text: str, src: str, tgt: str,
     # Адрес из оригинала — буква в букву, даже если модель его переписала
     # своими буквами («хттпс://дои.орг/…», проект 14): ссылка в переводе
     # обязана работать. Обратный перевод (`literal`) не трогаем — он мера.
-    return out if literal else _keep_verbatim(text, out)
+    return out if literal else _keep_verbatim(text, _strip_markdown(text, out))
 
 # ─────────────────────────────────────────────────────────────────────
 # Аутентификация
@@ -19265,8 +19283,15 @@ def _job_images(job: dict) -> None:
                             b["serif"] = True
                         else:
                             b.pop("serif", None)
+                        echo_ = _page_block_rect(data, rec, b)
                         if b.get("skip") in ("layer", "figure"):
                             pass                      # текст слоя или рисунка — не наш блок
+                        elif echo_ is not None and _logo_block(data, rec, b, ans["text"]):
+                            b["skip"] = "logo"        # Ц13: знак журнала
+                        elif echo_ is not None and _layer_echo(
+                                ans["text"], _layer_paras_cached(data, project).get(echo_[0]) or [], echo_[1]):
+                            b["skip"] = "layer"       # Ц8: эхо текстового слоя
+                            b["echo"] = 1
                         elif ans["overlay"]:
                             b["skip"] = "overlay"
                         elif image_text.is_noise(ans["text"]):
@@ -24493,6 +24518,45 @@ def _name_like(word: str, every: frozenset, mid: frozenset) -> bool:
     return letters[0].isupper() and w in mid
 
 
+# Ц11. Идентификатор оригинала обязан дожить до перевода буква в букву.
+# Симптом (статья RU→ZH, проект 106): в 32 строках из 234 модель «перевела»
+# символы генов — «GATA3» стал «GATA结合蛋白3» и «鸟嘌呤—腺嘌呤—胸腺嘧啶—
+# 腺嘌呤结合蛋白3», «STAT5B» — «信号转导及转录激活因子5B», «IFNGR2» —
+# «干扰素γ受体2». Проверки этого не видели: числа те же, термина в глоссарии
+# нет, письмо перевода своё. Правило: токен латиницей, в котором есть цифра
+# без дефиса: не меньше трёх заглавных латинских подряд и цифра (GATA3,
+# STAT5B, SOCS5, IFNGR2, FCGR2A), либо номер варианта rs… — стоящий
+# в оригинале, обязан стоять в переводе БУКВА В БУКВУ — иначе бесплатная
+# находка `ident` и счётчик ремонта. Узко намеренно: «HIV-1» → «ВИЧ-1»,
+# «IL-6» → «ИЛ-6», «CO2» → «CO₂», «T2DM» → «СД2» — законный перевод
+# сокращения, и находкой они не становятся (дефис, меньше трёх букв).
+# `IDENT_CHECK=0` — выключить.
+IDENT_CHECK = os.environ.get("IDENT_CHECK", "1") != "0"
+_IDENT_RE = re.compile(r"(?<![\w-])(?:[A-Z]{3,}\d+[A-Z0-9]*|rs\d{3,})(?![\w-])")
+
+
+def _ident_misses(seg: dict) -> list:
+    """Ц11: идентификаторы оригинала, которых нет в переводе."""
+    if not IDENT_CHECK:
+        return []
+    src = (seg.get("source") or "").strip()
+    tgt = (seg.get("target") or "").strip()
+    if not src or not tgt:
+        return []
+    want = []
+    for m in _IDENT_RE.finditer(src):
+        t = m.group(0)
+        if len(t) >= 3 and t not in want:
+            want.append(t)
+    bad = [t for t in want if t not in tgt]
+    if not bad:
+        return []
+    return [{"kind": "ident",
+             "text": "символ из оригинала не перенесён буква в букву: "
+                     + ", ".join("«" + w + "»" for w in bad[:6])
+                     + (" и ещё " + str(len(bad) - 6) if len(bad) > 6 else "")}]
+
+
 def _script_misses(seg: dict) -> list:
     """Буквы письменности ОРИГИНАЛА, оставшиеся в переводе."""
     src = (seg.get("source") or "").strip()
@@ -25634,7 +25698,7 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # обязан откатиться.
     items = (_gloss_misses(seg, project) + _consist_misses(seg, project)
              + _case_misses(seg) + _script_misses(seg) + _dup_misses(seg)
-             + _variant_misses(seg)
+             + _variant_misses(seg) + _ident_misses(seg)
              # Письмо и алфавит ЯЗЫКА ПЕРЕВОДА (латиница вместо узбекской
              # кириллицы): с проектом — находка, без проекта — доезжает
              # списком `_alphabet_ids`, как разнобой.
@@ -26570,6 +26634,8 @@ def _repair_scores(seg: dict, project: Optional[dict] = None,
         "case": len(_case_misses(seg)),
         # И буквы чужого письма — тоже бесплатно и тоже всегда.
         "script": len(_script_misses(seg)),
+        # Ц11: символы генов и коды — бесплатно и всегда.
+        "ident": len(_ident_misses(seg)),
         # Письмо и алфавит языка перевода: правка по другой претензии
         # не вправе вернуть латиницу в кириллический перевод.
         "alphabet": len(_alphabet_misses(seg, project)),
@@ -26689,7 +26755,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # хуже» засчитало бы успехом любой переписанный текст. Мерить тут есть чем
     # и это бесплатно — сама находка детерминированная, поэтому спрашиваем
     # прямо: убавилось ли расхождений по регистру.
-    had_free = any(f["kind"] in ("case", "script", "term_case", "dup", "variants") for f in findings)
+    had_free = any(f["kind"] in ("case", "script", "term_case", "dup", "variants", "ident") for f in findings)
     only_free = had_free and not had_bc and not had_tc
     # Доказательство, сильнее ли находка заверения, снимаем ДО правки: после
     # перепроверки back-check описывает уже НОВЫЙ текст, и находки на старом
@@ -26721,6 +26787,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # Признак не зависит от языка: в ответе появился пустой абзац, которого
     # нет ни в оригинале, ни в прежнем переводе. Заход не засчитываем —
     # следующий спросит заново; угадывать, какой абзац настоящий, нельзя.
+    new_target = _strip_markdown(seg.get("source") or "", new_target)
     if _note_leak(new_target, seg.get("source") or "", old_target):
         return {"ok": False, "error": "Модель вернула вместе с текстом свою заметку — правка не принята"}
     # Начертание правим САМИ и бесплатно, до всякой оценки. Модель приносит
@@ -27044,6 +27111,10 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("букв вне письма языка перевода стало больше "
                    + str(before.get("alphabet", 0)) + " → " + str(after.get("alphabet", 0)))
+    if after.get("ident", 0) > before.get("ident", 0):
+        better = False
+        why.append("символов оригинала не перенесено больше "
+                   + str(before.get("ident", 0)) + " → " + str(after.get("ident", 0)))
     if after.get("doc", 0) > before.get("doc", 0):
         better = False
         why.append("пар терм-листа документа нарушено больше "
@@ -27085,7 +27156,7 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # принимался бы никогда — сумма 0 → 0 читалась бы как «не сняла ничего»,
     # верная правка откатывалась, а сегмент запирался клеймом захода.
     _free = lambda d: (d["case"] + d["script"] + d["term_case"] + d["dup"] + d["self_dup"]
-                       + d.get("alphabet", 0) + d.get("variants", 0))
+                       + d.get("alphabet", 0) + d.get("variants", 0) + d.get("ident", 0))
     if only_free and _free(after) >= _free(before):
         better = False
         why.append("правка не сняла ни регистра, ни чужого письма, ни самоповтора: "
@@ -27353,7 +27424,7 @@ REVIEW_APPLY_LABEL = ("%g" % REVIEW_APPLY_MAX)
 # нет намеренно: первый меряет не то, вторые потребовали бы вызовов модели,
 # ради отказа от которых шаг и заведён.
 REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case",
-                    "doc", "translit", "alphabet", "variants")
+                    "doc", "translit", "alphabet", "variants", "ident")
 # Оценка, ниже которой сегмент зовёт человека, даже если правки не было.
 # Отдельно от REVIEW_APPLY_MAX намеренно: тот отвечает на вопрос «когда машина
 # правит сама», а этот — «когда звать человека», и двигают их по разным
@@ -27452,6 +27523,7 @@ REVIEW_VETO_LABELS = {
     "term_case": "приказных терминов не в начертании оригинала больше",
     "translit": "сокращений передано побуквенно больше",
     "alphabet": "букв вне письма языка перевода больше",
+    "ident": "символов оригинала не перенесено больше",
     "variants": "вариантов через косую черту больше",
     "hard": "расхождение чисел, единиц или отрицания",
 }
@@ -33573,6 +33645,25 @@ def _url_skel(s: str) -> str:
     return re.sub(r"[^\W\d_]", "", s)
 
 
+# Ц12. Разметка Markdown, которой нет в оригинале, — не текст. Симптом
+# (RU→ZH, проект 106): метки аннотации пришли «**材料与方法**», «**结果**» —
+# модель выделила их по-своему, и звёздочки ушли в выгрузку. Правило:
+# «**…**» и «__…__» в ответе модели снимаются (содержимое остаётся), если
+# в оригинале таких знаков нет. Вызывается на выходе перевода и ремонта.
+_MD_BOLD_RE = re.compile(r"(\*\*|__)(?=\S)(.+?)(?<=\S)\1", re.S)
+
+
+def _strip_markdown(source: str, target: str) -> str:
+    if not target or ("**" not in target and "__" not in target):
+        return target
+    src = source or ""
+    out = target
+    for mark in ("**", "__"):
+        if mark in out and mark not in src:
+            out = _MD_BOLD_RE.sub(lambda m: m.group(2) if m.group(1) == mark else m.group(0), out)
+    return out
+
+
 def _keep_verbatim(source: str, target: str) -> str:
     """Адрес из оригинала, переписанный моделью чужими буквами, — обратно
     буква в букву. Узнаётся по СКЕЛЕТУ (цифры и знаки «://./»), совпавшему
@@ -34089,6 +34180,180 @@ def _holds_layer_pieces(src: str, paras: list, rect: "tuple | None") -> bool:
     return rest >= 0.3 * max(1, len(_alnum(src)))
 
 
+# Ц8. Надпись картинки страницы — ЭХО текстового слоя. Симптом (статья
+# «Бюллетеня сибирской медицины», проекты 105/106/110): в аннотации поверх
+# строки печаталось второй раз «SOCS5),», «IFNGR2», «inhibitory protein»,
+# в «Введении» — «интерфероны (IFNG)», «CTGF», в «Заключении» — «варианта»,
+# в литературе — «СТМЫ.»: каша из двух текстов на одном месте. Причина:
+# место курсивных кусков строки слой знает неточно, и сверка «краска минус
+# слой» (Т32) объявляла их краску потерянным текстом; разбор картинки
+# читал эти слова заново, заводил строку и печатал её перевод поверх абзаца,
+# который их уже переводит. Отсев повторов (`_dup_of_layer`) требует от
+# блока трёх слов — короткие двойники проходили. Правило: блок картинки
+# СТРАНИЦЫ, чей текст (буквы и цифры, не короче `LAYER_ECHO_MIN`) — кусок
+# текста абзаца слоя, лежащего в том же месте (рамки пересекаются), — эхо:
+# строка не заводится (`skip: "layer"`, `echo`), а заведённая прежде не
+# печатается. Надпись, которая СОДЕРЖИТ кусок слоя и ещё свои слова
+# («Optimize» слоем + «quality of life» кривыми, Т32), эхом не является.
+# `LAYER_ECHO=0` — выключить.
+LAYER_ECHO = os.environ.get("LAYER_ECHO", "1") != "0"
+LAYER_ECHO_MIN = 3
+
+
+_ECHO_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _echo_words(text: str) -> list:
+    return [w.lower() for w in _ECHO_WORD_RE.findall(text or "")]
+
+
+def _layer_echo(src: str, paras: list, rect: "tuple | None") -> bool:
+    """Ц8: текст блока — кусок абзаца слоя, и блок лежит НА СТРОКЕ этого
+    абзаца (а не просто в рамке абзаца: у абзаца, обтекающего рисунок, она
+    накрывает и рисунок). Кусок — подряд идущие СЛОВА абзаца целиком
+    («age» не кусок «stage»); у блока от 6 знаков допускается нечёткое
+    совпадение (`_piece_in`: распознавание путает буквы)."""
+    if not LAYER_ECHO or rect is None or not paras:
+        return False
+    a = _alnum(src)
+    mine = _echo_words(src)
+    if len(a) < LAYER_ECHO_MIN or not mine:
+        return False
+    bx0, by0, bx1, by1 = rect
+    bh = max(1e-6, by1 - by0)
+    for item in paras:
+        lines = item[4] if len(item) > 4 else [item[1]]
+        psrc = item[3]
+        on_line = False
+        for (rx0, ry0, rx1, ry1) in lines:
+            s_ = max(1.0, ry1 - ry0)
+            if (min(by1, ry1) - max(by0, ry0) >= 0.5 * min(bh, ry1 - ry0)
+                    and bx0 >= rx0 - s_ and bx1 <= rx1 + s_):
+                on_line = True
+                break
+        if not on_line or len(_alnum(psrc)) <= len(a):
+            continue
+        ws = _echo_words(psrc)
+        n = len(mine)
+        if any(ws[k:k + n] == mine for k in range(len(ws) - n + 1)):
+            return True
+        if len(a) >= 6 and _piece_in(src, psrc):
+            return True
+    return False
+
+
+def _page_block_rect(data: dict, rec: dict, b: dict) -> "tuple | None":
+    """(страница, рамка блока в точках листа) у блока записи СТРАНИЦЫ
+    (`pdfpage/…`), иначе None."""
+    part = str(rec.get("part") or "")
+    if not part.startswith(PDF_PAGE_PART) or not b.get("box") or not rec.get("w") or not rec.get("h"):
+        return None
+    try:
+        page = _pdf_page_of(part)
+        pgs = (data.get("layout") or {}).get("pages") or []
+        px0, py0, px1, py1 = (float(v) for v in pgs[page])
+        x0, y0, x1, y1 = (float(v) for v in b["box"])
+        w, h = float(rec["w"]), float(rec["h"])
+    except Exception:
+        return None
+    return page, (px0 + x0 / w * (px1 - px0), py1 - y1 / h * (py1 - py0),
+                  px0 + x1 / w * (px1 - px0), py1 - y0 / h * (py1 - py0))
+
+
+# Ц13. Знак журнала — не надпись. Симптом (статья «Бюллетеня сибирской
+# медицины»): буквы логотипа «ЕСМ» разбор картинки страницы читал словом,
+# английская выгрузка закрашивала знак серыми полосами и печатала поверх
+# «ECM» другим шрифтом, китайская — «细胞外基质» («внеклеточный матрикс»).
+# Правило: блок картинки страницы из ОДНОГО короткого слова капсом
+# (`LOGO_MAX_LETTERS` букв, без цифр), чья строка выше основного текста
+# страницы в `LOGO_SIZE_K` раз и выше любой строки текста на листе, — знак:
+# строка не заводится (`skip: "logo"`), заведённая прежде не печатается.
+# Ц13б: надпись, перевод которой совпадает с оригиналом по ВИДУ букв
+# (кириллица «ЕСМ» и латиница «ECM», регистр), не перерисовывается вовсе:
+# менять на картинке нечего, а перерисовка портит рисунок под ней.
+# `LOGO_RULE=0` — выключить.
+LOGO_RULE = os.environ.get("LOGO_RULE", "1") != "0"
+LOGO_MAX_LETTERS = 5
+LOGO_SIZE_K = 2.5
+LOGO_EDGE = 0.15                 # доля высоты листа сверху и снизу
+_LOGO_WORD_RE = re.compile(r"^[^\W\d_]{2,%d}$" % LOGO_MAX_LETTERS)
+_HOMO = str.maketrans("АВСЕНКМОРТХУаеорсхуіјѕԁԛԝЅІЈ", "ABCEHKMOPTXYaeopcxyijsdqwSIJ")
+
+
+def _same_look(a: str, b: str) -> bool:
+    """Ц13б: два текста одинаковы на вид (буквы-двойники кириллицы и латиницы)."""
+    x = re.sub(r"\s+", "", (a or "")).translate(_HOMO).upper()
+    y = re.sub(r"\s+", "", (b or "")).translate(_HOMO).upper()
+    return bool(x) and x == y
+
+
+def _page_body_size(data: dict, page: int) -> float:
+    sizes = []
+    top = None
+    for boxes in ((data.get("layout") or {}).get("boxes") or {}).values():
+        for b in boxes or []:
+            if int(b.get("page", -1)) != page:
+                continue
+            for sl in b.get("slots") or []:
+                try:
+                    sizes.append(float(sl[3]))
+                    y = float(sl[1])
+                    top = y if top is None else max(top, y)
+                except (TypeError, ValueError, IndexError):
+                    continue
+    import statistics as _st
+    return _st.median(sizes) if sizes else 0.0
+
+
+def _logo_block(data: dict, rec: dict, b: dict, text: str) -> bool:
+    """Ц13: блок — знак журнала (см. выше)."""
+    if not LOGO_RULE:
+        return False
+    t = (text or "").strip()
+    if not _LOGO_WORD_RE.match(t) or t.upper() != t or int(b.get("rows") or 1) > 1:
+        return False
+    got = _page_block_rect(data, rec, b)
+    if got is None:
+        return False
+    page, (x0, y0, x1, y1) = got
+    try:
+        py0, py1 = float(data["layout"]["pages"][page][1]), float(data["layout"]["pages"][page][3])
+    except Exception:
+        return False
+    ph = max(1.0, py1 - py0)
+    if not (y0 >= py1 - LOGO_EDGE * ph or y1 <= py0 + LOGO_EDGE * ph):
+        return False                    # знак журнала стоит у края листа, а не посреди текста
+    body = _page_body_size(data, page)
+    if body <= 0:
+        return False
+    hmax = 0.0
+    for boxes in ((data.get("layout") or {}).get("boxes") or {}).values():
+        for bx in boxes or []:
+            if int(bx.get("page", -1)) == page:
+                for sl in bx.get("slots") or []:
+                    try:
+                        hmax = max(hmax, float(sl[3]))
+                    except (TypeError, ValueError, IndexError):
+                        pass
+    h = y1 - y0
+    return h >= LOGO_SIZE_K * body and h > hmax
+
+
+_LAYER_PARAS_CACHE: dict = {}
+
+
+def _layer_paras_cached(data: dict, project: dict) -> dict:
+    """`_layer_paras_by_page` по исходникам сегментов проекта, раз на разбор."""
+    lay = data.get("layout")
+    key = (project.get("id"), id(lay))
+    got = _LAYER_PARAS_CACHE.get(key)
+    if got is None or got[0] is not lay:
+        _LAYER_PARAS_CACHE.clear()
+        got = (lay, _layer_paras_by_page(data, {s["id"]: s for s in project.get("segments") or []}))
+        _LAYER_PARAS_CACHE[key] = got
+    return got[1]
+
+
 def _dup_of_layer(src: str, near: list, rect: "tuple | None") -> bool:
     """Блок картинки повторяет строки слоя, стоящие ПОД НИМ (по месту): слова
     той же страницы в другом месте (подпись к рисунку) повтором не считаются."""
@@ -34131,7 +34396,7 @@ def _layer_paras_by_page(data: dict, by_id: dict) -> dict:
             if rs:
                 out.setdefault(int(b.get("page", -1)), []).append(
                     (int(idx), (min(r[0] for r in rs), min(r[1] for r in rs),
-                                max(r[2] for r in rs), max(r[3] for r in rs)), words, src))
+                                max(r[2] for r in rs), max(r[3] for r in rs)), words, src, rs))
     return out
 
 
@@ -34330,6 +34595,14 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                            py1_ - (fy0_ + bx[3] * syp) * (py1_ - py0_),
                            px0_ + (fx0_ + bx[2] * sxp) * (px1_ - px0_),
                            py1_ - (fy0_ + bx[1] * syp) * (py1_ - py0_))
+            if virt and (_logo_block(data, im, b, (seg or {}).get("source") or "")
+                         or _same_look((seg or {}).get("source") or "", text)):
+                # Ц13: знак журнала и надпись, не меняющаяся от перевода, — как были.
+                skipped["logo"] = skipped.get("logo", 0) + 1
+                continue
+            if virt and _layer_echo((seg or {}).get("source") or "", layer_paras.get(page) or [], rect_pt):
+                skipped["layerEcho"] = skipped.get("layerEcho", 0) + 1
+                continue
             if (_dup_of_layer((seg or {}).get("source") or "", layer_words.get(page) or [], rect_pt)
                     and not (erase is not None
                              and _holds_layer_pieces((seg or {}).get("source") or "",

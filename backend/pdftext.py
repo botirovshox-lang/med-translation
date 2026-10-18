@@ -100,8 +100,13 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # сравнения и сноски (Т7), капс «MLTCs» (Т8), над- и подстрочные знаки
 # Юникодом (Т9), колонтитул по месту на листе, в том числе повёрнутый (Т15),
 # и правила того же раздела, сделанные следом; 16 — Т34: линии таблицы,
-# нарисованные обводкой, режут строку по ячейкам и абзац по рядам.
-RULES_VERSION = 16
+# нарисованные обводкой, режут строку по ячейкам и абзац по рядам;
+# 17 — раздел Ц: «ложный полужирный» одной копией (Ц1), колонтитул по месту
+# (Ц2), две надписи в одном куске и цепочка операторов (Ц3), надстрочники
+# авторов и аффилиаций (Ц4, Ц5), сноска не продолжается на следующей
+# странице (Ц6), таблица в своей колонке (Ц7), красная строка и разрез
+# адреса (Ц9).
+RULES_VERSION = 17
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -779,6 +784,8 @@ def _hgap(a: dict, b: dict) -> float:
 # цифрами: «¹/₃» читается хуже и иначе ищется. Буква — только одиночная
 # надстрочная (сноска «ᵃ»).
 _SUP_MAP = dict(zip("0123456789+-=()abcde", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉ"))
+_SUP_LEAD_RE = re.compile(r"^\s*[¹²³⁴⁵⁶⁷⁸⁹⁰]+[,⁰¹²³⁴⁵⁶⁷⁸⁹]*\s+\S")
+_SCRIPT_LIST_RE = re.compile(r"^\d{1,3}(?:(?:,\s+|\s*[–-]\s*)\d{1,3}){1,4}$")
 _SUB_MAP = dict(zip("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎"))
 
 
@@ -790,6 +797,10 @@ def _script_text(pc: dict, base: dict, before: str, after: str) -> str:
         return t                        # дробь
     core = t.strip()
     table = _SUP_MAP if pc["y"] > base["y"] else _SUB_MAP
+    if _SCRIPT_LIST_RE.match(core) and len(core) > 3:
+        # Ц5: список ссылок надстрочником («1, 2», «1–3» у автора) — цифры
+        # знаками надстрочника, разделитель как есть, без пробелов: «¹,²».
+        return "".join(table.get(ch, ch) for ch in core if not ch.isspace())
     letters = [ch for ch in core if ch.isalpha()]
     if len(core) > 3 or not all(ch in table for ch in core) or (
             letters and (table is _SUB_MAP or len(core) > 1)):
@@ -892,7 +903,9 @@ def _join_scripts(recs: list, report: dict) -> list:
             continue
         parts = sorted((recs[k] for k in g), key=lambda r: r["x0"])
         base = max(parts, key=lambda r: r["s"])
-        text = parts[0]["t"]
+        # Ц5: надстрочник В НАЧАЛЕ строки («¹ Сибирский…», знак аффилиации или
+        # сноски) — тоже знаком надстрочника, а не обычной цифрой.
+        text = _script_text(parts[0], base, "", parts[1]["t"] if len(parts) > 1 else "")
         prev = parts[0]
         for k_, pc in enumerate(parts[1:], 1):
             # Пробел — по зазору, и мерка берётся у КРУПНОГО куска: межсловный
@@ -937,6 +950,23 @@ def _is_caps_heading(line: str) -> bool:
     return len(letters) >= 3 and all(c.isupper() for c in letters)
 
 
+_LETTER_MARK_RE = re.compile(r"^[a-zа-яё][.)]\s")
+LETTER_MARK_HEAD = 60
+
+
+def _letter_mark_midphrase(buf: str, line: str, nxt: str = "") -> bool:
+    """Ц9г: «v. 2.050 (http://…)» после «…в программе PLINK» — продолжение
+    фразы, а не пункт «v.» списка: буквенный маркер начинает пункт, только
+    когда предыдущая строка закончила фразу (точка, двоеточие, точка
+    с запятой) или сама начата таким же маркером."""
+    if not _LETTER_MARK_RE.match(line) or _LETTER_MARK_RE.match(nxt or ""):
+        return False                    # за ним следующий пункт — это список
+    b = buf.rstrip()
+    if len(b) < LETTER_MARK_HEAD:
+        return False                    # короткая строка перед ним — заголовок списка
+    return not (b.endswith((".", ":", ";", "!", "?")) or _LETTER_MARK_RE.match(buf))
+
+
 def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0.0,
                report: dict = None, spans: list = None) -> list:
     """Строки → абзацы. Конец абзаца — конец предложения, короткая строка
@@ -972,7 +1002,8 @@ def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0
             continue
         nxt = (lines[i + 1] or "").strip() if i + 1 < n else ""
         caps = _is_caps_heading(line)
-        if buf and ((_BULLET_RE.match(line)) or (buf_caps != caps and not buf.endswith((SOFT, "-")))):
+        if buf and ((_BULLET_RE.match(line) and not _letter_mark_midphrase(buf, line, nxt))
+                    or (buf_caps != caps and not buf.endswith((SOFT, "-")))):
             flush()
         # Строку записываем в отпечаток ПОСЛЕ возможного сброса: иначе
         # первой строкой прежнего абзаца оказалась бы эта, уже следующая.
@@ -1012,7 +1043,7 @@ def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0
                 continue
             flush()
             continue
-        if _END_RE.search(buf) or len(buf) >= PARA_MAX:
+        if (_END_RE.search(buf) and not _addr_cut(buf, nxt)) or len(buf) >= PARA_MAX:
             flush()
             continue
         if (median_len and len(line) < HEADING_LEN_SHARE * median_len
@@ -1021,6 +1052,17 @@ def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0
             flush()
     flush()
     return out
+
+
+def _addr_cut(buf: str, nxt: str) -> bool:
+    """Ц9б: точка в конце строки — не конец фразы, а разрез АДРЕСА
+    («olga.sergeevna.fedorova@gmail.» / «com, https://orcid…»,
+    «https://doi.» / «org/10.20538/…»): последнее слово — почта или
+    ссылка, а следующая строка начата строчной буквой или цифрой."""
+    tail = buf.rsplit(None, 1)[-1] if buf.strip() else ""
+    if not tail.endswith(".") or not nxt[:1] or not (nxt[:1].islower() or nxt[:1].isdigit()):
+        return False
+    return "@" in tail or "://" in tail or tail.lower().startswith("www.")
 
 
 _DROPCAP_RE = re.compile(r"^([^\W\d_]{2,})  (\S)")
@@ -1759,6 +1801,47 @@ TABLE_COL_MERGE = 2.5        # начала ближе стольких кегл
 TABLE_CELL_MEDIAN = 0.2      # средняя (медиана) ячейка строки таблицы — уже такой доли
 
 
+TABLE_IN_COLUMN = 0.8        # Ц7: такая доля ячеек — в одной колонке страницы
+
+
+def _crosses_cols(r: dict, cols: list, pool: list) -> bool:
+    """Строка одна на своей высоте и перекрывает начало колонки таблицы."""
+    s_ = max(r["s"], 1.0)
+    if any(o is not r and abs(o["y"] - r["y"]) <= 0.3 * s_ for o in pool):
+        return False
+    return any(r["x0"] + TABLE_COL_TOL < c < r["x1"] - TABLE_COL_TOL for c in cols)
+
+
+def _table_page_column(recs: list, table_rows: list, width: float, s: float) -> "tuple | None":
+    """(x0, x1) колонки страницы, в которой стоит таблица, — или None, если
+    страница в одну колонку или таблица шире колонки. Колонки страницы —
+    по длинным строкам (шире `TABLE_CELL_SHARE` ширины текста), разделённым
+    по началу зазором больше пяти кеглей, как у `_multi_column`."""
+    long_ = sorted((r for r in recs if r["x1"] - r["x0"] > TABLE_CELL_SHARE * width),
+                   key=lambda r: r["x0"])
+    if len(long_) < 6:
+        return None
+    groups: list = [[long_[0]]]
+    for r in long_[1:]:
+        if r["x0"] - groups[-1][-1]["x0"] > 5 * s:
+            groups.append([r])
+        else:
+            groups[-1].append(r)
+    groups = [g for g in groups if len(g) >= 3]
+    if len(groups) < 2:
+        return None
+    cells = [c for row in table_rows for c in row]
+    for g in groups:
+        # Края колонки — по МЕДИАНЕ: строка во всю ширину (подпись рисунка,
+        # заголовок) начата там же, где левая колонка, и растянула бы её край.
+        gx0 = statistics.median(r["x0"] for r in g)
+        gx1 = statistics.median(r["x1"] for r in g)
+        inside = sum(1 for c in cells if c["x0"] >= gx0 - TABLE_COL_TOL and c["x1"] <= gx1 + s)
+        if inside >= TABLE_IN_COLUMN * len(cells):
+            return gx0, gx1
+    return None
+
+
 def _table_streams(recs: list, report: Counter) -> "list | None":
     """Записи страницы, где есть ТАБЛИЦА, — в порядке «колонка за колонкой».
 
@@ -1814,6 +1897,19 @@ def _table_streams(recs: list, report: Counter) -> "list | None":
     cols = [g[0] for g in groups_x if len(g) >= 2]
     if len(cols) < TABLE_MIN_CELLS:
         return None
+    # Ц7: таблица стоит в ОДНОЙ колонке страницы — строки соседней колонки
+    # на той же высоте ей не принадлежат. Симптом (статья «Бюллетеня
+    # сибирской медицины», стр. 4): строки левой колонки («…этапы: начальная
+    # денатурация в течение 10 мин при») шли вперемешку с ячейками таблицы
+    # правой колонки («аддитивная», «rs10905277», «AG»), а расширение таблицы
+    # вверх упиралось в длинную строку левой колонки, и шапка с заголовком
+    # отрывались от тела таблицы.
+    span = _table_page_column(recs, table_rows, width, body_s)
+    pool = recs
+    if span is not None:
+        cols = [x for x in cols if span[0] - TABLE_COL_TOL <= x <= span[1]] or cols
+        pool = [r for r in recs if r["x0"] >= span[0] - TABLE_COL_TOL and r["x1"] <= span[1] + body_s]
+        width = max(1.0, span[1] - span[0])
 
     def col_of(r):
         k = 0
@@ -1833,19 +1929,24 @@ def _table_streams(recs: list, report: Counter) -> "list | None":
     # ячейка последней строки); строка не с начала колонки («Продолжение
     # на с. 6» у правого края) — уже не таблица.
     prev = low
-    for r in sorted((r for r in recs if r["y"] < low), key=lambda r: -r["y"]):
+    for r in sorted((r for r in pool if r["y"] < low), key=lambda r: -r["y"]):
         if prev - r["y"] > lead or not in_col(r):
             break
         low = prev = r["y"]
     # И выше первой: шапка из нескольких строк («Effects on / cardiovascular
     # outcomes») — узкие строки с зазором не больше трёх кеглей.
     prev = top
-    for r in sorted((r for r in recs if r["y"] > top), key=lambda r: r["y"]):
+    for r in sorted((r for r in pool if r["y"] > top), key=lambda r: r["y"]):
         if r["y"] - prev > lead or r["x1"] - r["x0"] > TABLE_CELL_SHARE * width:
+            break
+        if span is not None and _crosses_cols(r, cols, pool):
+            # Ц7: строка без соседей по ряду, перекрывающая начало колонки
+            # таблицы, — заголовок над таблицей («бронхиальной астмы», вторая
+            # строка названия по центру), а не ячейка шапки.
             break
         top = prev = r["y"]
     top += 0.1
-    ids = {id(r) for r in recs if low - 0.1 <= r["y"] <= top}
+    ids = {id(r) for r in pool if low - 0.1 <= r["y"] <= top}
     block = [r for r in recs if id(r) in ids]
     if len(block) < TABLE_MIN_CELLS * TABLE_MIN_ROWS:
         return None
@@ -1911,6 +2012,19 @@ def _table_streams(recs: list, report: Counter) -> "list | None":
     if not _multi_column(rest):
         rest = _reading_order(rest)
     first = next((i for i, r in enumerate(rest) if r["y"] < top - 0.1), len(rest))
+    if span is not None:
+        # Ц7: таблица встаёт в поток СВОЕЙ колонки — после строки этой колонки
+        # над ней (иначе — перед строкой этой колонки под ней), а не перед
+        # первой строкой страницы ниже её верха: у таблицы правой колонки это
+        # была бы левая колонка, и абзац, перешедший со страницы, рвался.
+        incol = [i for i, r in enumerate(rest)
+                 if r["x0"] >= span[0] - TABLE_COL_TOL and r["x1"] <= span[1] + body_s]
+        above = [i for i in incol if rest[i]["y"] > top]
+        below = [i for i in incol if rest[i]["y"] < low]
+        if above:
+            first = max(above) + 1
+        elif below:
+            first = min(below)
     report["tableCells"] += len(block)
     return rest[:first] + order + rest[first:]
 
@@ -2080,11 +2194,13 @@ def _page_stats(recs: list) -> dict:
             "n_body": len(body)}
 
 
-def _bands(recs: list, st: dict) -> tuple:
+def _bands(recs: list, st: dict, gap_k: float = None) -> tuple:
     """(верхняя полоса, нижняя полоса) — номера строк у края страницы,
     отделённых от текста пробелом больше обычного интервала: колонтитулы
     и номера. Сверху до трёх строк (двухстрочный колонтитул и номер),
-    снизу — до двух."""
+    снизу — до двух. `gap_k` — свой порог пробела в интервалах (Ц2)."""
+    gk = GEO_BAND_GAP if gap_k is None else gap_k
+
     def band(order: list, limit: int) -> list:
         if len(order) < 2:
             return []
@@ -2099,7 +2215,7 @@ def _bands(recs: list, st: dict) -> tuple:
         if len(grp) > limit:
             return []
         nxt = order[len(grp)] if len(grp) < len(order) else None
-        if nxt is None or abs(recs[grp[-1]]["y"] - recs[nxt]["y"]) < GEO_BAND_GAP * st["lead"]:
+        if nxt is None or abs(recs[grp[-1]]["y"] - recs[nxt]["y"]) < gk * st["lead"]:
             return []
         return grp
     # Т15. Полоса — это МЕСТО на листе, а не номер строки в потоке pypdf.
@@ -2127,6 +2243,47 @@ def _bands(recs: list, st: dict) -> tuple:
         if not bottom:
             bottom = [k for k in band(lin[::-1], FOOT_WINDOW) if k not in top]
     return top, bottom
+
+
+# Ц2. Колонтитул по МЕСТУ, когда пробела мало. Симптом (статья «Бюллетеня
+# сибирской медицины»): на страницах 3, 5, 6 нижний колонтитул «Бюллетень
+# сибирской медицины. 2026; 25 (3): 34–40» не попадал в полосу и вклеивался
+# в последний абзац колонки («…другого иссле- Бюллетень сибирской медицины…»),
+# а на странице 1 — в начало следующей страницы («…34–40 Для цитирования»).
+# Причина: полоса требует пробела не меньше `GEO_BAND_GAP` интервалов, а здесь
+# между колонтитулом и последней строкой колонки — 1.54 интервала (тело
+# опущено до края, на страницах 1, 2, 4, 7 оно выше, и там полоса находится).
+# Правило: на странице, где полоса не нашлась, она берётся с порогом
+# `BAND_GAP_PLACED` — но только если ВСЕ её строки стоят на высоте полос,
+# найденных обычным порогом на других страницах (не меньше двух, по
+# `BAND_PLACE_TOL` пункта). Высота колонтитула — свойство вёрстки журнала,
+# и случайная строка тела на ней же не окажется.
+BAND_GAP_PLACED = float(os.environ.get("PDF_BAND_GAP_PLACED", "1.2"))
+BAND_PLACE_TOL = 1.5
+
+
+def _bands_by_place(laid: dict, report: dict) -> None:
+    if BAND_GAP_PLACED >= GEO_BAND_GAP:
+        return
+    for side in ("top", "bottom"):
+        seen: list = []                      # (страница, высота) строк найденных полос
+        for i, pg in laid.items():
+            seen += [(i, pg["recs"][k]["y"]) for k in pg[side]]
+        if not seen:
+            continue
+        for i, pg in laid.items():
+            if pg[side] or len(pg["recs"]) < 4:
+                continue
+            t2, b2 = _bands(pg["recs"], pg["st"], BAND_GAP_PLACED)
+            got = t2 if side == "top" else b2
+            if not got:
+                continue
+            ok = all(len({j for j, y in seen if j != i and abs(y - pg["recs"][k]["y"]) <= BAND_PLACE_TOL}) >= 2
+                     for k in got)
+            other = pg["bottom"] if side == "top" else pg["top"]
+            if ok and not set(got) & set(other):
+                pg[side] = got
+                report["bandsByPlace"] = report.get("bandsByPlace", 0) + 1
 
 
 # Кандидатов в колонтитул, встреченных пока по разу, нечётко сравниваем
@@ -2650,6 +2807,15 @@ def _rule_parts(hrules, ax0, ay, ax1, asz, bx0, by, bx1, bsz) -> bool:
     return False
 
 
+# Ц9: красная строка после короткой строки — новый абзац. Отступ — от
+# `INDENT_MIN` до `INDENT_MAX` кеглей, предыдущая строка короче следующей
+# больше чем на `INDENT_SHORT` кеглей. `PDF_INDENT_BREAK=0` — выключить.
+INDENT_BREAK = os.environ.get("PDF_INDENT_BREAK", "1") != "0"
+INDENT_MIN = 0.8
+INDENT_MAX = 4.0
+INDENT_SHORT = 3.0
+
+
 def _geo_follows(a: dict, b: dict) -> bool:
     """Строка b геометрически продолжает строку a (оба с местом `geo`):
     стоит ниже не дальше `CONT_DY` кеглей и пересекается по горизонтали,
@@ -2662,6 +2828,10 @@ def _geo_follows(a: dict, b: dict) -> bool:
         return False                    # другая колонка таблицы — другая ячейка
     if b.get("bul"):
         return False                    # значок пункта списка — новый абзац
+    if _SUP_LEAD_RE.match(b.get("t") or ""):
+        # Ц5: строка, начатая надстрочным номером («² Научно-исследовательский
+        # институт…» — аффилиация, сноска), — новый абзац.
+        return False
     _p, ax0, ay, ax1, asz = ga[:5]
     _p, bx0, by, bx1, bsz = gb[:5]
     if _rule_parts(a.get("hr") or b.get("hr"), ax0, ay, ax1, asz, bx0, by, bx1, bsz):
@@ -2691,6 +2861,15 @@ def _geo_follows(a: dict, b: dict) -> bool:
         if (dy > GAP_BREAK * base and tb[:1] and (tb[:1].isupper() or tb[:1].isdigit()
                                                   or tb[:1] in "•▪●◦–—-")
                 and not ta.endswith(("-", SOFT, ",", "‐"))):
+            return False
+        if (INDENT_BREAK and dy > 0.5 * size and INDENT_MIN * size <= bx0 - ax0 <= INDENT_MAX * size
+                and ax1 < bx1 - INDENT_SHORT * size and tb[:1] and (tb[:1].isupper() or tb[:1].isdigit())
+                and _ADDR_END_RE.search(ta)):
+            # Ц9: короткая строка, а следующая — с КРАСНОЙ СТРОКИ (отступ
+            # от левого края предыдущей) и во всю ширину: новый абзац, даже
+            # если строка кончилась без точки (ORCID, адрес почты: «…https://
+            # orcid.org/0000-0002-2962-1076» и «Федорова Ольга Сергеевна –»
+            # склеивались в один абзац «Информации об авторах»).
             return False
         return True
     if abs(dy) <= 0.3 * size and -0.5 * size <= bx0 - ax1 <= 2.0 * size:
@@ -2856,6 +3035,9 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
     n = len(entries)
     i = 0
     last_f = [None]
+    last_tail = [None]                 # Ц6: последняя строка текста (с местом или без)
+    sizes_ = [e["geo"][4] for e in entries if e.get("role") == "f" and e.get("geo") and e["geo"][4]]
+    body_s = statistics.median(sizes_) if sizes_ else 0.0
     boundary = [False]                 # только что прошли границу страницы
     while i < n:
         e = entries[i]
@@ -2867,6 +3049,12 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
         if (role == "f" and boundary[0] and out and out[-1] and not pending
                 and _page_note(out[-1], median_len)):
             put("", None)              # Т15: записка «Continued on p. N» абзац не продолжает
+        if (role == "f" and boundary[0] and out and out[-1] and not pending
+                and _page_size_break(last_tail[0], e, body_s)):
+            # Ц6: абзац через границу страницы продолжается только ТЕМ ЖЕ
+            # кеглем: сноска внизу листа («✉ Мелентьева…, …@gmail.com», 8 пт)
+            # не продолжается в «Для цитирования» (9 пт) следующей страницы.
+            put("", None)
         if role == "f":
             boundary[0] = False
             # Пока вставка ждёт конца абзаца (`pending`), абзац продолжается
@@ -2882,7 +3070,16 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
             if pending and (para_ends(out[-1] if out else "", e["t"]) or waited[0] >= DEFER_MAX_LINES):
                 release()
             put(e["t"], e)
+            prev_f = last_f[0]
             last_f[0] = e if e.get("geo") else None
+            if prev_f is not None and last_f[0] is not None and _same_baseline(prev_f, e):
+                # Ц9в: часть строки (курсивное название статьи и прямой хвост
+                # «. Bulletin of Siberian Medicine…») судит о продолжении
+                # по ВСЕЙ строке: следующая строка начата у её левого края,
+                # а не под второй частью («org/10.20538/…» после «https://doi.»).
+                g0, g1 = prev_f["geo"], e["geo"]
+                last_f[0] = dict(e, geo=(g1[0], min(g0[1], g1[1]), g1[2], max(g0[3], g1[3])) + tuple(g1[4:]))
+            last_tail[0] = e
             if pending:
                 waited[0] += 1
             i += 1
@@ -2909,6 +3106,36 @@ def _assemble(entries: list, median_len: float, src: list = None) -> list:
         i = j
     release()
     return out
+
+
+def _same_baseline(a: dict, b: dict) -> bool:
+    ga, gb = a.get("geo"), b.get("geo")
+    if not ga or not gb or ga[0] != gb[0]:
+        return False
+    size = max(ga[4] or 0.0, gb[4] or 0.0, 1.0)
+    return abs(ga[2] - gb[2]) <= 0.3 * size and -0.5 * size <= gb[1] - ga[3] <= 2.0 * size
+
+
+PAGE_SIZE_BREAK = float(os.environ.get("PDF_PAGE_SIZE_BREAK", "0.08"))  # 0 — выключить
+_ADDR_END_RE = re.compile(r"(?:[\w.+-]+@[\w-]+(?:\.[\w-]+)+|https?://\S+|www\.\S+)[.)]?\s*$")
+
+
+def _page_size_break(a: "dict | None", b: dict, body: float = 0.0) -> bool:
+    """Ц6: абзац НЕ продолжается через границу страницы, если последняя
+    строка страницы — сноска: кончается адресом почты или ссылкой
+    («✉ Мелентьева …, …@gmail.com»), либо набрана мельче основного текста
+    документа (`body`) и мельче первой строки следующей страницы больше
+    чем на `PAGE_SIZE_BREAK`."""
+    if PAGE_SIZE_BREAK <= 0 or not a:
+        return False
+    ga, gb = a.get("geo"), (b or {}).get("geo")
+    if not ga or not gb or body <= 0:
+        return False
+    sa, sb = float(ga[4] or 0), float(gb[4] or 0)
+    if _ADDR_END_RE.search(a.get("t") or "") and 0 < sa < (1 - PAGE_SIZE_BREAK) * body:
+        return True                     # мелкая строка с адресом — сноска
+    return (sa > 0 and sb > 0 and sa < (1 - PAGE_SIZE_BREAK) * sb
+            and sa < (1 - PAGE_SIZE_BREAK) * body and abs(sb - body) <= PAGE_SIZE_BREAK * body)
 
 
 def _apart(a: dict, b: dict) -> bool:
@@ -3395,6 +3622,7 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
                    "loose": loose, "leads": _size_leads(kept)}
 
     _fix_labels(laid, words, report)
+    _bands_by_place(laid, report)
     # Начертание документа — до разбора страниц: по нему считается, что
     # в книге выделено, а что просто её основной текст.
     base_style = _base_style(laid)

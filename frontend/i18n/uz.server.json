@@ -477,5 +477,8 @@
   "Напишите хотя бы пару слов": "Kamida bir-ikki so‘z yozing",
   "Слишком много сообщений за час — попробуйте позже": "Bir soatda juda ko‘p xabar — keyinroq urinib ko‘ring",
   "Не удалось сохранить сообщение — попробуйте ещё раз": "Xabarni saqlab bo‘lmadi — yana urinib ko‘ring",
-  "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "Bu tildagi nutqni hozircha taniy olmaymiz. Videoda qaysi tilda gapirilayotganini tanlang yoki tayyor subtitrlarni (.srt) yuklang — ularni tarjima qilamiz"
+  "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "Bu tildagi nutqni hozircha taniy olmaymiz. Videoda qaysi tilda gapirilayotganini tanlang yoki tayyor subtitrlarni (.srt) yuklang — ularni tarjima qilamiz",
+  "символ из оригинала не перенесён буква в букву: ": "asl matndagi belgi harfma-harf koʻchirilmagan: ",
+  "символов оригинала не перенесено больше ": "koʻchirilmagan asl belgilar koʻpaydi ",
+  "символов оригинала не перенесено больше": "koʻchirilmagan asl belgilar koʻpaydi"
 }

@@ -206,6 +206,11 @@ check(not any(i.get("type") == "number_unit_dosage_mismatch" for i in iss), "п�
 en = main._lang_conventions("EN")
 check("Decimal separator is a point" in en, "английскому промпт велит точку")
 check("Decimal separator is a comma" in main._lang_conventions("DE"), "немецкому — запятую")
+check(main._decimal_fix("возраст 10,1 ± 8 лет, 95% CI 0,34–0,77", "age 10,1 ± 8 years, CI 0,34–0,77; 1,000 cells",
+                        "RU", "EN") == "age 10.1 ± 8 years, CI 0.34–0.77; 1,000 cells",
+      "Ц10б: дроби оригинала — точкой, чужое число не тронуто")
+check(main._decimal_fix("10,1", "10,1 Jahre", "RU", "DE") == "10,1 Jahre", "немецкому запятая остаётся")
+check(main._decimal_fix("1,000 cells", "1,000 个细胞", "EN", "ZH") == "1,000 个细胞", "из английского — не трогаем")
 
 print("=== Ц11. Символы генов и коды ===")
 seg = {"source": "вариант rs10905277 гена GATA3 и STAT5B (IL10)", "target": "GATA结合蛋白3基因的rs10905277变异与STAT5B（IL10）"}

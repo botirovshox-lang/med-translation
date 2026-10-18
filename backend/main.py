@@ -4568,7 +4568,7 @@ def _openai_translate(text: str, src: str, tgt: str,
     # Адрес из оригинала — буква в букву, даже если модель его переписала
     # своими буквами («хттпс://дои.орг/…», проект 14): ссылка в переводе
     # обязана работать. Обратный перевод (`literal`) не трогаем — он мера.
-    return out if literal else _keep_verbatim(text, _strip_markdown(text, out))
+    return out if literal else _decimal_fix(text, _keep_verbatim(text, _strip_markdown(text, out)), src, tgt)
 
 # ─────────────────────────────────────────────────────────────────────
 # Аутентификация
@@ -33664,6 +33664,33 @@ def _strip_markdown(source: str, target: str) -> str:
     return out
 
 
+# Ц10б. Десятичная запятая оригинала — точкой в переводе на язык с точкой,
+# БЕЗ вызова модели. Промпт (Ц10) лечит только новые переводы, а у прежних
+# «10,1 ± 8 years» сверка чисел теперь находкой не считает — переписывать их
+# некому. Правило: язык оригинала пишет дроби запятой (`decimal` «,»), язык
+# перевода — точкой («.»); число вида «10,1» (одна запятая между цифрами),
+# стоящее в оригинале, в переводе заменяется на «10.1» там, где стоит тем же
+# видом. Числа, которых в оригинале нет, и запись тысяч не трогаются. Вызов —
+# на выходе перевода и в «тексте к печати» выгрузки (проект не меняется).
+# Обратное направление («0.5» → «0,5») не делается: у точки в оригинале
+# слишком много других значений (версии, номера пунктов).
+_DEC_COMMA_RE = re.compile(r"(?<![\d.,])\d+,\d+(?![\d,])")
+
+
+def _decimal_fix(source: str, target: str, src_lang: str, tgt_lang: str) -> str:
+    if not source or not target or "," not in target:
+        return target
+    try:
+        if (_lang_rule(src_lang).get("decimal") != "," or _lang_rule(tgt_lang).get("decimal") != "."):
+            return target
+    except Exception:
+        return target
+    want = set(_DEC_COMMA_RE.findall(source))
+    if not want:
+        return target
+    return _DEC_COMMA_RE.sub(lambda m: m.group(0).replace(",", ".") if m.group(0) in want else m.group(0), target)
+
+
 def _keep_verbatim(source: str, target: str) -> str:
     """Адрес из оригинала, переписанный моделью чужими буквами, — обратно
     буква в букву. Узнаётся по СКЕЛЕТУ (цифры и знаки «://./»), совпавшему
@@ -34035,6 +34062,10 @@ def _print_by_id(project: dict, stats: "dict | None" = None) -> dict:
                 nt = src
             else:
                 nt = _abbr_apply(src, _glue_urls(src, _keep_verbatim(src, uni.get(s["id"], t))), amap)
+                # Ц10б, Ц12: разделитель дробей языка перевода и Markdown —
+                # и у переводов, сделанных до этих правил.
+                nt = _decimal_fix(src, _strip_markdown(src, nt), project.get("src") or "",
+                                  project.get("tgt") or "")
             if nt != t:
                 s = dict(s, target=nt, _printFix=True)
         out[s["id"]] = s

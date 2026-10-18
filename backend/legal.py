@@ -68,6 +68,10 @@ _PROVIDERS = [
     ("AZURE_SPEECH_KEY", {"ru": "Microsoft (Azure Speech), США — синтез речи",
                           "uz": "Microsoft (Azure Speech), AQSh — nutq sintezi",
                           "en": "Microsoft (Azure Speech), USA — speech synthesis"}),
+    # Чтение надписей на картинках: изображение уходит Яндекс Vision.
+    ("YANDEX_VISION_API_KEY", {"ru": "Яндекс (Yandex Cloud Vision), Россия — распознавание текста на изображениях",
+                               "uz": "Yandex (Yandex Cloud Vision), Rossiya — tasvirdagi matnni tanib olish",
+                               "en": "Yandex (Yandex Cloud Vision), Russia — text recognition in images"}),
 ]
 
 

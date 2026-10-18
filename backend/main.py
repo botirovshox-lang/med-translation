@@ -2410,7 +2410,11 @@ AUX_MODEL_PRICES = {EMBED_MODEL: {"in": 0.02, "out": 0.0},
                     # Azure Speech берёт деньги за ЗНАКИ текста (иероглифы — по два),
                     # а не за минуты: считать его минутами значило бы врать в смете.
                     "azure-neural": {"in": 0.0, "out": 0.0,
-                                     "perChar": float(os.environ.get("AZURE_TTS_PER_MCHAR", "15")) / 1e6}}
+                                     "perChar": float(os.environ.get("AZURE_TTS_PER_MCHAR", "15")) / 1e6},
+                    # Яндекс Vision (Ш5) берёт деньги за ЗАПРОС (одна картинка —
+                    # одна единица тарификации), а не за токены.
+                    "yandex-vision": {"in": 0.0, "out": 0.0,
+                                      "perUnit": float(os.environ.get("YANDEX_VISION_USD", "0.002"))}}
 
 RUN_COST_HISTORY = 100          # сколько прогонов помним в state.json
 
@@ -3974,6 +3978,16 @@ def _note_chars(step: str, model_id: str, chars: int) -> None:
     try:
         per = (AUX_MODEL_PRICES.get(model_id) or {}).get("perChar")
         cost = None if per is None else max(0, int(chars)) * float(per)
+        _note_cost(step, model_id, 0, 0, 0, 0, cost)
+    except Exception as e:
+        print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
+
+
+def _note_units(step: str, model_id: str, units: int) -> None:
+    """Расход вызова, который поставщик считает ЗАПРОСАМИ (`perUnit`)."""
+    try:
+        per = (AUX_MODEL_PRICES.get(model_id) or {}).get("perUnit")
+        cost = None if per is None else max(0, int(units)) * float(per)
         _note_cost(step, model_id, 0, 0, 0, 0, cost)
     except Exception as e:
         print(f"[backend] учёт расхода не сработал ({step}/{model_id}): {e}", file=sys.stderr)
@@ -17539,6 +17553,14 @@ except Exception as _e:            # модуль в том же репозит�
     image_text = None              # деплой не должен ронять весь бэкенд
     print("[backend] image_text не импортирован: %s" % _e, file=sys.stderr)
 
+try:
+    import yandex_ocr
+except ImportError:                                   # pragma: no cover
+    try:
+        from backend import yandex_ocr                # type: ignore
+    except ImportError:
+        yandex_ocr = None
+
 IMAGE_MEDIA_EXT = {".png", ".jpeg", ".jpg", ".gif", ".bmp", ".tif", ".tiff"}
 # Сколько блоков уходит модели одним вызовом. Отсканированная страница даёт
 # два-три десятка блоков, и складывать их в один запрос — это картинка
@@ -17770,7 +17792,8 @@ def _image_read_parse(raw: str) -> list:
 
 def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
                        domain_id: Optional[str] = None,
-                       model: str = None, system: Optional[str] = None) -> Optional[list]:
+                       model: str = None, system: Optional[str] = None,
+                       fallback: bool = True) -> Optional[list]:
     """Прочитать текст в найденных рамках. Список той же длины, что blocks,
     либо None — вызов не удался.
 
@@ -17850,12 +17873,19 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
     except Exception as e:
         _note_provider_error(e)
         print("[backend] чтение картинки не удалось: %s" % e, file=sys.stderr)
-        return None
+        # Ш5: модель не ответила — читает Яндекс Vision, если ключ есть.
+        # НО не при пустом счёте или отказе по стране: там прогон обязан
+        # встать и позвать владельца (`_quota_recent`), а тихий переход
+        # к другому поставщику спрятал бы беду и увёл картинки клиента
+        # получателю, которого никто не выбирал на этот случай.
+        if not fallback or _is_quota_error(e):
+            return None
+        return _vision_read_blocks(img_bytes, blocks, src_lang)
     items = _image_read_parse(raw)
     if not items:
         print("[backend] чтение картинки: ответ не разобран (%s), %d симв."
               % (why or "?", len(raw)), file=sys.stderr)
-        return None
+        return _vision_read_blocks(img_bytes, blocks, src_lang) if fallback else None
     if why == "length":
         # Ответ оборвался на потолке. Разобранные блоки НЕ выбрасываем: за них
         # уже заплачено, а остальные останутся нерешёнными и уйдут в следующий
@@ -17896,7 +17926,75 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
             out[i]["sizeBreak"] = 1
         elif out[i] is not None and t and not out[i]["text"]:
             out[i]["text"] = t
+    if (YANDEX_VISION_HAND == "prefer" and fallback and yandex_ocr is not None
+            and yandex_ocr.can_hand(src_lang)):
+        # Рукопись (Ф8): модель «правит» почерк правдоподобными заменами,
+        # у Vision — отдельная модель рукописи. Текст Vision берётся вместо
+        # текста модели только у блоков, которые модель назвала рукописью;
+        # признаки (overlay, hand, serif) остаются от модели. Блок с разрывом
+        # строки другого размера (Х19) не трогаем: Vision разрыва не знает.
+        hands = [i for i, o in enumerate(out)
+                 if o and o.get("hand") and not o.get("overlay") and not o.get("sizeBreak")]
+        if hands:
+            got = _vision_read_blocks(img_bytes, [blocks[i] for i in hands], src_lang, hand=True)
+            for k, i in enumerate(hands):
+                g = (got or [None] * len(hands))[k]
+                if g and g.get("text"):
+                    out[i]["textModel"] = out[i]["text"]
+                    out[i]["text"] = g["text"]
+                    out[i]["model"] = "vision"     # → `reader` блока карты
     return out
+
+
+# Ш5: брать ли текст Яндекс Vision вместо текста модели у РУКОПИСИ
+# («prefer») или только читать им, когда модель не ответила («off»).
+# По умолчанию «off»: выбор — по замеру на рукописных страницах, а не на веру.
+YANDEX_VISION_HAND = os.environ.get("YANDEX_VISION_HAND", "off").strip().lower()
+# Потолок времени одного вызова: блоки идут по одному запросу, и зависший
+# сервис не должен держать рабочий поток прогона минутами.
+YANDEX_VISION_CALL_S = float(os.environ.get("YANDEX_VISION_CALL_S", "90"))
+
+
+def _vision_read_blocks(img_bytes: bytes, blocks: list, src_lang: str,
+                        hand: bool = False) -> Optional[list]:
+    """Прочитать блоки Яндекс Vision (Ш5): вырезка блока — один запрос.
+    Список той же длины, что blocks, либо None — читать нечем или
+    сервис отказал. Признаков «надпись аппарата» и «засечки» Vision не
+    даёт: overlay/serif — False, отсев держат `is_noise` и человек."""
+    if yandex_ocr is None or not yandex_ocr.available() or image_text is None or not blocks:
+        return None
+    try:
+        _llm_limit_gate("ocr")
+    except HTTPException:
+        return None
+    out = [None] * len(blocks)
+    got = 0
+    t_end = time.monotonic() + YANDEX_VISION_CALL_S
+    for i, b in enumerate(blocks):
+        if time.monotonic() > t_end:
+            break                        # остальное — следующему заходу
+        crop = image_text.crop(img_bytes, b["box"], line_h=b.get("lineH"), rows=b.get("rows"))
+        if not crop:
+            continue
+        try:
+            r = yandex_ocr.recognize(crop, src_lang, hand=hand)
+        except yandex_ocr.VisionError as e:
+            print("[backend] Яндекс Vision отказал: HTTP %s" % e.code, file=sys.stderr)
+            if e.stop:
+                break
+            continue
+        except Exception as e:
+            print("[backend] Яндекс Vision не ответил: %s" % type(e).__name__, file=sys.stderr)
+            continue
+        _note_units("ocr", "yandex-vision", 1)
+        text = image_text.read_clean(yandex_ocr.join_lines(r["lines"]) or r["text"])
+        if not text.strip():
+            continue                     # пусто — «не прочитано», а не «текста нет»
+        got += 1
+        out[i] = {"text": text,
+                  "overlay": False, "hand": bool(hand), "serif": False, "kind": "",
+                  "model": "vision"}
+    return out if got else None
 
 
 def _image_block_text(project: dict, seg: dict, text: str) -> bool:
@@ -40382,7 +40480,10 @@ def _frame_read(item: tuple) -> dict:
         res = _openai_read_image(img, [{"box": b["px"], "lineH": b["lineH"], "rows": b["rows"]}
                                        for b in blocks],
                                  src_lang, domain, model,
-                                 system=_frame_read_system(_resolve_domain(domain), src_lang))
+                                 system=_frame_read_system(_resolve_domain(domain), src_lang),
+                                 # Кадр видео: Vision не отличает субтитры речи
+                                 # и логотип от надписи (`kind`) — запасным не читаем.
+                                 fallback=False)
         return {"ok": res is not None, "res": res or []}
     except Exception as e:
         _note_provider_error(e)

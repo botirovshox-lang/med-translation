@@ -1607,8 +1607,13 @@ def _next_start(c) -> "float | None":
 
 def _chain_end(ends: dict, e: float, y: float, size: float, bound: float, stop: "float | None" = None) -> float:
     """Конец цепочки операторов, начатых вплотную один за другим (Ц3); оператор,
-    начатый в начале СЛЕДУЮЩЕГО куска (`stop`) и дальше, — уже не наш."""
+    начатый в начале СЛЕДУЮЩЕГО куска (`stop`) и дальше, — уже не наш. Есть
+    такая граница — оценочный потолок `bound` не нужен: оценка по ширине знака
+    бывает короче настоящего конца, и цепочка обрывалась посреди куска
+    (ложный разрыв строки 165–373 пт, где оригинал не стирался)."""
     yy = int(round(y))
+    if stop is not None:
+        bound = max(bound, stop + 0.5)
     for _ in range(200):
         nxt = None
         for kx in range(int(e) - 1, int(e + CHAIN_GAP * size) + 2):

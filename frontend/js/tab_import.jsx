@@ -243,7 +243,7 @@ function TabImport({ store, toast }) {
     window.API && window.API.safeCall(() => window.API.models()).then(res => {
       if (!res) return;
       setMeta({
-        langs: res.languages && res.languages.length ? res.languages.map(l => [l.code, l.ru + " · " + l.native]) : meta.langs,
+        langs: res.languages && res.languages.length ? res.languages.map(l => [l.code, l.ru + " · " + l.native, l.asr !== false]) : meta.langs,
         domains: res.domains && res.domains.length ? res.domains.map(d => [d.id, d.label]) : meta.domains,
         domainDefault: res.domainDefault || "general",
       });
@@ -844,6 +844,9 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
      и стиль субтитров, пока файл грузится. Проект заводит его «готово». */
   const [vidFile, setVidFile] = useState(null);
   const isMedia = !!(file && impIsMedia(file.name));
+  /* Язык речи, который распознавание не примет (сервер называет `asr` у языка
+     и отказывает 415 сам): кнопку не предлагаем, причину называем. */
+  const asrOff = isMedia && !!meta && (meta.langs.find(l => l[0] === src) || [])[2] === false;
   /* Черновик — зеркало видимого: всё, что человек выбрал, переживает уход
      с вкладки. Ответ пробы, пришедший ПОСЛЕ ухода, пишет в черновик сам
      запрос (ниже), и экран подхватывает его на возврате. */
@@ -1114,9 +1117,11 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
       React.createElement(Field, { label: TR("С какого языка") }, React.createElement(Select, { value: src, onChange: (e) => changePair(e.target.value, tgt) }, impLangOptions(meta.langs))),
       React.createElement(Field, { label: TR("На какой язык") }, React.createElement(Select, { value: tgt, onChange: (e) => changePair(src, e.target.value) }, impLangOptions(meta.langs)))),
     file && !exact && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
+    file && !exact && asrOff && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } },
+      TR("Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём")),
     /* Кнопка появляется, когда есть что добавлять: погашенная «Добавить»
        под пустой зоной читалась как сломанная. */
-    file && !exact && !similar && React.createElement(Btn, { variant: "primary", size: "lg", className: "btn-block", icon: busy ? null : "plus", disabled: busy || probing || src === tgt, onClick: () => create() },
+    file && !exact && !similar && React.createElement(Btn, { variant: "primary", size: "lg", className: "btn-block", icon: busy ? null : "plus", disabled: busy || probing || src === tgt || asrOff, onClick: () => create() },
       busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Загружаем…"))
         : isMedia ? TR("Дальше: обрезка и субтитры") : TR("Добавить в проект")),
     busy && React.createElement(ImpProgress, { p: prog }),

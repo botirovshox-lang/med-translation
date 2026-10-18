@@ -307,6 +307,20 @@ main._media_disk_refusal = lambda need: "места нет"
 r = c.post("/api/media/upload", headers=H(B), json={"name": "clip.mp4", "size": 100})
 check(r.status_code == 507, "места нет — 507")
 main._media_disk_refusal = lambda need: None
+# Язык речи, которого распознавание не принимает (замер 18.10.2026: whisper-1
+# на `uz` — 400): отказ ДО приёма файла, а не три упавших куска после списания.
+check(not main._asr_supported("UZ") and not main._asr_supported("UZ-CYRL") and not main._asr_supported("KY"),
+      "узбекский и киргизский распознавание не принимает")
+check(main._asr_supported("RU") and main._asr_supported("AR") and main._asr_supported("KK"), "RU, AR, KK — принимает")
+r = c.post("/api/media/upload", headers=H(B), json={"name": "clip.mp4", "size": 100, "src": "UZ", "tgt": "RU"})
+check(r.status_code == 415 and "пока не умеем" in r.text, "видео с узбекской речью — 415 до приёма файла")
+m = c.get("/api/models", headers=H(B)).json()
+lk = {l["code"]: l.get("asr") for l in m["languages"]}
+check(lk.get("UZ") is False and lk.get("RU") is True, "каталог языков называет asr — форма не предлагает отказ")
+_was = main.ASR_LANGS
+main.ASR_LANGS = frozenset({"*"})
+check(main._asr_supported("UZ"), "ASR_LANGS=* — не проверять")
+main.ASR_LANGS = _was
 DATA = os.urandom(3000)
 main.MEDIA_CHUNK = 1024
 r = c.post("/api/media/upload", headers=H(B), json={"name": "clip.mp4", "size": len(DATA), "src": "RU", "tgt": "EN"})

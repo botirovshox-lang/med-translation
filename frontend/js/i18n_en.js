@@ -511,6 +511,7 @@ window.I18N.registerServer("en", {
  "Распознавание остановлено: потолок расхода на этот файл": "Recognition stopped: the spending cap for this file",
  "Распознавание речи сейчас недоступно: сообщите администратору": "Speech recognition is unavailable right now: tell the administrator",
  "Распознавание этого видео не уместится в лимит расхода организации": "Recognising this video will not fit into the organisation's spending limit",
+ "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "We can't recognise speech in this language yet. Choose the language spoken in the video, or upload ready subtitles (.srt) — we'll translate them",
  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу ($": "Spending on this file has already reached the per-page cap ($",
  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Spending on this file has already reached the per-page cap: ask the service administrator to raise the cap.",
  "Регистрацию на эту почту сделали заново с другим паролем. Задайте свой пароль через «Забыли пароль?»": "This email was registered again with a different password. Set your own password via “Forgot password?”",

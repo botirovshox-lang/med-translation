@@ -511,6 +511,7 @@ window.I18N.registerServer("uz", {
  "Распознавание остановлено: потолок расхода на этот файл": "Tanib olish to‘xtatildi: bu fayl uchun xarajat chegarasi",
  "Распознавание речи сейчас недоступно: сообщите администратору": "Nutqni tanib olish hozir mavjud emas: administratorga xabar bering",
  "Распознавание этого видео не уместится в лимит расхода организации": "Bu videoni tanib olish tashkilotning xarajat limitiga sig‘maydi",
+ "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "Bu tildagi nutqni hozircha taniy olmaymiz. Videoda qaysi tilda gapirilayotganini tanlang yoki tayyor subtitrlarni (.srt) yuklang — ularni tarjima qilamiz",
  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу ($": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi ($",
  "Расход по этому файлу уже дошёл до потолка, назначенного на страницу: поднимите потолок у администратора сервиса.": "Bu fayl bo‘yicha xarajat sahifaga belgilangan chegaraga yetdi: chegarani xizmat administratoridan ko‘tarishni so‘rang.",
  "Регистрацию на эту почту сделали заново с другим паролем. Задайте свой пароль через «Забыли пароль?»": "Bu pochtaga boshqa parol bilan qayta ro‘yxatdan o‘tishgan. O‘z parolingizni «Parolni unutdingizmi?» orqali o‘rnating",

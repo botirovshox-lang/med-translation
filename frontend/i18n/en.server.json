@@ -476,5 +476,6 @@
   "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "The file is being re-read with improved parsing rules — this takes a minute or two. Press «Translate» a little later",
   "Напишите хотя бы пару слов": "Write at least a couple of words",
   "Слишком много сообщений за час — попробуйте позже": "Too many messages this hour — try later",
-  "Не удалось сохранить сообщение — попробуйте ещё раз": "Could not save the message — try again"
+  "Не удалось сохранить сообщение — попробуйте ещё раз": "Could not save the message — try again",
+  "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "We can't recognise speech in this language yet. Choose the language spoken in the video, or upload ready subtitles (.srt) — we'll translate them"
 }

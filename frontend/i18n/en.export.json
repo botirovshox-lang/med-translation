@@ -396,5 +396,7 @@
   "Перевод не уместился и наезжает на соседний текст: строк — ": "The translation did not fit and runs into neighbouring text: lines — ",
   " (страницы: ": " (pages: ",
   ". Сократите перевод этих строк и соберите заново.": ". Shorten the translation of these lines and build again.",
-  "Наезжают на соседний текст": "Run into neighbouring text"
+  "Наезжают на соседний текст": "Run into neighbouring text",
+  "раз видео не взяли: речь на языке, который распознавание не принимает — нужен свой распознаватель": "times a video was refused: speech in a language recognition doesn't accept — we need our own recogniser",
+  "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "We can't recognise speech in this language yet. Choose the language spoken in the video, or upload ready subtitles (.srt) — we'll translate them"
 }

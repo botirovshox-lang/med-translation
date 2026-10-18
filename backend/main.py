@@ -2403,6 +2403,20 @@ def _resolve_model(model_id: Optional[str]) -> dict:
 # поэтому это оценка и так и называется (`_note_audio`). in/out — нули:
 # токенного счёта у них нет, а `_usage_cost` иначе назвал бы цену «неизвестной».
 ASR_MODEL = os.environ.get("ASR_MODEL", "whisper-1")
+# Языки речи, которые облачное распознавание ПРИНИМАЕТ (ISO 639-1). Замер
+# 18.10.2026: whisper-1 и gpt-4o-transcribe на `language=uz` отвечают 400
+# «not supported», а без языка принимают узбекскую речь за казахскую — текст
+# негоден. Так же отвергнуты ещё 19 языков каталога (KY, TG, TK, KA, MN, BN…):
+# видео на них трижды билось в отказ и вставало «не удалось», списав минуты.
+# Список — официальный перечень поставщика; «*» — не проверять. Своё
+# распознавание языка появится — язык уходит сюда же (`ASR_LANGS` в окружении).
+ASR_LANG_415 = ("Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, "
+                "или загрузите готовые субтитры (.srt) — их переведём")
+ASR_LANGS = frozenset(x.strip().lower() for x in os.environ.get(
+    "ASR_LANGS",
+    "af ar hy az be bs bg ca zh hr cs da nl en et fi fr gl de el he hi hu is id it ja kn kk ko lv lt mk "
+    "ms mr mi ne no fa pl pt ro ru sr sk sl es sw sv tl ta th tr uk ur vi cy").replace(",", " ").split()
+    if x.strip())
 TTS_MODEL = os.environ.get("TTS_MODEL", "gpt-4o-mini-tts")
 AUX_MODEL_PRICES = {EMBED_MODEL: {"in": 0.02, "out": 0.0},
                     ASR_MODEL: {"in": 0.0, "out": 0.0, "perMin": 0.006},
@@ -9123,6 +9137,7 @@ BLOCK_KIND = {
     "cap.burnBusy": "money",
     "cap.mediaDisk507": "fix",
     "dead.media415": "fix",
+    "dead.asrLang": "fix",
     "cap.filePages413": "money",    # принесли книгу толще потолка — прямой спрос
     "cap.bytes413": "money",
     "cap.pages402": "money",
@@ -9925,6 +9940,7 @@ METRICS_BLOCK_TEXT = {
     "cap.burnBusy": "впечатывание субтитров отложено: у организации уже идёт одно",
     "cap.mediaDisk507": "видео не взяли: на сервере не хватило места",
     "dead.media415": "видео или звук не прочитались: нет звуковой дорожки или файл повреждён",
+    "dead.asrLang": "видео не взяли: речь на языке, который распознавание не принимает — нужен свой распознаватель",
     "cap.filePages413": "файл толще потолка страниц — не взяли",
     "cap.bytes413": "файл тяжелее потолка в мегабайтах — не взяли",
     "cap.pages402": "кончились выданные страницы",
@@ -12352,7 +12368,9 @@ def list_models():
         "domains": ([{"id": d["id"], "label": d["label"]} for d in DOMAINS]
                     + [{"id": d["id"], "label": d["label"], "custom": True} for d in _tenant_domains()]),
         "domainDefault": DEFAULT_DOMAIN,
-        "languages": LANGUAGES,
+        # `asr` — примет ли распознавание речь на этом языке: форма видео
+        # не предлагает то, что сервер отвергнет (инвариант 32).
+        "languages": [dict(l, asr=_asr_supported(l["code"])) for l in LANGUAGES],
         # Умолчания шагов уезжают ПСЕВДОНИМАМИ по той же причине, что каталог:
         # браузеру они нужны, чтобы найти в каталоге строку шага и взять
         # её цену для сметы, — а находит он её по тому же ключу, каким она
@@ -39531,6 +39549,7 @@ def media_upload_start(req: MediaUploadInit):
             raise HTTPException(400, "Это не видео-проект")
     else:
         _check_lang_pair(req.src, req.tgt)
+        _asr_lang_gate(req.src, tid)          # язык речи — ДО приёма гигабайтов
         if req.folder is not None:
             get_folder(req.folder)
         # Правило функции (инвариант 40) — ДО приёма гигабайтов.
@@ -39708,6 +39727,10 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
         raise HTTPException(415, "Длительность файла не определяется — файл повреждён или не дописан")
     if rec.get("project") is not None:
         return _media_reattach(rec, part, info)       # бесплатно: модель не зовётся
+    if not _asr_supported(rec.get("src") or ""):  # до списания минут
+        with _MEDIA_LOCK:                         # загрузка без будущего не держит место в потолке
+            _media_upload_drop(token)
+        _asr_lang_gate(rec.get("src") or "", tid)
     _fn_gate("minutes")
     _fn_gate("speech")
     want_frames = bool(req.frameText and info.get("video"))
@@ -39994,6 +40017,7 @@ def media_transcribe(pid: int):
         raise HTTPException(409, "Речь уже распознана")
     if _media_source(project) is None:
         raise HTTPException(409, "Исходное видео удалено по сроку хранения — загрузите его заново на карточке файла")
+    _asr_lang_gate(project.get("src") or "", _current_tenant())
     if not os.environ.get("OPENAI_API_KEY"):
         raise HTTPException(503, "Распознавание речи сейчас недоступно: сообщите администратору")
     st = _spend_status()
@@ -40085,6 +40109,22 @@ def _asr_language(code: str) -> Optional[str]:
     """Код языка для распознавания — ISO 639-1 строчными («UZ-CYRL» → «uz»)."""
     c = (code or "").split("-")[0].lower()
     return c if re.fullmatch(r"[a-z]{2}", c) else None
+
+
+def _asr_supported(code: str) -> bool:
+    """Примет ли распознавание речь на этом языке (`ASR_LANGS`). Спрашивают
+    ДО приёма гигабайтов и до списания минут: отказ поставщика по языку —
+    не временный сбой, повтор его не лечит."""
+    if "*" in ASR_LANGS:
+        return True
+    c = _asr_language(code)
+    return c is not None and c in ASR_LANGS
+
+
+def _asr_lang_gate(code: str, tid: str) -> None:
+    if not _asr_supported(code):
+        _ev("dead.asrLang", tid)
+        raise HTTPException(415, ASR_LANG_415)
 
 
 def _asr_chunk(item: tuple) -> dict:

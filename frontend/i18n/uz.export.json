@@ -396,5 +396,7 @@
   "Перевод не уместился и наезжает на соседний текст: строк — ": "Tarjima sig‘madi va qo‘shni matn ustiga chiqyapti: qatorlar — ",
   " (страницы: ": " (sahifalar: ",
   ". Сократите перевод этих строк и соберите заново.": ". Bu qatorlar tarjimasini qisqartiring va qayta yig‘ing.",
-  "Наезжают на соседний текст": "Qo‘shni matn ustiga chiqadi"
+  "Наезжают на соседний текст": "Qo‘shni matn ustiga chiqadi",
+  "раз видео не взяли: речь на языке, который распознавание не принимает — нужен свой распознаватель": "marta video olinmadi: nutq tanib olish qabul qilmaydigan tilda — o‘z tanib olish vositamiz kerak",
+  "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "Bu tildagi nutqni hozircha taniy olmaymiz. Videoda qaysi tilda gapirilayotganini tanlang yoki tayyor subtitrlarni (.srt) yuklang — ularni tarjima qilamiz"
 }

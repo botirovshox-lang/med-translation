@@ -22,7 +22,8 @@
   Х13. цвет краски — по оси штриха, обводка — до плотности набора; PDF — те же правила;
   Х14. строка другого размера в конце блока — свой участок по дословному хвосту;
   Х15. машинопись уменьшается поровну кеглем и шириной;
-  Х16. хвост по номерам аффилиаций (транслитерация), обводка участка — своя.
+  Х16. хвост по номерам аффилиаций (транслитерация), обводка участка — своя;
+  Х17. семейство шрифта у участка; Х18. значок конца строки переносится.
 Без сети и без вызовов модели.
 """
 import io
@@ -767,6 +768,123 @@ b16c = dict(b16w, _paint=dict(b16w["_paint"], bandsPx=[[0, 49], [60, 99], [110, 
 e16c = layout_pdf._paint_plan(b16c, TR14, fonts16, pdfmetrics.stringWidth, None)
 check(e16c is not None and not any("stroke" in pr for pr in e16c.get("parts") or []),
       "PDF: блок без деления — обводки участков нет (столбцы схем как прежде)")
+
+print("\n── Х17. семейство шрифта у участка ──")
+check(tp.part_fam([0.24, 0.29], "", "") == "serif", "засечки у полос — антиква")
+check(tp.part_fam([0.0], "serif", "") == "", "строка авторов без засечек — рубленый под антиквой")
+check(tp.part_fam([0.0], "serif", "sans") == "sans", "в PDF рубленый называется sans")
+check(tp.part_fam([0.3], "sans", "sans") == "" and tp.part_fam([0.3], "", "sans") == "",
+      "в PDF антиква — пустое семейство")
+check(tp.part_fam([None, None], "serif", "") == "serif", "замер не удался — семейство блока")
+check(tp.part_fam([0.09], "serif", "") == "serif", "между порогами — семейство блока")
+check(tp.part_fam([0.3], "old", "") == "old", "дореформенная антиква остаётся дореформенной")
+check(tp.part_fam([0.0], "type", "") == "type" and tp.part_fam([0.3], "hand", "") == "hand",
+      "машинопись и почерк участкам не меняются")
+got17 = []
+it._paint_layout = lambda *a, **kw: (lambda r_: (got17.append(r_) if r_ else None) or r_)(_orig_l14(*a, **kw))
+try:
+    it.render_target(b14.getvalue(), [{"box": box14, "text": TR14, "rows": 3, "lineH": 50, "fam": "serif",
+                                       "lineBoxes": lb14, "src": SRC14, "align": "left"}])
+finally:
+    it._paint_layout = _orig_l14
+pp17 = [g for g in got17 if len(g.get("parts") or []) == 2]
+check(pp17, "блок антиквой разделён")
+if pp17:
+    fp0 = getattr(pp17[-1]["parts"][0]["font"], "path", "")
+    fp1 = getattr(pp17[-1]["parts"][1]["font"], "path", "")
+    check("Serif" in fp0 and "Sans" in fp1 and "Serif" not in fp1,
+          "картинка: заголовок антиквой, авторы рубленым: %s / %s" % (fp0.split("/")[-1], fp1.split("/")[-1]))
+
+print("\n── Х18. значок конца строки (ORCID) ──")
+
+
+def _orcid(dr, x, y, r):
+    dr.ellipse((x, y, x + 2 * r, y + 2 * r), fill=(166, 206, 57))
+    dr.text((x + 0.5 * r, y + 0.35 * r), "iD", font=ImageFont.truetype(SUB + "NotoSans-Regular.ttf", int(r)),
+            fill=(255, 255, 255))
+
+
+pg18 = pg14.copy()
+d18 = ImageDraw.Draw(pg18)
+ax1 = lb14[-1][2]
+_orcid(d18, ax1 + 4, 151, 11)
+lb18 = [list(b) for b in lb14]
+lb18[-1][2] = ax1 + 30
+arr18 = np.asarray(pg18).copy()
+box18 = [20, min(b[1] for b in lb18), max(b[2] for b in lb18), max(b[3] for b in lb18)]
+crop18 = np.ascontiguousarray(arr18[box18[1] - 6:box18[3] + 6, box18[0] - 6:box18[2] + 6])
+m18 = tp.measure(crop18, SRC14, 3, 50.0, inner=(6, 6, 6 + box18[2] - box18[0], 6 + box18[3] - box18[1]))
+ic18 = tp.find_icons(crop18, m18["mask"], m18["bands"], m18["ink"], m18.get("bg"))
+check(len(ic18) == 1 and ic18[0]["atEnd"] and ic18[0]["band"] == len(m18["bands"]) - 1,
+      "значок найден в конце строки авторов: %s" % [{k: v for k, v in i.items() if k in ("band", "atEnd", "hx")}
+                                                    for i in ic18])
+pg18c = pg14.copy()
+ImageDraw.Draw(pg18c).text((20, 150), A14, font=fA, fill=(220, 90, 20))
+cr18c = np.ascontiguousarray(np.asarray(pg18c)[box18[1] - 6:box18[3] + 6, box18[0] - 6:box18[2] + 6])
+m18c = tp.measure(cr18c, SRC14, 1, 22.0)
+check(not tp.find_icons(cr18c, m18c["mask"], m18c["bands"], (220, 90, 20), m18c.get("bg")),
+      "цветной текст значком не считается (краска блока сама цветная)")
+pg18m = pg14.copy()
+d18m = ImageDraw.Draw(pg18m)
+_orcid(d18m, 300, 151, 11)
+cr18m = np.ascontiguousarray(np.asarray(pg18m)[box18[1] - 6:box18[3] + 6, box18[0] - 6:box18[2] + 6])
+m18m = tp.measure(cr18m, SRC14, 3, 50.0)
+ic18m = tp.find_icons(cr18m, m18m["mask"], m18m["bands"], m18m["ink"], m18m.get("bg"))
+check(ic18m and not ic18m[0]["atEnd"], "значок посреди строки помечен — его не ставят")
+b18 = io.BytesIO()
+pg18.save(b18, "PNG")
+out18, r18 = it.render_target(b18.getvalue(), [{"box": box18, "text": TR14, "rows": 3, "lineH": 50,
+                                                 "lineBoxes": lb18, "src": SRC14, "align": "left"}])
+o18 = np.asarray(Image.open(io.BytesIO(out18)).convert("RGB")).astype(int) if out18 else None
+green = ((o18.max(axis=2) - o18.min(axis=2) > 80) & (o18[..., 1] >= o18[..., 0])
+         & (o18[..., 1] >= o18[..., 2])) if o18 is not None else None
+check(r18 and r18[0].get("icons") == 1 and green is not None and green.sum() > 40,
+      "картинка: значок поставлен после перевода: %s, зелёных точек %s"
+      % (r18 and {k: r18[0].get(k) for k in ("icons", "iconsSkip")}, None if green is None else int(green.sum())))
+if green is not None and green.sum():
+    ys, xs = np.nonzero(green)
+    check(ys.min() >= lb14[-1][1] - 12 and ys.max() <= lb14[-1][3] + 12,
+          "значок стоит на строке авторов (y %d–%d)" % (ys.min(), ys.max()))
+r18n = it.render_target(b14.getvalue(), [{"box": box14, "text": TR14, "rows": 3, "lineH": 50,
+                                           "lineBoxes": lb14, "src": SRC14, "align": "left"}])[1]
+check(r18n and "icons" not in r18n[0], "без значка отчёт прежний")
+
+print("\n── Х17–Х18 в PDF ──")
+b17 = dict(b16w, fam="serif", _paint=dict(b16w["_paint"], bandSerif=[0.25, 0.25, 0.0]))
+e17 = layout_pdf._paint_plan(b17, TR14, fonts16, pdfmetrics.stringWidth, None)
+check(e17 and len(e17["parts"]) == 2 and e17["parts"][1].get("font")
+      and "Sans" in layout_pdf._font_file(e17["parts"][1]["font"]) and not e17["parts"][0].get("font"),
+      "PDF: у авторов рубленый шрифт: %s" % ([p_.get("font") for p_ in (e17 or {}).get("parts", [])],))
+b17n = dict(b16w, fam="serif", _paint=dict(b16w["_paint"], bandSerif=[None, None, None]))
+e17n = layout_pdf._paint_plan(b17n, TR14, fonts16, pdfmetrics.stringWidth, None)
+check(e17n and not any(p_.get("font") for p_ in e17n["parts"]), "PDF: замера засечек нет — шрифт блока")
+
+
+class _Cv:
+    def __init__(self):
+        self.imgs = []
+
+    def drawImage(self, *a, **kw):
+        self.imgs.append(a[1:5])
+
+
+pbuf = io.BytesIO()
+Image.new("RGBA", (10, 10), (166, 206, 57, 255)).save(pbuf, "PNG")
+ent18 = dict(e17, b=dict(e17["b"], _paint=dict(e17["b"]["_paint"], icons=[
+    {"png": pbuf.getvalue(), "band": 2, "atEnd": True, "hx": 2.0, "lift": 0.5, "ar": 1.0},
+    {"png": pbuf.getvalue(), "band": 0, "atEnd": True, "hx": 2.0, "lift": 0.5, "ar": 1.0}])))
+cv18 = _Cv()
+layout_pdf._paint_icons(cv18, ent18, [(50.0, 300.0, 180.0, e17["font"], 12.0, "Uyqu"),
+                                      (50.0, 200.0, 168.0, e17["parts"][1].get("font") or e17["font"], 6.0,
+                                       "Kana")])
+check(len(cv18.imgs) == 1 and cv18.imgs[0][0] > 200.0 and ent18["iconsSkip"] == 1,
+      "PDF: значок после последней строки участка авторов; значок не последней строки участка — пропуск")
+e9 = layout_pdf._paint_plan(dict(b16w, fam=""), TR14, fonts16, pdfmetrics.stringWidth, None)
+check(e9 and "Sans" not in layout_pdf._font_file(e9["font"]),
+      "PDF: надпись с засечками (пустое семейство) печатается антиквой, а не гротеском: %s"
+      % (e9 and layout_pdf._font_file(e9["font"]).split("/")[-1]))
+e9s = layout_pdf._paint_plan(dict(b16w, fam="sans"), TR14, fonts16, pdfmetrics.stringWidth, None)
+check(e9s and "Sans" in layout_pdf._font_file(e9s["font"]), "PDF: рубленая надпись — гротеском")
 
 print()
 if fail:

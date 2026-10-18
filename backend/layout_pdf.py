@@ -3332,6 +3332,21 @@ def _paint_measure(sampler, b: dict) -> bool:
         m = tp.measure(rgb, b.get("src") or "", rows, line_pt * scale, inner=inner)
         if not m.get("found"):
             return False
+        icons = []
+        if (b.get("image") and b.get("fam") != "hand" and not m["angle"] and not m.get("arc")
+                and len(m["bands"]) <= rows + 1):
+            # Х18: значок в строке (ORCID) — стирается целиком и ставится
+            # после перевода (`_paint_icons`), как у картинки.
+            icons = [ic for ic in tp.find_icons(rgb[..., :3], m["mask"], m["bands"], m["ink"], m.get("bg"))
+                     if ic["atEnd"]]
+            if icons:
+                em_ = m.get("erase_mask", m["mask"]).astype(bool)
+                for ic in icons:
+                    hull = ic["hull"]
+                    if tp.cv2 is not None:
+                        hull = tp.cv2.dilate(hull, np.ones((3, 3), np.uint8))
+                    em_ = em_ | (hull > 0)
+                m["erase_mask"] = em_
         out, alpha = tp.erase(rgb, m)
     except Exception:
         return False
@@ -3418,6 +3433,15 @@ def _paint_measure(sampler, b: dict) -> bool:
     b["_paint"]["bandsPx"] = [list(x) for x in m["bands"]]
     b["_paint"]["bandXh"] = band_xh
     b["_paint"]["bandInkw"] = band_inkw
+    # Х17: засечки каждой полосы — у участка разделённого блока своё семейство.
+    b["_paint"]["bandSerif"] = [tp.serif_score(m["mask"], [[0, a, W_m, bb + 1]]) for a, bb in m["bands"]]
+    ics = []
+    for ic in icons:
+        bi_ = io.BytesIO()
+        Image.fromarray(ic["sprite"], "RGBA").save(bi_, "PNG")
+        ics.append({"png": bi_.getvalue(), "band": ic["band"], "atEnd": ic["atEnd"],
+                    "hx": ic["hx"], "lift": ic["lift"], "ar": ic["sprite"].shape[1] / max(1, ic["sprite"].shape[0])})
+    b["_paint"]["icons"] = ics
     # Абзац с рамками строк (Ф1): базы, шаг и отступ — тем же правилом, что
     # у перерисовки картинки (`text_paint.line_geometry`), в пикселях вырезки,
     # и обратно в точки страницы.
@@ -3561,8 +3585,11 @@ def _paint_plan1(b: dict, text: str, fonts: dict, sw, hyph, h0_force=None) -> "d
     # У рукописи «жирный» — это толщина пера; её дописывает обводка (Ф7),
     # а жирного рукописного файла нет — запасной DejaVu Bold сменил бы почерк
     # на гротеск, и путь PDF разошёлся бы с картинкой.
-    font = _font_for(fonts, {"style": "b" if (pt["bold"] and not hand) else "",
-                             "fam": b.get("fam") or "sans"})
+    # У надписи с картинки пустое семейство — АНТИКВА (так его пишут и
+    # чтение, и Х9 в замере): прежнее `or "sans"` печатало найденные
+    # засечки гротеском. Семейства нет вовсе — рубленый, как прежде.
+    fam_b = b["fam"] if "fam" in b else "sans"
+    font = _font_for(fonts, {"style": "b" if (pt["bold"] and not hand) else "", "fam": fam_b})
     em = max(2.0, pt["em"])
     src = " ".join((b.get("src") or "").split())
     h0 = 1.0
@@ -3587,6 +3614,7 @@ def _paint_plan1(b: dict, text: str, fonts: dict, sw, hyph, h0_force=None) -> "d
             and len(pt.get("areas") or []) <= 1):
         split = _tp().size_split([tuple(x) for x in pt["bandsPx"]], text, b.get("src") or "")
     part_em, part_pitch = None, []
+    part_font = [None] * (len(split[0]) if split else 0)
     if split:
         geo = None
         xhs = []
@@ -3610,6 +3638,17 @@ def _paint_plan1(b: dict, text: str, fonts: dict, sw, hyph, h0_force=None) -> "d
             gaps = sorted(tops[i] - tops[i + 1] for i in range(len(tops) - 1))
             part_pitch.append(gaps[len(gaps) // 2] if gaps else None)
         part_em = [em, em * ratio]
+        # Х17: семейство участка — по засечкам его полос, как у картинки.
+        base_f = fam_b
+        for pi_, (p0, p1) in enumerate(split[0]):
+            fk = _tp().part_fam((pt.get("bandSerif") or [])[p0:p1 + 1], base_f, "sans")
+            if fk != base_f:
+                fn = _font_for(fonts, {"style": "b" if (pt["bold"] and not hand) else "", "fam": fk})
+                if fn and fn != font:
+                    xa, xb = _tp().font_xh(_font_file(font)), _tp().font_xh(_font_file(fn))
+                    if xa > 0 and xb > 0:
+                        part_em[pi_] *= xa / xb
+                    part_font[pi_] = fn
     if geo and not pt.get("arc") and not pt["angle"]:
         tp = _tp()
 
@@ -3710,6 +3749,14 @@ def _paint_plan1(b: dict, text: str, fonts: dict, sw, hyph, h0_force=None) -> "d
     for k_, ((top, bot, rows_k), chunk) in enumerate(zip(areas_t, chunks)):
         em_k = part_em[k_] if part_em else em
         h_k = max(top - bot, em_k)
+        font_k = (part_font[k_] if (split and part_font[k_]) else None) or font
+
+        def mw_k(t_, s_, font_k=font_k):
+            return sw(t_, font_k, s_) * h0
+        hsplit_k = None
+        if hsplit is not None:
+            def hsplit_k(w_, room, s_, mw_k=mw_k):
+                return _hyph_split(w_, hyph, room, lambda x_: mw_k(x_, s_))
         # Место участка — комната плашки, а не рамка блока (Т30): рамка идёт
         # по самой широкой строке блока, и у верха круга перевод выходил за
         # край. Комната только сужает: край плашки не найден — рамка блока.
@@ -3732,12 +3779,14 @@ def _paint_plan1(b: dict, text: str, fonts: dict, sw, hyph, h0_force=None) -> "d
             cap = int((h_k + 0.6 * em_k - 0.95 * em_k) // max(max(pitch_k, em_k * 1.05), 1e-6)) + 1
             rows_k = max(1, min(rows_k, cap))
         size, step, lines = tp.fit_lines(chunk, width_k, h_k + 0.3 * em_k, em_k,
-                                         max(pitch_k, em_k * 1.05), mw, hsplit, 0.45, rows_k)
+                                         max(pitch_k, em_k * 1.05), mw_k, hsplit_k, 0.45, rows_k)
         need = (len(lines) - 1) * step + 0.95 * size if lines else 0.0
         over = over or need > h_k + 0.5 * em_k
         fmin = min(fmin, size / em_k)
         parts.append({"top": top, "bot": bot, "lines": lines, "size": size, "step": step,
                       "L": left, "R": right})
+        if font_k != font:
+            parts[-1]["font"] = font_k
     stroke_e = 0.0
     if (split and parts and pt.get("bandDens") and pt.get("dens")
             and (pt.get("stemMid") or 0) * pt.get("scale", 1.0) >= tp.WEIGHT_MIN_PX and _font_file(font)):
@@ -3753,15 +3802,19 @@ def _paint_plan1(b: dict, text: str, fonts: dict, sw, hyph, h0_force=None) -> "d
                 pr["stroke"] = 0.0
                 continue
             smp = max(pr["lines"], key=len)
+            ffp = _font_file(pr.get("font") or font) or ff_
             pr["stroke"] = tp.weight_by_density(
-                dv[len(dv) // 2], lambda sf, smp=smp, sz=pr["size"]:
-                tp.sample_density(ff_, smp, sz * sc_, h0, ink_, pt.get("bg") or (255, 255, 255), sf * sc_),
+                dv[len(dv) // 2], lambda sf, smp=smp, sz=pr["size"], ffp=ffp:
+                tp.sample_density(ffp, smp, sz * sc_, h0, ink_, pt.get("bg") or (255, 255, 255), sf * sc_),
                 tp.STROKE_MAX * pr["size"])
         stroke_e = max(p_.get("stroke", 0.0) for p_ in parts)
     first = parts[0] if parts else {"lines": [], "size": em, "step": em}
     return {"b": b, "font": font, "size": first["size"], "step": first["step"], "stroke": stroke_e,
             "lines": [ln for p_ in parts for ln in p_["lines"]], "parts": parts, "h0": h0,
-            "f": fmin, "over": over, "align": b.get("align") or "left", "split": bool(split)}
+            "f": fmin, "over": over, "align": b.get("align") or "left", "split": bool(split),
+            "partBands": ([list(x) for x in split[0]] if split
+                          else [list(x) for x in areas] if (len(parts) > 1 and len(areas) == len(parts))
+                          else [[0, max(0, len(bands) - 1)]] * len(parts))}
 
 
 def _paint_fill(c, ent: dict) -> None:
@@ -4043,8 +4096,12 @@ def _paint_text(c, ent: dict, fonts: dict) -> None:
         synth_b = True
         c.setStrokeColorRGB(*pt["ink"])
     synth_0 = bool(pt["bold"]) and "b" not in real
+    last_at = []                            # Х18: конец последней строки участка
+    font0 = font
     for part in ent.get("parts") or []:
         size, step = part["size"], part["step"]
+        font = part.get("font") or font0
+        last_at.append(None)
         ps_ = part.get("stroke")
         if ps_ is not None:
             # Х16: своя обводка участка; без неё — как прежде (жирный
@@ -4076,6 +4133,7 @@ def _paint_text(c, ent: dict, fonts: dict) -> None:
                 else:
                     x = lft + ind
                 _paint_line(c, ln, x, part["bases"][n_], font, size, h0, synth_b, ws)
+                last_at[-1] = (x, x + w, part["bases"][n_], font, size, ln)
             continue
         block_h = (len(p_lines) - 1) * step + 0.72 * size
         avail = part["top"] - part["bot"]
@@ -4090,8 +4148,46 @@ def _paint_text(c, ent: dict, fonts: dict) -> None:
             else:
                 x = lft
             _paint_line(c, ln, x, y, font, size, h0, synth_b)
+            last_at[-1] = (x, x + w, y, font, size, ln)
             y -= step
     c.restoreState()
+    _paint_icons(c, ent, last_at)
+
+
+def _is_rtl(s: str) -> bool:
+    """Строка справа налево (иврит, арабица): букв этих письмен больше половины."""
+    import unicodedata
+    ls = [ch for ch in s or "" if ch.isalpha()]
+    r = sum(unicodedata.bidirectional(ch) in ("R", "AL") for ch in ls)
+    return bool(ls) and r * 2 > len(ls)
+
+
+def _paint_icons(c, ent: dict, last_at: list) -> None:
+    """Х18: значок конца строки — после последней строки своего участка,
+    тем же ростом к строчным и на той же высоте (`image_text._put_icons`)."""
+    from reportlab.lib.utils import ImageReader
+    pt = ent["b"]["_paint"]
+    pb = ent.get("partBands") or []
+    done = skip = 0
+    for ic in pt.get("icons") or []:
+        pi_ = next((j for j, (a_, b_) in enumerate(pb) if a_ <= ic["band"] <= b_), None)
+        if (not ic.get("atEnd") or pi_ is None or pi_ >= len(last_at) or last_at[pi_] is None
+                or ic["band"] != pb[pi_][1]):
+            skip += 1
+            continue
+        xa, xb, base, font, size, ln = last_at[pi_]
+        xh = (_tp().font_xh(_font_file(font)) or 0.5) * size
+        hh = ic["hx"] * xh
+        ww = hh * ic.get("ar", 1.0)
+        x = (xa - 0.3 * xh - ww) if _is_rtl(ln) else (xb + 0.3 * xh)
+        y = base + ic["lift"] * xh - hh / 2.0
+        pw = (getattr(c, "_pagesize", None) or (None,))[0]
+        if x < 0 or (pw and x + ww > pw):
+            skip += 1
+            continue
+        c.drawImage(ImageReader(io.BytesIO(ic["png"])), x, y, ww, hh, mask="auto")
+        done += 1
+    ent["iconsDone"], ent["iconsSkip"] = done, skip
 
 
 class _Sampler:

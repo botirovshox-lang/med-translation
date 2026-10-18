@@ -1835,6 +1835,23 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         m = tp.measure(rgb, it.get("src") or "", rows, float(it.get("lineH") or 0), inner=inner)
         if not m.get("found"):
             return None
+        icons = []
+        if ((it.get("fam") or "") != "hand" and not m["angle"] and not m.get("arc")
+                and len(m["bands"]) <= rows + 1):
+            # Х18: значок в строке (ORCID) — стирается вместе с надписью
+            # целиком (с белой серединой) и ставится после перевода.
+            # Стирается только значок, который будет поставлен (конец строки):
+            # ложное срабатывание посреди картинки иначе стёрло бы рисунок.
+            icons = [ic for ic in tp.find_icons(rgb, m["mask"], m["bands"], m["ink"], m.get("bg"))
+                     if ic["atEnd"]]
+            if icons:
+                em_ = m.get("erase_mask", m["mask"]).astype(bool)
+                for ic in icons:
+                    hull = ic["hull"]
+                    if tp.cv2 is not None:
+                        hull = tp.cv2.dilate(hull, _np.ones((3, 3), _np.uint8))
+                    em_ = em_ | (hull > 0)
+                m["erase_mask"] = em_
         erased, alpha = tp.erase(rgb, m)
     except Exception:
         return None
@@ -1941,6 +1958,7 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
             "em": em, "h0": h0, "geo": geo, "k": k, "pbox": pbox, "it": it, "fam": fam,
             "align": align,
             "ink": m["ink"], "stem": stem, "stemMid": stem_mid, "dens": dens, "bandDens": band_dens,
+            "icons": icons,
             "handFallback": fam == "hand" and fpath not in _pf().hand_font_files()}
 
 
@@ -2014,6 +2032,19 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
         if not (SPLIT_EM_MIN <= ratio <= 1.0):
             ratio = min(1.0, max(SPLIT_EM_MIN, ratio_b))   # шумная оценка — по полосам
         part_em = [em, em * ratio]
+        # Х17: семейство участка — по засечкам ЕГО полос (авторы гротеском
+        # под антиквой заголовка); высота строчных та же — кегль под шрифт.
+        part_path = [None] * len(split[0])
+        for pi_, (p0, p1) in enumerate(split[0]):
+            fk = tp.part_fam([tp.serif_score(m["mask"], [[0, a_, W_, b_ + 1]])
+                              for a_, b_ in m["bands"][p0:p1 + 1]], pm.get("fam") or "", "")
+            if fk != (pm.get("fam") or ""):
+                pth = _paint_font(m["bold"], split[1][pi_], fk)
+                if pth and pth != pm["fpath"]:
+                    xa, xb = tp.font_xh(pm["fpath"]), tp.font_xh(pth)
+                    if xa > 0 and xb > 0:
+                        part_em[pi_] *= xa / xb
+                    part_path[pi_] = pth
         # Шаг строк участка — по ЕГО строкам (верх к верху полос): общий шаг
         # блока считает и обрывки выносных, и строку авторов, и две строки
         # заголовка вставали теснее оригинала.
@@ -2105,6 +2136,10 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
         parts = []
         for pi_, ((top, bot, rows_k), chunk) in enumerate(zip(spans, chunks)):
             em_p = part_em[pi_] if part_em else em
+            pth_p = part_path[pi_] if (split and part_path[pi_]) else None
+
+            def mw(t, s, pth_p=pth_p):
+                return draw.textlength(t, font=(font_at(s, pth_p) if pth_p else font_at(s))) * h0
             height = max(bot - top, em_p)
             pp_ = part_pitch[pi_] if (part_em and part_pitch[pi_]) else m["pitch"] * k * em_p / em
             pitch = max(pp_, em_p * 1.05)
@@ -2120,7 +2155,7 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
             if lines and (len(lines) - 1) * step_ + 0.95 * size > height + 0.6 * em_p:
                 return None             # не влезло и мельче — плашкой, прежней дорогой
             parts.append({"top": top, "bot": bot, "lines": lines, "size": size, "step": step_,
-                          "font": font_at(size)})
+                          "font": font_at(size, pth_p) if pth_p else font_at(size)})
         # Кегль раскладки — основного участка: мелкая строка авторов (Х14)
         # не тянет вниз обводку и общий кегль страницы.
         size = parts[0]["size"] if split else min(p_["size"] for p_ in parts)
@@ -2164,7 +2199,12 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
             "dash": pm.get("fam") == "hand" and _short_hyphen(pm["fpath"]),
             "alpha": pm["alpha"], "m": m, "lines": lines, "size": size, "step": step_, "h0": h0, "font": font_at(size),
             "k": k, "align": _start_align(pm.get("align") or it.get("align"), text), "parts": parts,
-            "ink": pm.get("ink") or m["ink"], "over": bool(over), "split": bool(split)}
+            "ink": pm.get("ink") or m["ink"], "over": bool(over), "split": bool(split),
+            "icons": pm.get("icons") or [],
+            "partBands": ([list(x) for x in split[0]] if split
+                          else [list(x) for x in (m.get("areas") or [])]
+                          if (parts and len(parts) > 1 and len(m.get("areas") or []) == len(parts))
+                          else [[0, max(0, len(m["bands"]) - 1)]] * len(parts or [1]))}
 
 
 def _paint_plan(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
@@ -2378,9 +2418,11 @@ def _paint_put(big, p: dict) -> None:
         return
     parts = p.get("parts") or [{"top": 0, "bot": (y1 - y0) * k, "lines": p["lines"],
                                 "size": size, "step": step, "font": font}]
+    last_at = []                            # Х18: где кончилась последняя строка участка
     for part in parts:
         font, size, step = part["font"], part["size"], part["step"]
         cur_sf[0] = part.get("strokeF")
+        last_at.append(None)
         asc = font.getmetrics()[0]
         if "bases" in part:
             # Строка — на своей базовой линии (Ф1); первая строка КАЖДОГО
@@ -2404,6 +2446,7 @@ def _paint_put(big, p: dict) -> None:
                 else:
                     x = x0 * k + part["x0"] + ind
                 _put(big, g, (x - sw, y_))
+                last_at[-1] = (x - sw + 1, x - sw + g.size[0], y0 * k + part["bases"][n_], font, size, ln)
             continue
         top, bot = y0 * k + part["top"], y0 * k + part["bot"]
         block_h = (len(part["lines"]) - 1) * step + size * 0.95
@@ -2417,7 +2460,44 @@ def _paint_put(big, p: dict) -> None:
             else:
                 x = x0 * k
             _put(big, g, (x - sw, y - sw))
+            last_at[-1] = (x - sw + 1, x - sw + g.size[0], y + asc, font, size, ln)
             y += step
+    _put_icons(big, p, last_at)
+
+
+def _put_icons(big, p: dict, last_at: list) -> None:
+    """Х18: значки конца строки — после последней строки СВОЕГО участка
+    перевода (у письма справа налево — перед её началом), тем же ростом
+    к строчным и на той же высоте над строкой. Значок посреди строки,
+    не в последней строке участка или за краем картинки не ставится —
+    считается (`iconsSkip` в отчёте)."""
+    icons = p.get("icons") or []
+    if not icons:
+        return
+    tp = _tp()
+    pb = p.get("partBands") or []
+    done = skip = 0
+    for ic in icons:
+        pi_ = next((j for j, (a_, b_) in enumerate(pb) if a_ <= ic["band"] <= b_), None)
+        if (not ic.get("atEnd") or pi_ is None or pi_ >= len(last_at) or last_at[pi_] is None
+                or ic["band"] != pb[pi_][1]):
+            skip += 1
+            continue
+        xa, xb, base, font, size, ln = last_at[pi_]
+        xh = (tp.font_xh(getattr(font, "path", "") or "") or 0.5) * size
+        hh = max(2, int(round(ic["hx"] * xh)))
+        spr = Image.fromarray(ic["sprite"], "RGBA")
+        ww = max(2, int(round(spr.size[0] * hh / max(1, spr.size[1]))))
+        spr = spr.resize((ww, hh), Image.LANCZOS)
+        gap = 0.3 * xh
+        x = (xa - gap - ww) if _rtl(ln) else (xb + gap)
+        y = base - ic["lift"] * xh - hh / 2.0
+        if x < 0 or x + ww > big.size[0] or y < 0 or y + hh > big.size[1]:
+            skip += 1
+            continue
+        _put(big, spr, (x, y))
+        done += 1
+    p["iconsDone"], p["iconsSkip"] = done, skip
 
 
 _DASH_CACHE: dict = {}
@@ -2775,6 +2855,11 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
             y += p["step"]
     for p in paint:
         _paint_put(big, p)
+        if p.get("iconsDone") or p.get("iconsSkip"):
+            i_ = p.get("i")
+            if i_ is not None and i_ < len(report) and report[i_] is not None:
+                report[i_]["icons"] = p.get("iconsDone", 0)
+                report[i_]["iconsSkip"] = p.get("iconsSkip", 0)
     try:
         return _save(big, fmt, info, orig_mode), report
     except Exception as e:

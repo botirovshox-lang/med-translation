@@ -2332,6 +2332,110 @@ def serif_fam(mask, line_boxes, fam: str, plain: str = "") -> str:
     return fam
 
 
+# Х17. Семейство шрифта у УЧАСТКА разделённого блока (Х14/Х16) — своё.
+# Заголовок статьи набран антиквой, строка авторов — гротеском; блок один,
+# и перевод авторов печатался антиквой заголовка. Засечки участка меряются
+# по ЕГО полосам тем же `serif_fam`; не уверен замер — семейство блока.
+# Почерк и машинопись участкам не меняются, дореформенная антиква остаётся
+# дореформенной.
+def part_fam(scores: list, base: str, plain: str = "") -> str:
+    """Семейство участка (Х17) по засечкам его полос (`serif_score` каждой):
+    медиана известных против тех же порогов, что у `serif_fam`. `plain` —
+    имя рубленого у вызывающего ("" у картинки, "sans" у PDF), антиква —
+    "serif" у картинки и "" у PDF; дореформенная остаётся "old"; не уверен —
+    `base`."""
+    if base in ("hand", "type"):
+        return base
+    sc = sorted(v for v in (scores or []) if v is not None)
+    if not sc:
+        return base
+    med = sc[len(sc) // 2] if len(sc) % 2 else (sc[len(sc) // 2 - 1] + sc[len(sc) // 2]) / 2.0
+    serif = "serif" if plain == "" else ""          # у PDF антиква — пустое
+    if med >= SERIF_EXT:
+        return base if (base in ("serif", "old") or (plain and base == "")) else serif
+    if med <= SANS_EXT:
+        return plain
+    return base
+
+
+# Х18. Значок в строке — не буква. Зелёный кружок ORCID у фамилии автора
+# стирался вместе с текстом и пропадал. Значок — связная область ЦВЕТНОЙ
+# краски (насыщенность выше `ICON_SAT`, далеко от краски букв и от фона),
+# сама краска блока при этом не цветная (иначе это цветной текст), область
+# компактная (стороны в `ICON_ASPECT`, заполнение выпуклой оболочки не меньше
+# `ICON_FILL`) и ростом от `ICON_H` высот строчных своей полосы. Из полосы
+# справа от него краски не больше `ICON_TAIL` высот строчных («Grossman ⓘ³»):
+# значок КОНЦА строки. Только такой и переносится — после последней строки
+# перевода этого участка (у письма справа налево — перед её началом); значок
+# посреди строки ставить некуда без догадки, он пропускается и считается.
+# Значок вырезается вместе с выпуклой оболочкой (белое «iD» внутри), стирается
+# вместе с надписью и ставится тем же ростом относительно строчных и той же
+# высотой над строкой. Ничего не хранится: значок вырезается при каждой
+# выгрузке из самой картинки.
+ICON_SAT = int(os.environ.get("PAINT_ICON_SAT", "60"))
+ICON_DIST = float(os.environ.get("PAINT_ICON_DIST", "90"))
+ICON_ASPECT = (0.6, 1.6)
+ICON_FILL = float(os.environ.get("PAINT_ICON_FILL", "0.5"))
+ICON_H = (float(os.environ.get("PAINT_ICON_HMIN", "0.8")), float(os.environ.get("PAINT_ICON_HMAX", "3.0")))
+ICON_TAIL = float(os.environ.get("PAINT_ICON_TAIL", "2.5"))
+ICON_MAX = int(os.environ.get("PAINT_ICON_MAX", "3"))
+
+
+def find_icons(rgb, mask, bands: list, ink, bg) -> list:
+    """Значки КОНЦА строки (Х18): [{box, band, atEnd, hx, lift, sprite
+    (RGBA, numpy), hull (маска полной вырезки)}]; значки посреди строки —
+    с atEnd False (их не ставят, только считают)."""
+    if np is None or cv2 is None or rgb is None or mask is None or not bands:
+        return []
+    ink_a = np.array(ink[:3], dtype=np.int32)
+    if int(ink_a.max() - ink_a.min()) > ICON_SAT:
+        return []                                   # краска блока сама цветная
+    bg_a = np.array((bg or (255, 255, 255))[:3], dtype=np.int32)
+    im = rgb[..., :3].astype(np.int32)
+    sat = im.max(axis=2) - im.min(axis=2)
+    d_ink = np.sqrt(((im - ink_a) ** 2).sum(axis=2))
+    d_bg = np.sqrt(((im - bg_a) ** 2).sum(axis=2))
+    cand = ((sat > ICON_SAT) & (d_ink > ICON_DIST) & (d_bg > ICON_DIST)).astype(np.uint8)
+    if cand.sum() < 12:
+        return []
+    n, lab, st, _c = cv2.connectedComponentsWithStats(cand, 8)
+    H, W = mask.shape[:2]
+    out = []
+    for i in range(1, n):
+        x, y, w, h, a = (int(v) for v in st[i])
+        if a < 12 or not (ICON_ASPECT[0] <= w / max(1, h) <= ICON_ASPECT[1]):
+            continue
+        pts = cv2.findNonZero((lab == i).astype(np.uint8))
+        hull = np.zeros((H, W), np.uint8)
+        cv2.fillConvexPoly(hull, cv2.convexHull(pts), 1)
+        if int(hull.sum()) <= 0 or a / float(hull.sum()) < ICON_FILL:
+            continue
+        cy = y + h / 2.0
+        bi = next((j for j, (b0, b1) in enumerate(bands) if b0 - 1 <= cy <= b1 + 1), None)
+        if bi is None:
+            continue
+        b0, b1 = bands[bi]
+        prof = mask[b0:b1 + 1].sum(axis=1)
+        if not prof.max():
+            continue
+        core = np.nonzero(prof >= 0.5 * prof.max())[0]
+        xh = float(core[-1] - core[0] + 1)
+        base = b0 + float(core[-1]) + 1.0
+        if not (ICON_H[0] * xh <= h <= ICON_H[1] * xh):
+            continue
+        right = mask[b0:b1 + 1, min(W, x + w + 1):] & (hull[b0:b1 + 1, min(W, x + w + 1):] == 0)
+        cols = np.nonzero(right.any(axis=0))[0]
+        tail = float(cols[-1] + 1) if len(cols) else 0.0
+        sprite = np.zeros((h, w, 4), np.uint8)
+        sprite[..., :3] = rgb[y:y + h, x:x + w, :3]
+        sprite[..., 3] = hull[y:y + h, x:x + w] * 255
+        out.append({"box": [x, y, x + w, y + h], "band": bi, "atEnd": tail <= ICON_TAIL * xh,
+                    "hx": h / xh, "lift": (base - cy) / xh, "sprite": sprite, "hull": hull})
+        if len(out) >= ICON_MAX:
+            break
+    return out
+
+
 # Х2. Выключка — по краям строк оригинала, а не по слову модели о блоке:
 # машинопись 1940 г. (левый край ровный, правый рваный) печаталась по центру.
 # Левый край ровный (разброс начал ≤ `ALIGN_MAD` кегля, без первых строк

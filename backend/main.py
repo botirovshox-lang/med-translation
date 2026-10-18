@@ -4499,6 +4499,12 @@ def _openai_translate(text: str, src: str, tgt: str,
     system = _translate_system(src, tgt, gloss_hits, tm_context, literal, domain, mdl,
                                prev_src, next_src, "" if literal else style,
                                None if literal else prev_pairs)
+    if not literal and "\n" in (text or ""):
+        # Х19: разрыв строки в оригинале — данные (строка другого размера:
+        # авторы под заголовком), по нему печать делит блок. Остальным
+        # строкам промпт байт в байт прежний.
+        system += ("\nLINE BREAKS: the source text contains %d line break(s). Keep exactly the "
+                   "same number of line breaks, at the corresponding places.\n" % text.count("\n"))
     # Рассуждение «modern»-моделей тратит тот же бюджет, что и ответ: на длинном
     # абзаце 4096 токенов кончались посреди перевода.
     extra = ({"max_completion_tokens": 8192} if mdl["api"] == "modern"
@@ -17787,16 +17793,43 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
                                       base64.b64encode(over).decode(),
                                       "detail": "low"}})
     asked = []
+    # Х19: последняя строка другого размера — своей вырезкой под своим
+    # номером (после всех блоков); текст склеится через «\n». Только чтение
+    # надписей документа (`system` не задан): у кадра видео свой промпт.
+    tails: dict = {}
+    arr = None
+    if system is None and getattr(image_text, "IMG_READ_SIZE_BREAK", False):
+        try:
+            arr = image_text._np.asarray(image_text._open(img_bytes).convert("RGB"))
+        except Exception:
+            arr = None
     for i, b in enumerate(blocks):
+        box_i = b["box"]
+        lbs = b.get("lineBoxes") or []
+        if arr is not None and image_text.size_break(arr, b):
+            v = len(blocks) + len(tails)
+            tails[v] = i
+            hb = lbs[:-1]
+            box_i = [min(x[0] for x in hb), min(x[1] for x in hb), max(x[2] for x in hb), max(x[3] for x in hb)]
         # lineH/rows — чтобы поле кропа считалось от СТРОКИ: у подписи
         # в шесть строк «четверть блока» захватывает полторы чужие, и модель
         # добросовестно перепишет соседний абзац в этот сегмент.
-        crop = image_text.crop(img_bytes, b["box"], line_h=b.get("lineH"),
-                               rows=b.get("rows"))
+        crop = image_text.crop(img_bytes, box_i, line_h=b.get("lineH"),
+                               rows=(b.get("rows") or 1) - (1 if i in tails.values() else 0) or 1)
         if not crop:
             continue
         asked.append(i)
         content.append({"type": "text", "text": "Block %d:" % i})
+        content.append({"type": "image_url",
+                        "image_url": {"url": "data:image/png;base64," +
+                                      base64.b64encode(crop).decode(),
+                                      "detail": "high"}})
+    for v, i in tails.items():
+        lb = (blocks[i].get("lineBoxes") or [])[-1]
+        crop = image_text.crop(img_bytes, lb, line_h=lb[3] - lb[1], rows=1)
+        if not crop:
+            continue
+        content.append({"type": "text", "text": "Block %d:" % v})
         content.append({"type": "image_url",
                         "image_url": {"url": "data:image/png;base64," +
                                       base64.b64encode(crop).decode(),
@@ -17831,12 +17864,16 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
         print("[backend] чтение картинки: ответ оборван, разобрано блоков %d из %d"
               % (len(items), len(blocks)), file=sys.stderr)
     out = [None] * len(blocks)
+    tail_text: dict = {}
     for item in items:
         if not isinstance(item, dict):
             continue
         try:
             i = int(item.get("i"))
         except (TypeError, ValueError):
+            continue
+        if i in tails:
+            tail_text[tails[i]] = image_text.read_clean(item.get("text") or "")
             continue
         if not (0 <= i < len(blocks)):
             continue
@@ -17851,6 +17888,14 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
                   # Вид надписи — у кадра видео (`_frame_read_system`).
                   "kind": str(item.get("kind") or ""),
                   "model": _dm_public(mdl["id"])}
+    for i, t in tail_text.items():
+        # Х19: строка другого размера — после «\n». Не прочиталась одна из
+        # половин — блок остаётся тем, что прочиталось (без разрыва).
+        if out[i] is not None and t and out[i]["text"]:
+            out[i]["text"] = out[i]["text"] + "\n" + t
+            out[i]["sizeBreak"] = 1
+        elif out[i] is not None and t and not out[i]["text"]:
+            out[i]["text"] = t
     return out
 
 

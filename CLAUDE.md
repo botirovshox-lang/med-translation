@@ -3333,6 +3333,7 @@ node tests/test_landing_handoff_browser.js                          # форма
 node tests/test_home_photo_browser.js                               # карусель «Фото» на главной: слайды, языки, картинки
 node tests/test_home_examples_browser.js                            # «Примеры работ» на главной: стрелки, точки, язык
 .venv/bin/python tests/test_hand_paint.py                            # перевод в фото абзаца: разделы Ф и Х справочника PDF
+.venv/bin/python tests/test_size_break.py                            # Х19: строка другого размера — разрыв при чтении
 python tools/landing_build.py                                        # лендинг пересобран из landing/src/home.html
 .venv/bin/python tests/test_pdf_figures.py                           # рисунки книги доезжают до документа
 .venv/bin/python tests/test_pdf_layout_export.py                     # выгрузка PDF «как в оригинале»

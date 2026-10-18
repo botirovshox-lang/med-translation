@@ -336,6 +336,46 @@ def dehyphen(text: str) -> str:
     return _HYPH_GAP_RE.sub(rep, text or "")
 
 
+# Х19. Строка другого размера в конце блока — разрыв строки ПРИ ЧТЕНИИ.
+# Чтение склеивает строки блока пробелом, и у письма без пробелов (китайский,
+# японский) без номеров аффилиаций граница «заголовок | авторы» в переводе
+# не находилась ничем (Х14, Х16). Блок до `IMG_BREAK_ROWS` строк, у которого
+# высота строчных ПОСЛЕДНЕЙ строки (по пикселям, `text_paint.x_height`) меньше
+# медианы остальных в `PAINT_SPLIT_SIZE` раза, читается двумя вырезками,
+# и текст склеивается через «\n»: сегмент тот же, разрыв — данные. Перевод
+# держит число разрывов (`_openai_translate`), раскраска режет по нему
+# (`text_paint.tail_by_break`). `IMG_READ_SIZE_BREAK=0` — выключить.
+IMG_READ_SIZE_BREAK = os.environ.get("IMG_READ_SIZE_BREAK", "1") != "0"
+IMG_BREAK_ROWS = int(os.environ.get("IMG_BREAK_ROWS", "6"))
+IMG_BREAK_XH_MIN = float(os.environ.get("IMG_BREAK_XH_MIN", "5"))
+
+
+def size_break(arr, block: dict) -> bool:
+    """Х19: последняя строка блока мельче остальных по высоте строчных."""
+    tp = _tp()
+    lbs = block.get("lineBoxes") or []
+    if (tp is None or arr is None or not IMG_READ_SIZE_BREAK
+            or not (2 <= len(lbs) <= IMG_BREAK_ROWS)):
+        return False
+    try:
+        x0 = max(0, min(int(b[0]) for b in lbs) - 4)
+        y0 = max(0, min(int(b[1]) for b in lbs) - 4)
+        x1 = min(arr.shape[1], max(int(b[2]) for b in lbs) + 4)
+        y1 = min(arr.shape[0], max(int(b[3]) for b in lbs) + 4)
+        rgb = _np.ascontiguousarray(_visible(arr[y0:y1, x0:x1])[..., :3].astype(_np.uint8))
+        m = tp.measure(rgb, "", len(lbs), float(block.get("lineH") or 0))
+        if not m.get("found") or m["angle"] or m.get("arc"):
+            return False                    # наклон и дуга — не строки по горизонтали
+        xh = [tp.x_height(m["mask"], [[b[0] - x0, b[1] - y0, b[2] - x0, b[3] - y0]]) for b in lbs]
+    except Exception:
+        return False
+    head = sorted(xh[:-1])
+    if not head or min(head) < IMG_BREAK_XH_MIN or xh[-1] < IMG_BREAK_XH_MIN:
+        return False
+    med = head[len(head) // 2] if len(head) % 2 else (head[len(head) // 2 - 1] + head[len(head) // 2]) / 2.0
+    return xh[-1] * tp.SPLIT_SIZE <= med
+
+
 def read_clean(text: str) -> str:
     """Текст блока из ЧТЕНИЯ: перенос снят, разрывы строк — пробелы.
 

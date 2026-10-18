@@ -840,6 +840,19 @@ def _affil_order(vals: list) -> bool:
     return vals[0] == 1 and len(set(vals)) >= 2
 
 
+def tail_by_break(text: str, src: str) -> "tuple | None":
+    """Х19: разрыв строки, поставленный ЧТЕНИЕМ перед строкой другого размера
+    (`image_text.size_break`) и сохранённый переводом: последний «\n» и там,
+    и там, при равном их числе. Иначе None — дальше решают Х14 и Х16."""
+    n = (src or "").count("\n")
+    if not n or (text or "").count("\n") != n:
+        return None
+    ct, cs = text.rindex("\n") + 1, src.rindex("\n") + 1
+    if not text[ct:].strip() or not src[cs:].strip() or not text[:ct].strip() or not src[:cs].strip():
+        return None
+    return ct, cs
+
+
 def tail_by_numbers(text: str, src: str) -> "tuple | None":
     """(позиция в `text`, позиция в `src`) начала списка авторов по номерам
     аффилиаций (Х16) или None."""
@@ -924,7 +937,7 @@ def size_split(bands: list, text: str, src: str):
     prev = [hs[i] for i in real[:-1]]
     if hs[last] * SPLIT_SIZE > float(np.median(prev)):
         return None
-    cut = tail_anchor(text, src) or tail_by_numbers(text, src)
+    cut = tail_by_break(text, src) or tail_anchor(text, src) or tail_by_numbers(text, src)
     if cut is None:
         return None
     head, tail = text[:cut[0]].rstrip(), text[cut[0]:].strip()

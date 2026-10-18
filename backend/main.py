@@ -18018,6 +18018,13 @@ def _regroup_wants(rec: dict) -> bool:
     blocks = rec.get("blocks") or []
     if image_text.regroup_plan(blocks):
         return True
+    if int(rec.get("groupRule") or 1) < 5 and any(
+            int(b.get("rows") or 1) >= 2 and not b.get("skip") for b in blocks):
+        # Т36: разрез по ключу легенды виден только по ПИКСЕЛЯМ (`_split_keyed`),
+        # по геометрии его не предсказать. Без этого запись помечалась новой
+        # версией по ветке «склеивать нечего», и разрез не делался никогда:
+        # «AA Легкая степень БА» оставалось одним блоком (боевой проект 105).
+        return True
     return _gaps_allowed(rec) and bool(image_text.gap_slots(_gap_boxes(rec)))
 
 
@@ -18048,7 +18055,7 @@ def _regroup_rec(rec: dict, project: dict, dry: bool, blob: bytes = b"") -> int:
     """Перегруппировка сохранённых блоков по нынешним правилам: сперва разрез
     (Т36, `_split_keyed`), потом склейка (`_regroup_merge`). Ответ — сколько
     блоков разрезано и склеено."""
-    n = _split_keyed(rec, project, dry, blob) if int(rec.get("groupRule") or 1) < 4 else 0
+    n = _split_keyed(rec, project, dry, blob) if int(rec.get("groupRule") or 1) < 5 else 0
     return n + _regroup_merge(rec, project, dry, blob)
 
 
@@ -34187,7 +34194,40 @@ def _layout_texts(project: dict, data: dict, same: "set | None" = None) -> dict:
     for idx, sids in [g for g in groups if g[0] in tails]:
         if all(sid in written for sid in sids):
             texts[int(idx)] = ""        # перевод целиком встал в абзац головы
+    # Ц10в: абзац из одних чисел («0,51», «50 (64,9)», «(0,34–0,77)» — ячейки
+    # таблицы) сегментом не становится по правилу импорта, и на листе
+    # оставались пиксели оригинала с запятой посреди английской таблицы.
+    # На язык с точкой такой абзац печатается с точкой — без модели.
+    try:
+        _numeric_para_texts(project, data, groups, tails, texts)
+    except Exception as e:
+        print("[backend] числовые абзацы при печати: %s" % e, file=sys.stderr)
     return texts
+
+
+_NUMERIC_PARA_RE = re.compile(r"^[\d\s.,()±%–—+\-:;/<>=]+$")
+
+
+def _numeric_para_texts(project: dict, data: dict, groups: list, tails: set, texts: dict) -> int:
+    if (_lang_rule(project.get("src") or "").get("decimal") != ","
+            or _lang_rule(project.get("tgt") or "").get("decimal") != "."):
+        return 0
+    path = data.get("path")
+    if not path or not Path(str(path)).exists():
+        return 0
+    taken = {int(i) for i, _s in groups} | set(tails)
+    paras = _docx_paragraphs(Path(str(path)).read_bytes())
+    n = 0
+    for key in ((data.get("layout") or {}).get("boxes") or {}):
+        k = int(key)
+        if k in taken or k in texts or not (0 <= k < len(paras)):
+            continue
+        t = (paras[k] or "").strip()
+        if (t and any(ch.isdigit() for ch in t) and _NUMERIC_PARA_RE.match(t)
+                and _DEC_COMMA_RE.search(t)):
+            texts[k] = _DEC_COMMA_RE.sub(lambda m: m.group(0).replace(",", "."), t)
+            n += 1
+    return n
 
 
 def _png_page_index(blob: bytes) -> Optional[int]:
@@ -34306,8 +34346,11 @@ def _layer_echo(src: str, paras: list, rect: "tuple | None") -> bool:
         on_line = False
         for (rx0, ry0, rx1, ry1) in lines:
             s_ = max(1.0, ry1 - ry0)
+            # Блок начат в пределах строки или вплотную за её концом (краска
+            # курсивного хвоста за оценённым концом строки — «варианта» после
+            # «…ассоциация», боевой стр. 6); конец блока не ограничен.
             if (min(by1, ry1) - max(by0, ry0) >= 0.5 * min(bh, ry1 - ry0)
-                    and bx0 >= rx0 - s_ and bx1 <= rx1 + s_):
+                    and rx0 - s_ <= bx0 <= rx1 + 2 * s_):
                 on_line = True
                 break
         if not on_line or len(_alnum(psrc)) <= len(a):
@@ -34317,6 +34360,10 @@ def _layer_echo(src: str, paras: list, rect: "tuple | None") -> bool:
         if any(ws[k:k + n] == mine for k in range(len(ws) - n + 1)):
             return True
         if len(a) >= 6 and _piece_in(src, psrc):
+            return True
+        if len(a) >= 4 and a in _alnum(psrc):
+            # Кусок СЛОВА этой же строки («СТМЫ.» — распознанный хвост «астмы.»
+            # курсивом, боевой стр. 7): место уже доказано строкой.
             return True
     return False
 

@@ -2542,6 +2542,17 @@ def _plate_bg(arr, box, lh: float, k: int):
 
 
 def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = None) -> tuple:
+    """Стереть исходные надписи и написать перевод — см. `_render_target`.
+    Стирание нейросетью (Ф9) идёт под потолком времени на всю картинку:
+    блоков бывают десятки, а воркер один."""
+    tp = _tp()
+    if tp is None or not hasattr(tp, "lama_budget"):
+        return _render_target(img_bytes, items, obstacles)
+    with tp.lama_budget():
+        return _render_target(img_bytes, items, obstacles)
+
+
+def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = None) -> tuple:
     """Стереть исходные надписи и написать перевод. (новые байты | None, отчёт).
 
     Отчёт по каждому блоку обязателен: перерисовать удаётся не всё, а молча

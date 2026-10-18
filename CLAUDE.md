@@ -3192,6 +3192,12 @@ Spleeter или файл UVR MDX-Net), `MEDIA_SEP_THREADS` (1), `MEDIA_SEP_CHUNK
 (60), `MEDIA_SEP_MAX_MINUTES` (минут ОЗВУЧКИ, дальше — приглушение, 120),
 `MEDIA_SEP_SPEED` (доля длительности на разделение — для «≈ N мин», 0.25;
 поправить по первому замеру на сервере).
+**Стирание надписей на фото без пятен** (правило Ф9, `backend/paint_lama.py`):
+`sh tools/install_paint_models.sh` (LaMa, 208 МБ, сверка sha256) — без модели
+неровный фон стирается прежним `cv2.inpaint`. Необязательные: `PAINT_LAMA=0`
+(выключить), `PAINT_LAMA_THREADS` (2), `PAINT_LAMA_CALL_S` (25 с на вызов),
+`PAINT_LAMA_BUDGET_S` (90 с на картинку и на выгрузку PDF), `PAINT_LAMA_MAX_TILES`
+(12). План внешних моделей чтения и вставки — `docs/plans/ocr-paint-tools.md`.
 **Родной голос для узбекского и ещё ~10 языков** — Azure Speech:
 `AZURE_SPEECH_KEY` + `AZURE_SPEECH_REGION` (например `westeurope`); без них
 эти языки озвучиваются OpenAI «с акцентом», и экран это называет. Бесплатный

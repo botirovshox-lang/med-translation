@@ -25,8 +25,9 @@
     корешок книги. У многострочного блока ось — это ось блока, а не строки,
     и угол не меряется вовсе.
 
-Стирание: ровный фон — заливка его цветом; неровный — `cv2.inpaint`
-(Telea) по расширенной маске БУКВ: рисунок вокруг букв не трогается вовсе,
+Стирание: ровный фон — заливка его цветом; бумага с узором — модель
+«освещение × узор» (Ф6); прочий неровный — LaMa (`paint_lama`, Ф9), без
+модели — `cv2.inpaint` (Telea), по расширенной маске БУКВ: рисунок вокруг букв не трогается вовсе,
 а заплатка на PDF кладётся с прозрачностью вне маски.
 """
 from __future__ import annotations
@@ -1099,6 +1100,53 @@ def _arc_of_old(comps: list, letter: float, H: int) -> "dict | None":
     return {"cx": float(cx), "cy": float(cy), "r": float(r), "t0": t0, "t1": t1, "up": up}
 
 
+# Ф9: LaMa — только при настоящем перепаде тона фона вокруг дыры (металл,
+# градиент, фото). На бумаге с текстом сеть «дорисовывает» окружение, то есть
+# буквы: замер — призрак адреса сайта на белой статье и крапины на старой
+# книге (разброс 0…11), равенство с Telea на ровном листе таблички (40–45),
+# явный выигрыш на металлической рамке (98).
+LAMA_SPREAD_MIN = float(os.environ.get("PAINT_LAMA_SPREAD_MIN", "60"))
+
+
+def _bg_spread(rgb, hole, lh: float) -> float:
+    """Разброс тона фона у дыры: P95−P5 яркости после медианы шире штриха
+    (буквы сняты) по кольцу известных точек шириной в строку."""
+    g = cv2.cvtColor(np.ascontiguousarray(rgb[..., :3]), cv2.COLOR_RGB2GRAY)
+    bgm = cv2.medianBlur(g, _odd(0.8 * lh, 5, 61))
+    kr = _odd(1.0 * lh, 5, 121)
+    ring = (cv2.dilate(hole.astype(np.uint8), np.ones((kr, kr), np.uint8)) > 0) & ~hole
+    if ring.sum() < 50:
+        return 0.0
+    v = bgm[ring]
+    return float(np.percentile(v, 95) - np.percentile(v, 5))
+
+
+def _lama():
+    """Модуль LaMa (Ф9) или None — нет модуля, модели или выключен."""
+    try:
+        from backend import paint_lama as pl
+    except ImportError:
+        try:
+            import paint_lama as pl
+        except ImportError:
+            return None
+    return pl if pl.available() else None
+
+
+def lama_stats() -> dict:
+    """Счёт стираний LaMa в текущем бюджете: {lama, refused}."""
+    pl = _lama()
+    return pl.stats() if pl is not None else {}
+
+
+def lama_budget(seconds: float = None):
+    """Потолок времени LaMa на одну перерисовку (контекст); без модуля —
+    пустой контекст."""
+    pl = _lama()
+    import contextlib
+    return pl.budget(seconds) if pl is not None else contextlib.nullcontext()
+
+
 def erase(rgb, m: dict):
     """(стёртая вырезка, альфа-маска стирания): ровный фон — заливка местным
     тоном бумаги, бумага с узором — модель «освещение × узор» (Ф6), прочий
@@ -1161,7 +1209,16 @@ def erase(rgb, m: dict):
         sel = grow > 0
         out[sel] = np.clip(fill[sel], 0, 255).astype(np.uint8)
     else:
-        out = cv2.inpaint(np.ascontiguousarray(rgb), grow, INPAINT_R, cv2.INPAINT_TELEA)
+        # Ф9. Неровный фон без узора (фото, градиент, металл, пятна) — LaMa:
+        # Telea тянет тон от края дыры, и стёртое выходило пятнами в форме
+        # прежних букв. Нет модели, не уложились во время — Telea, как было.
+        out = None
+        lama = _lama()
+        if lama is not None and _bg_spread(rgb, grow > 0, lh) >= LAMA_SPREAD_MIN:
+            out = lama.inpaint(np.ascontiguousarray(rgb), grow > 0)
+            m["eraseHow"] = "lama" if out is not None else "telea"
+        if out is None:
+            out = cv2.inpaint(np.ascontiguousarray(rgb), grow, INPAINT_R, cv2.INPAINT_TELEA)
     out = _tone_match(out, rgb, grow > 0)
     # Х5. Мягкий край альфы — СНАРУЖИ маски, на нетронутых точках: размытие
     # по самой маске смешивало крайние пиксели стёртого с оригиналом, и по

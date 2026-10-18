@@ -5555,6 +5555,24 @@ def _with_bullet(text: str, boxes: list) -> str:
 
 def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = None,
           lang: "str | None" = None, sources: "dict | None" = None) -> tuple:
+    """См. `_build`. Стирание надписей нейросетью (Ф9) — под одним потолком
+    времени на всю выгрузку: картинок в книге бывают сотни, воркер один."""
+    tp = _tp()
+    if tp is None or not hasattr(tp, "lama_budget"):
+        return _build(pdf_bytes, layout, texts, extra, lang, sources)
+    with tp.lama_budget():
+        res = _build(pdf_bytes, layout, texts, extra, lang, sources)
+        st = tp.lama_stats()
+    if st.get("lama") or st.get("refused"):
+        try:
+            res[1]["eraseLama"] = st             # сколько стёрто сетью и сколько отдано Telea по времени
+        except Exception:
+            pass
+    return res
+
+
+def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = None,
+           lang: "str | None" = None, sources: "dict | None" = None) -> tuple:
     """(PDF, отчёт).
 
     `layout` — {"boxes": {номер абзаца: [рамки]}}, `texts` — {номер абзаца:

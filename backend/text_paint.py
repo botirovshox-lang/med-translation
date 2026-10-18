@@ -740,6 +740,175 @@ def tail_anchor(text: str, src: str) -> "tuple | None":
     return spans[best][0], src_spans[first][0]
 
 
+# Х16. Хвост по НОМЕРАМ, когда имена транслитерированы. Дословного хвоста
+# нет у переводов на китайский, казахский, арабский: «Kana Okano1» стал
+# «Кана Окано1», «冈野加奈1», «كانا أوكانو1». Номера аффилиаций при
+# транслитерации не меняются, и по ним видно, где начинается список
+# авторов. Номер — 1–2 цифры ВПЛОТНУЮ за буквой (надстрочные ¹²³,
+# арабско-индийские и полноширинные цифры приводятся к обычным; «1,2» —
+# два номера); годы, ссылки «[1]», «Table 1», «COVID-19» сюда не попадают.
+# В оригинале: номеров от конца не меньше `NUM_MIN`, значения малые
+# (наибольший не больше их числа), после последнего — только знаки,
+# каждое имя между номерами — со словом с ЗАГЛАВНОЙ (сноски на строчных
+# словах — не имена); разрез — назад от первого номера через слова
+# с заглавной (и частицы de, van, von…), не больше `NAME_WORDS_MAX`, слово
+# перед ними — со строчной. В переводе: последние номера совпадают по
+# значению и порядку, после них — только знаки; разрез — у письма
+# с пробелами на столько же слов назад, у письма без пробелов — на явной
+# границе (пробел, «，», «、», «：») не дальше `NAME_CHARS_MAX` знаков перед
+# первым номером. Любое сомнение — None: блок не делится. Работает только
+# под физическим признаком (`size_split`: последняя строка мельче).
+NUM_MIN = int(os.environ.get("PAINT_NUM_MIN", "3"))
+NAME_WORDS_MAX = int(os.environ.get("PAINT_NAME_WORDS_MAX", "4"))
+NAME_CHARS_MAX = int(os.environ.get("PAINT_NAME_CHARS_MAX", "12"))
+_NAME_PARTICLES = {"de", "da", "di", "du", "del", "della", "der", "den", "van", "von", "la", "le",
+                   "bin", "ibn", "al", "el", "dos", "das", "ten", "ter"}
+_NUM_RE = re.compile(r"(?<=[^\W\d_])(\d{1,2}(?:[,،，、]\d{1,2})*)(?!\d)")
+_SEP_CHARS = " \t\n\u3000，、：；:;,"
+
+
+def _ascii_digits(s: str) -> str:
+    import unicodedata
+    out = []
+    for ch in s or "":
+        if ch.isdigit() and not ("0" <= ch <= "9"):
+            try:
+                out.append(str(unicodedata.digit(ch)))
+                continue
+            except (TypeError, ValueError):
+                pass
+        out.append(ch)
+    return "".join(out)
+
+
+def _tail_nums(s: str) -> "list | None":
+    """[(позиция начала номера, [значения])] хвоста номеров или None.
+    Длина строки при замене цифр не меняется — позиции верны и в исходной."""
+    t = _ascii_digits(s)
+    ms = list(_NUM_RE.finditer(t))
+    if not ms:
+        return None
+    after = t[ms[-1].end():]
+    if any(ch.isalnum() for ch in after):
+        return None                             # после последнего номера — текст
+    return [(m_.start(), [int(v) for v in re.split(r"[,،，、]", m_.group(1))]) for m_ in ms]
+
+
+def _name_words_back(s: str, end: int) -> "tuple | None":
+    """(слов имени, позиция начала имени) — назад от `end` через слова
+    с заглавной и частицы; перед именем обязано стоять слово со строчной
+    (иначе это не конец фразы) — None."""
+    words = [(m_.start(), m_.group()) for m_ in re.finditer(r"\S+", s[:end])]
+    k_, i = 0, len(words) - 1
+    while i >= 0 and k_ <= NAME_WORDS_MAX:
+        core = "".join(ch for ch in words[i][1] if ch.isalpha())
+        if not core:
+            return None
+        if core[:1].isupper() or core.lower() in _NAME_PARTICLES:
+            k_ += 1
+            i -= 1
+            continue
+        break
+    if k_ == 0 or k_ > NAME_WORDS_MAX or i < 0:
+        return None
+    return k_, words[i + 1][0]
+
+
+def _author_run(s: str, groups: list) -> "list | None":
+    """Последняя СПЛОШНАЯ цепочка «имя+номер» с конца: между соседними
+    номерами — короткий кусок с заглавным словом, слово перед номером —
+    от двух букв. Номер в заголовке («IL6», «CO2») цепочку не продолжает."""
+    run = [groups[-1]]
+    for g_prev, g in zip(reversed(groups[:-1]), reversed(groups)):
+        frag = _ascii_digits(s[g_prev[0]:g[0]]).lstrip("0123456789,،，、")
+        ws = frag.split()
+        if not ws or len(ws) > NAME_WORDS_MAX + 2 or not any(w[:1].isupper() for w in ws):
+            break
+        run.insert(0, g_prev)
+    return run
+
+
+def _affil_order(vals: list) -> bool:
+    """Номера аффилиаций нумеруются по первому появлению: 1, потом не
+    больше уже встреченного + 1 («1 1 2 1 3»); «2 2 2» — не авторы."""
+    top = 0
+    for v in vals:
+        if v > top + 1:
+            return False
+        top = max(top, v)
+    return vals[0] == 1 and len(set(vals)) >= 2
+
+
+def tail_by_numbers(text: str, src: str) -> "tuple | None":
+    """(позиция в `text`, позиция в `src`) начала списка авторов по номерам
+    аффилиаций (Х16) или None."""
+    ns, nt = _tail_nums(src), _tail_nums(text)
+    if not ns or not nt:
+        return None
+    ns = _author_run(src, ns)
+    vals = [v for _, vs in ns for v in vs]
+    if len(vals) < NUM_MIN or max(vals) > len(vals) or not _affil_order(vals):
+        return None
+    groups = len(ns)
+    if len(nt) < groups or [v for _, vs in nt[-groups:] for v in vs] != vals:
+        return None
+    # Оригинал: перед каждым номером — слово от двух букв, в куске — заглавное.
+    prev = 0
+    for pos, _vs in ns:
+        frag = src[prev:pos]
+        w_ = re.search(r"(\w+)$", _ascii_digits(frag))
+        if not w_ or sum(ch.isalpha() for ch in w_.group(1)) < 2:
+            return None
+        if not any(w[:1].isupper() for w in frag.split()):
+            return None
+        prev = pos
+    first_s = ns[0][0]
+    nb = _name_words_back(src, first_s + 1)
+    if nb is None:
+        return None
+    k_, cut_s = nb
+    first_t = nt[-groups][0]
+    left = text[:first_t]
+    tail_word = re.search(r"\S+$", left + text[first_t:first_t + 1])
+    tw = tail_word.group() if tail_word else ""
+    spaced = bool(tw) and all(not _no_space_char(ch) for ch in tw)
+    if spaced:
+        # Имя в переводе — своим обходом, и слов в нём столько же: слово
+        # заголовка с заглавной («Harvard») в переводе обычно строчное,
+        # и несовпадение счёта — повод не делить.
+        letters = [ch for ch in left if ch.isalpha()]
+        cased = sum(ch.isupper() or ch.islower() for ch in letters) * 2 > len(letters)
+        if cased:
+            nb_t = _name_words_back(text, first_t + 1)
+            if nb_t is None or nb_t[0] != k_:
+                return None
+            cut_t = nb_t[1]
+        else:
+            # Письмо без регистра (арабица, иврит, грузинский): заглавных
+            # нет, имя — столько же слов, сколько в оригинале.
+            wt = [(m_.start(), m_.group()) for m_ in re.finditer(r"\S+", text[:first_t + 1])]
+            if len(wt) <= k_:
+                return None
+            cut_t = wt[len(wt) - k_][0]
+    else:
+        j = len(left)
+        while j > 0 and left[j - 1] not in _SEP_CHARS:
+            j -= 1
+        if j == 0 or len(left) - j > NAME_CHARS_MAX:
+            return None
+        cut_t = j
+    if not text[:cut_t].strip() or not src[:cut_s].strip():
+        return None
+    return cut_t, cut_s
+
+
+def _no_space_char(ch: str) -> bool:
+    """Буква письма без пробелов между словами (иероглифы, кана, тайский…)."""
+    o = ord(ch)
+    return (0x3040 <= o <= 0x30FF or 0x3400 <= o <= 0x9FFF or 0xF900 <= o <= 0xFAFF
+            or 0x0E00 <= o <= 0x0EFF or 0x1000 <= o <= 0x109F or 0x1780 <= o <= 0x17FF)
+
+
 def size_split(bands: list, text: str, src: str):
     """(участки, куски перевода, куски оригинала, высоты полос участков)
     для строки другого размера в конце блока (Х14) или None."""
@@ -754,7 +923,7 @@ def size_split(bands: list, text: str, src: str):
     prev = [hs[i] for i in real[:-1]]
     if hs[last] * SPLIT_SIZE > float(np.median(prev)):
         return None
-    cut = tail_anchor(text, src)
+    cut = tail_anchor(text, src) or tail_by_numbers(text, src)
     if cut is None:
         return None
     head, tail = text[:cut[0]].rstrip(), text[cut[0]:].strip()

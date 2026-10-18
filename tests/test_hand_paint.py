@@ -21,7 +21,8 @@
   Х12. замер штриха — по середине тона;
   Х13. цвет краски — по оси штриха, обводка — до плотности набора; PDF — те же правила;
   Х14. строка другого размера в конце блока — свой участок по дословному хвосту;
-  Х15. машинопись уменьшается поровну кеглем и шириной.
+  Х15. машинопись уменьшается поровну кеглем и шириной;
+  Х16. хвост по номерам аффилиаций (транслитерация), обводка участка — своя.
 Без сети и без вызовов модели.
 """
 import io
@@ -705,6 +706,67 @@ check(e15 is not None and len(calls15_t) == 2 and calls15_t[1][0] is not None an
       and e15["size"] >= calls15_t[0][1],
       "PDF: машинопись — второй проход со сжатием (%s), кегль %.2f" % (calls15_t, e15["size"] if e15 else -1))
 check(len(calls15_s) == 1, "PDF: печатный набор — один проход (Х15 только машинопись)")
+
+print("\n── Х16. хвост по номерам аффилиаций; обводка участка ──")
+for lang16, tr16 in (
+        ("kk", "ұзақтығы және тұрақтылығы байланысты Кана Окано1, Якуб Р. Качмарчик1, Неха Даве2, "
+               "Джон Д. Е. Габриели1 және Джеффри К. Гроссман3"),
+        ("zh", "睡眠质量与大学生更好的学业表现相关 冈野加奈1、雅各布·R.·卡奇马日克1、内哈·戴夫2、约翰·D.·E.·加布里埃利1和杰弗里·C.·格罗斯曼3"),
+        ("ar", "جودة النوم مرتبطة بأداء أفضل لدى طلاب الكليات كانا أوكانو1، جاكوب ر. كاتشمارزيك1، نيها ديف2، "
+               "جون د. إ. غابرييلي1 وجيفري س. غروسمان3"),
+        ("ru", "Качество сна связано с успеваемостью студентов Кана Окано¹, Якуб Р. Качмарчик¹, Неха Дейв², "
+               "Джон Д. Э. Габриели¹ и Джеффри К. Гроссман³")):
+    c16 = tp.tail_by_numbers(tr16, SRC14)
+    check(c16 is not None and SRC14[c16[1]:].startswith("Kana") and not tr16[:c16[0]].rstrip().endswith(("1", "2")),
+          "%s: список авторов найден по номерам: «%s»" % (lang16, tr16[c16[0]:c16[0] + 14] if c16 else None))
+for why16, src_, tr_ in (
+        ("сноски на строчных словах", "the first method1, the second method2 and the third method3",
+         "birinchi usul1, ikkinchi usul2 va uchinchi usul3"),
+        ("годы — не номера", "Published by Smith 2019, Jones 2020 and Brown 2021",
+         "Smith 2019, Jones 2020 va Brown 2021 tomonidan nashr etilgan"),
+        ("ссылки в скобках", "as shown in Smith [1], Jones [2] and Brown [3]",
+         "Smith [1], Jones [2] va Brown [3] koʻrsatganidek"),
+        ("два автора — мало", "Results of the study Kana Okano1 and Neha Dave2",
+         "Tadqiqot natijalari Kana Okano1 va Neha Dave2"),
+        ("номер больше числа авторов", "in college students Kana Okano7, Jakub Kaczmarzyk8, Neha Dave9",
+         "talabalarida Kana Okano7, Jakub Kaczmarzyk8, Neha Dave9"),
+        ("COVID-19 и Type 2", "COVID-19 and Type 2 diabetes in 2020 patients",
+         "COVID-19 va 2-tur diabet 2020 bemorlarda"),
+        ("номера перевода не совпали", SRC14,
+         "Uyqu sifati bilan bogʻliq Kana Okano1, Jakub R. Kaczmarzyk2, Neha Dave2, John Gabrieli1 va Jeffrey Grossman3"),
+        ("после номеров ещё текст", SRC14, TR14 + " va boshqalar"),
+        ("газы с цифрой — не авторы", "Emissions of Carbon CO2, Sulfur SO2 and Nitrogen NO2",
+         "Uglerod CO2, Oltingugurt SO2 va Azot NO2 chiqindilari"),
+        ("слово заголовка с заглавной в переводе строчное",
+         "Sleep quality in Harvard Students Kana Okano1, Jakub Kaczmarzyk1, Neha Dave2",
+         "Garvard talabalarida uyqu sifati Kana Okano1, Jakub Kaczmarzyk1, Neha Dave2")):
+    check(tp.tail_by_numbers(tr_, src_) is None, "не делим: %s" % why16)
+src16i = "IL6 signalling in sleep loss among students Kana Okano1, Jakub Kaczmarzyk1, Neha Dave2"
+tr16i = "Talabalar orasida uyqu yetishmasligida IL6 signali Kana Okano1, Jakub Kaczmarzyk1, Neha Dave2"
+c16i = tp.tail_by_numbers(tr16i, src16i)
+check(c16i is not None and tr16i[c16i[0]:].startswith("Kana") and src16i[c16i[1]:].startswith("Kana"),
+      "номер в заголовке («IL6») разрез не сдвигает: %s" % (c16i,))
+src16a = "Sleep quality and grades of students Kana Okano1,2, Jakub Kaczmarzyk1, Neha Dave3"
+tr16a = "جودة النوم ودرجات الطلاب كانا أوكانو1،2، جاكوب كاتشمارزيك1، نيها ديف3"
+c16a = tp.tail_by_numbers(tr16a, src16a)
+check(c16a is not None and tr16a[c16a[0]:].startswith("كانا"), "арабская запятая в группе номеров «1،2»")
+check(tp.size_split([(0, 50), (60, 100), (110, 150)],
+                    "ұзақтығы байланысты Кана Окано1, Якуб Р. Качмарчик1, Неха Даве2, Джон Д. Е. Габриели1 және Джеффри К. Гроссман3",
+                    SRC14) is None, "без мелкой последней строки номера блок не делят")
+pp16 = [g for g in got14 if len(g.get("parts") or []) == 2]
+check(pp16 and (all("strokeF" in pr for pr in pp16[-1]["parts"]) or
+                not any("strokeF" in pr for pr in pp16[-1]["parts"])),
+      "картинка: обводка задана всем участкам или ни одному")
+b16w = dict(b16, _paint=dict(b16["_paint"], dens=0.45, bandDens=[0.45, 0.45, 0.2], stemMid=2.0, scale=2.0,
+                              ink=(0.1, 0.1, 0.1), bg=(250, 250, 250)))
+e16w = layout_pdf._paint_plan(b16w, TR14, fonts16, pdfmetrics.stringWidth, None)
+check(e16w and len(e16w["parts"]) == 2 and all("stroke" in pr for pr in e16w["parts"])
+      and e16w["parts"][0]["stroke"] > e16w["parts"][1]["stroke"] and e16w["stroke"] == e16w["parts"][0]["stroke"],
+      "PDF: у участка своя обводка по его плотности: %s" % ([pr.get("stroke") for pr in (e16w or {}).get("parts", [])],))
+b16c = dict(b16w, _paint=dict(b16w["_paint"], bandsPx=[[0, 49], [60, 99], [110, 150]]))
+e16c = layout_pdf._paint_plan(b16c, TR14, fonts16, pdfmetrics.stringWidth, None)
+check(e16c is not None and not any("stroke" in pr for pr in e16c.get("parts") or []),
+      "PDF: блок без деления — обводки участков нет (столбцы схем как прежде)")
 
 print()
 if fail:

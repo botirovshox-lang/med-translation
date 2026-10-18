@@ -3448,6 +3448,8 @@ def _paint_measure(sampler, b: dict) -> bool:
         b["_paint"]["stemMid"] = smid / scale
         b["_paint"]["scale"] = scale
         b["_paint"]["dens"] = tp.band_density(rgb3, locw, bgc, m["ink"])
+        b["_paint"]["bandDens"] = [tp.band_density(rgb3, [[0, a_, rgb3.shape[1], b_ + 1]], bgc, m["ink"])
+                                   for a_, b_ in m["bands"]]
         b["_paint"]["bg"] = tuple(int(v) for v in bgc)
         ci = tp.core_ink(rgb3, m["mask"], bgc, m["ink"], smid)
         if ci is not None:
@@ -3736,8 +3738,28 @@ def _paint_plan1(b: dict, text: str, fonts: dict, sw, hyph, h0_force=None) -> "d
         fmin = min(fmin, size / em_k)
         parts.append({"top": top, "bot": bot, "lines": lines, "size": size, "step": step,
                       "L": left, "R": right})
+    stroke_e = 0.0
+    if (split and parts and pt.get("bandDens") and pt.get("dens")
+            and (pt.get("stemMid") or 0) * pt.get("scale", 1.0) >= tp.WEIGHT_MIN_PX and _font_file(font)):
+        # Х16: у участка разделённого блока — своя обводка по его плотности
+        # (как у картинки); столбцы схемы (без деления) — как прежде, без неё.
+        sc_ = pt["scale"]
+        ink_ = tuple(int(v * 255) for v in pt["ink"])
+        ff_ = _font_file(font)
+        for pi_, (p0, p1) in enumerate(split[0]):
+            dv = sorted(d for d in pt["bandDens"][p0:p1 + 1] if d > 0)
+            pr = parts[pi_]
+            if not dv or not pr["lines"]:
+                pr["stroke"] = 0.0
+                continue
+            smp = max(pr["lines"], key=len)
+            pr["stroke"] = tp.weight_by_density(
+                dv[len(dv) // 2], lambda sf, smp=smp, sz=pr["size"]:
+                tp.sample_density(ff_, smp, sz * sc_, h0, ink_, pt.get("bg") or (255, 255, 255), sf * sc_),
+                tp.STROKE_MAX * pr["size"])
+        stroke_e = max(p_.get("stroke", 0.0) for p_ in parts)
     first = parts[0] if parts else {"lines": [], "size": em, "step": em}
-    return {"b": b, "font": font, "size": first["size"], "step": first["step"],
+    return {"b": b, "font": font, "size": first["size"], "step": first["step"], "stroke": stroke_e,
             "lines": [ln for p_ in parts for ln in p_["lines"]], "parts": parts, "h0": h0,
             "f": fmin, "over": over, "align": b.get("align") or "left", "split": bool(split)}
 
@@ -4020,9 +4042,17 @@ def _paint_text(c, ent: dict, fonts: dict) -> None:
         # Толщина пера рукописи (Ф7): обводка штриха цветом букв.
         synth_b = True
         c.setStrokeColorRGB(*pt["ink"])
+    synth_0 = bool(pt["bold"]) and "b" not in real
     for part in ent.get("parts") or []:
         size, step = part["size"], part["step"]
-        if synth_b:
+        ps_ = part.get("stroke")
+        if ps_ is not None:
+            # Х16: своя обводка участка; без неё — как прежде (жирный
+            # синтетикой или вовсе без обводки).
+            synth_b = ps_ > 0 or synth_0
+            if synth_b:
+                c.setLineWidth(2.0 * ps_ if ps_ > 0 else 0.04 * size)
+        elif synth_b:
             c.setLineWidth(2.0 * ent["stroke"] if ent.get("stroke") else 0.04 * size)
         p_lines = part["lines"]
         if part.get("bases"):

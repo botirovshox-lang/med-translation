@@ -1919,12 +1919,17 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     stem = tp._stem(m["mask"]) * k if fam == "hand" else 0.0
     stem_mid = 0.0
     dens = 0.0
+    band_dens = []
     if fam != "hand" and not m["angle"] and not m.get("arc") and lbs:
         # Х12: вес — по середине тона между бумагой и краской.
         stem_mid = tp.stem_mid(rgb, [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs],
                                m.get("bg") or (255, 255, 255), m["ink"]) * k
         dens = tp.band_density(rgb, [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs],
                                m.get("bg") or (255, 255, 255), m["ink"])
+        # Х16: плотность каждой полосы — у участка разделённого блока своя
+        # обводка (строка авторов другой плотности, чем заголовок).
+        band_dens = [tp.band_density(rgb, [[0, a_, rgb.shape[1], b_ + 1]], m.get("bg") or (255, 255, 255),
+                                     m["ink"]) for a_, b_ in m["bands"]]
         ci = tp.core_ink(rgb, m["mask"], m.get("bg") or (255, 255, 255), m["ink"], stem_mid / k)
         if ci is not None:
             m["ink"] = ci                   # Х13: цвет — по оси штриха
@@ -1935,7 +1940,7 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     return {"m": m, "erased": erased, "alpha": alpha, "fpath": fpath, "font_at": font_at,
             "em": em, "h0": h0, "geo": geo, "k": k, "pbox": pbox, "it": it, "fam": fam,
             "align": align,
-            "ink": m["ink"], "stem": stem, "stemMid": stem_mid, "dens": dens,
+            "ink": m["ink"], "stem": stem, "stemMid": stem_mid, "dens": dens, "bandDens": band_dens,
             "handFallback": fam == "hand" and fpath not in _pf().hand_font_files()}
 
 
@@ -2141,6 +2146,20 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
         def dens_at(sf):
             return tp.sample_density(fpth, sample, size, h0, ink_, bg_, sf)
         stroke_f = tp.weight_by_density(pm["dens"], dens_at, tp.STROKE_MAX * size)
+        if split and parts and pm.get("bandDens"):
+            # Х16: у каждого участка — своя обводка по его плотности.
+            for pi_, (p0, p1) in enumerate(split[0]):
+                dv = sorted(d for d in pm["bandDens"][p0:p1 + 1] if d > 0)
+                pr = parts[pi_]
+                if not dv or not pr["lines"]:
+                    pr["strokeF"] = 0.0
+                    continue
+                smp = max(pr["lines"], key=len)
+                pth = getattr(pr["font"], "path", None) or fpth
+                pr["strokeF"] = tp.weight_by_density(
+                    dv[len(dv) // 2], lambda sf, smp=smp, sz=pr["size"], pth=pth:
+                    tp.sample_density(pth, smp, sz, h0, ink_, bg_, sf), tp.STROKE_MAX * pr["size"])
+            stroke_f = parts[0].get("strokeF", stroke_f)
     return {"pbox": pm["pbox"], "stroke": stroke, "strokeF": stroke_f, "erased": pm["erased"],
             "dash": pm.get("fam") == "hand" and _short_hyphen(pm["fpath"]),
             "alpha": pm["alpha"], "m": m, "lines": lines, "size": size, "step": step_, "h0": h0, "font": font_at(size),
@@ -2292,6 +2311,7 @@ def _paint_put(big, p: dict) -> None:
     font, size, step, h0 = p["font"], p["size"], p["step"], p["h0"]
     ink = tuple(int(v) for v in (p.get("ink") or m["ink"])) + (255,)
     sw = int(p.get("stroke") or 0)
+    cur_sf = [None]                         # Х16: обводка участка, если своя
 
     def layer(txt, f_=None, s_=None):
         f_ = f_ or font
@@ -2299,7 +2319,7 @@ def _paint_put(big, p: dict) -> None:
         if p.get("dash"):
             # Х7: дефис рукописного шрифта слишком мал — тире (только печать).
             txt = txt.replace("-", "\u2013")
-        sf = float(p.get("strokeF") or 0.0)
+        sf = float((p.get("strokeF") if cur_sf[0] is None else cur_sf[0]) or 0.0)
         if sf > 0 and not sw and getattr(f_, "path", None):
             # Х12: дробная обводка — слой крупнее в SUP раз, затем вниз.
             SUP = 4
@@ -2360,6 +2380,7 @@ def _paint_put(big, p: dict) -> None:
                                 "size": size, "step": step, "font": font}]
     for part in parts:
         font, size, step = part["font"], part["size"], part["step"]
+        cur_sf[0] = part.get("strokeF")
         asc = font.getmetrics()[0]
         if "bases" in part:
             # Строка — на своей базовой линии (Ф1); первая строка КАЖДОГО

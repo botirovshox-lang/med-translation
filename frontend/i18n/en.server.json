@@ -477,5 +477,8 @@
   "Напишите хотя бы пару слов": "Write at least a couple of words",
   "Слишком много сообщений за час — попробуйте позже": "Too many messages this hour — try later",
   "Не удалось сохранить сообщение — попробуйте ещё раз": "Could not save the message — try again",
-  "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "We can't recognise speech in this language yet. Choose the language spoken in the video, or upload ready subtitles (.srt) — we'll translate them"
+  "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "We can't recognise speech in this language yet. Choose the language spoken in the video, or upload ready subtitles (.srt) — we'll translate them",
+  "символ из оригинала не перенесён буква в букву: ": "a symbol from the source was not copied letter for letter: ",
+  "символов оригинала не перенесено больше ": "more source symbols not copied ",
+  "символов оригинала не перенесено больше": "more source symbols not copied"
 }

@@ -220,7 +220,10 @@ print("=== 8. Правила языка из lang_rules.json ===")
 r = main._lang_rule(UZC)
 check(bool(r.get("conventions")) and r.get("apostrophe_in_word") is False and r.get("distinctive") == "ўқғҳ",
       "у узбекской кириллицы есть правила: орфография, апостроф, отличительные буквы")
-check(main._lang_rule("EN") == {} and main._lang_conventions("EN") == "", "у английского правил нет — блока нет, промпт прежний")
+check(main._lang_rule("PL") == {} and main._lang_conventions("PL") == "", "у польского правил нет — блока нет, промпт прежний")
+# Ц10: у английского правило ровно одно — десятичная точка.
+check(main._lang_conventions("EN").count("Decimal separator") == 1 and "Decimal separator is a point" in main._lang_conventions("EN"),
+      "у английского — только десятичный разделитель")
 conv = main._lang_conventions(UZC)
 check(conv.startswith("TARGET LANGUAGE CONVENTIONS (Uzbek Cyrillic)") and "ъ" in conv and "ў, қ, ғ, ҳ" in conv,
       "блок правил называет письмо, ъ и ў қ ғ ҳ")
@@ -228,8 +231,8 @@ tr = main._translate_system("RU", UZC, [], None, False, "medical", mdl)
 check("TARGET LANGUAGE CONVENTIONS (Uzbek Cyrillic)" in tr, "промпт перевода несёт правила языка")
 check("TARGET LANGUAGE CONVENTIONS" not in main._translate_system(UZC, "RU", None, None, True, "medical", mdl),
       "в обратный перевод правила не идут")
-check("TARGET LANGUAGE CONVENTIONS" not in main._translate_system("RU", "EN", [], None, False, "medical", mdl),
-      "RU→EN: блока нет, промпт байт в байт прежний")
+check("TARGET LANGUAGE CONVENTIONS" not in main._translate_system("RU", "PL", [], None, False, "medical", mdl),
+      "RU→PL: блока нет, промпт байт в байт прежний")
 check("TARGET LANGUAGE CONVENTIONS (Uzbek Cyrillic)" in main._repair_system(dom, "RU", UZC)
       and "TARGET LANGUAGE CONVENTIONS (Uzbek Cyrillic)" in main._review_system(dom, "RU", UZC),
       "ремонт и ревизия несут те же правила")

@@ -241,7 +241,9 @@ _SCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹₀₁₂₃₄₅₆
 
 
 def _extract_numbers(text):
-    return re.findall(r"\d+(?:[.,]\d+)?", (text or "").translate(_SCRIPT_DIGITS))
+    # Ц10: десятичная запятая и точка — одно число: «10,1» оригинала и «10.1»
+    # английского перевода совпадают (разделитель — норма языка перевода).
+    return [n.replace(",", ".") for n in re.findall(r"\d+(?:[.,]\d+)?", (text or "").translate(_SCRIPT_DIGITS))]
 
 
 def _extract_units(text):

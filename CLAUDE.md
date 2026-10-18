@@ -3397,6 +3397,7 @@ python tools/landing_build.py                                        # ленд�
 .venv/bin/python tests/test_pdf_holes.py                             # один источник, история и нарисованное, плашки, варианты « / »
 .venv/bin/python tests/test_pdf_unified.py                           # PDF 1в1: история страницы, один кегль, текст к печати
 .venv/bin/python tests/test_pdf_panels.py                            # «лента» в страницы, таблицы, наложения
+.venv/bin/python tests/test_pdf_table_rules.py                       # Т34–Т36: линии таблицы, колонки, ключ легенды
 curl -s http://127.0.0.1:8000/api/health
 # смоук: создать проект → перевести сегмент → preflight → export docx → удалить проект
 # для экспорта 1в1: загрузить .docx → export docx_layout → открыть файл в Word

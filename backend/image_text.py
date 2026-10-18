@@ -649,6 +649,9 @@ def _finish_lines(arr, out: list) -> list:
         bg = _bg_of(arr, l["box"])
         if bg is not None:
             l["bg"] = bg
+        key = legend_key(arr, l["box"], bg)
+        if key is not None:
+            l["key"] = key
     out.sort(key=lambda l: (l["box"][1], l["box"][0]))
     # Т14: для каждой строки — ближайшая выше (в той же колонке), от
     # которой её отделяет линия-разделитель. Окно — `DIV_LOOKBACK` строк
@@ -1409,7 +1412,82 @@ def rhythm_gaps(arr, boxes: list) -> list:
 # её блоки (`groupRule`); прежняя — значит разбор картинок перегруппирует
 # их сам (`regroup_plan`, `main._regroup_rec`). 2 — ритм колонки, 3 — строки,
 # пропущенные детектором в ритме (`rhythm_gaps`), оба 16.10.2026.
-IMG_GROUP_RULE = 3
+IMG_GROUP_RULE = 4       # 4 — Т36: строка с ключом легенды начинает свой блок (`split_plan`), 18.10.2026
+
+
+# Т36. Ключ легенды — закрашенный квадрат у левого края строки: сторона от
+# `KEY_MIN` до `KEY_MAX` высоты строки, пропорции почти квадрат, заполнен
+# сплошь (круглый маркер списка заполнен на π/4 ≈ 0.79 и сюда не попадает),
+# правее него в пределах `KEY_TEXT_GAP` высоты строки — буквы.
+KEY_MIN, KEY_MAX = 0.22, 1.05
+KEY_FILL = 0.86
+KEY_TEXT_GAP = 2.0
+KEY_INK = 48          # отличие от фона, при котором пиксель — краска
+
+
+def legend_key(arr, box, bg=None):
+    """Рамка ключа легенды у левого края строки (координаты картинки) или None.
+
+    Детектор строк кладёт в одну рамку и ключ, и подпись серии («■ Легкая
+    степень БА»), а соседняя подпись оси («AA») над ней по совпавшему краю
+    склеивалась в один блок «AA Легкая степень БА»: перевод вставал на место
+    подписи оси, а легенда оставалась пустой. Ключ отличает подпись серии
+    от любой другой строки по устройству графика, а не по словам: цвет
+    не нужен (серия бывает серой), нужна форма — сплошной квадрат."""
+    if _np is None or arr is None:
+        return None
+    try:
+        import cv2
+    except Exception:
+        return None
+    x0, y0, x1, y1 = [int(v) for v in box]
+    h = max(1, y1 - y0)
+    H, Wd = arr.shape[0], arr.shape[1]
+    rx0, rx1 = max(0, x0 - int(1.5 * h)), min(Wd, x0 + int(1.3 * h))
+    ry0, ry1 = max(0, y0 - int(0.15 * h)), min(H, y1 + int(0.15 * h))
+    if rx1 - rx0 < 3 or ry1 - ry0 < 3:
+        return None
+    reg = arr[ry0:ry1, rx0:rx1, :3].astype(_np.int16)
+    ref = _np.array(bg[:3] if bg is not None else _np.median(reg.reshape(-1, 3), axis=0), dtype=_np.int16)
+    ink = (_np.abs(reg - ref).max(axis=2) > KEY_INK).astype(_np.uint8)
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(ink, connectivity=8)
+    comps = sorted((st[i] for i in range(1, n) if st[i][4] >= 2), key=lambda c: c[0])
+    if not comps:
+        return None
+    c = comps[0]                                   # самая левая краска
+    cx, cy, cw_, ch_, area = (int(v) for v in c)
+    # Ключ стоит В строке (центр по высоте внутри её рамки) и вплотную к её
+    # тексту: столбец диаграммы или ячейка слева, задевшие область поиска,
+    # ключом не считаются.
+    kc = ry0 + cy + ch_ / 2.0
+    if not (y0 <= kc <= y1) or rx0 + cx + cw_ < x0 - 1.2 * h:
+        return None
+    if not (KEY_MIN * h <= cw_ <= KEY_MAX * h and KEY_MIN * h <= ch_ <= KEY_MAX * h):
+        return None
+    if not (0.7 <= cw_ / float(ch_) <= 1.43) or area < KEY_FILL * cw_ * ch_:
+        return None
+    # Правее ключа — текст строки (краска ниже/выше его не в счёт).
+    right = [d for d in comps[1:] if cx + cw_ < d[0] <= cx + cw_ + KEY_TEXT_GAP * h]
+    if not right:
+        whole = arr[y0:y1, min(Wd - 1, rx0 + cx + cw_):min(Wd, rx0 + cx + cw_ + int(KEY_TEXT_GAP * h)), :3]
+        if whole.size == 0 or not (_np.abs(whole.astype(_np.int16) - ref).max(axis=2) > KEY_INK).any():
+            return None
+    return [rx0 + cx, ry0 + cy, rx0 + cx + cw_, ry0 + cy + ch_]
+
+
+def split_plan(blocks: list, arr) -> dict:
+    """Т36 для СОХРАНЁННЫХ блоков: {номер блока: [номера строк, с которых
+    начинаются части]} — строка с ключом легенды не первой строкой блока
+    режет его. Детектор не зовётся: строки лежат в `lineBoxes`."""
+    out = {}
+    for i, b in enumerate(blocks or []):
+        lbs = b.get("lineBoxes") or []
+        if b.get("skip") or len(lbs) < 2:
+            continue
+        cuts = [k for k in range(1, len(lbs)) if legend_key(arr, lbs[k], _bg_of(arr, lbs[k])) is not None]
+        if cuts:
+            out[i] = cuts
+    return out
 
 
 def regroup_plan(blocks: list) -> list:
@@ -1422,8 +1500,8 @@ def regroup_plan(blocks: list) -> list:
     покупается вторым чтением."""
     inner = []
     for i, b in enumerate(blocks or []):
-        if b.get("skip") or not b.get("box"):
-            continue
+        if b.get("skip") or not b.get("box") or b.get("splitKey"):
+            continue                    # часть разреза по ключу (Т36) обратно не склеивается
         lbs = b.get("lineBoxes") or [b["box"]]
         inner.append({"box": list(b["box"]), "lineH": float(b.get("lineH") or
                                                           (b["box"][3] - b["box"][1]) / max(1, len(lbs))),
@@ -1453,7 +1531,10 @@ def group_blocks(lines: list) -> list:
         x0, y0, x1, y1 = ln["box"]
         h = max(1, y1 - y0)
         placed = False
-        for b in blocks:
+        # Т36: строка, которая начинается с ключа легенды (`legend_key`), —
+        # подпись серии, к тексту выше она не принадлежит. Продолжение
+        # длинной подписи снизу к ней по-прежнему приклеивается.
+        for b in ([] if ln.get("key") else blocks):
             bx0, by0, bx1, by1 = b["box"]
             over = min(x1, bx1) - max(x0, bx0)          # та же колонка
             narrow = max(1, min(x1 - x0, bx1 - bx0))

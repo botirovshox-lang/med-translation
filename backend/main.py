@@ -17696,9 +17696,24 @@ def _merge_layout_fields(pid: int, new_layout: "dict | None") -> int:
                 skipped += sum(1 for sl in nb.get("slots") or [] if len(sl) > 10 and sl[10])
                 continue
             for os_, ns_ in zip(ob.get("slots") or [], nb.get("slots") or []):
-                if len(ns_) <= 10 or not ns_[10] or (len(os_) > 10 and os_[10] == ns_[10]):
+                new_g = ns_[10] if len(ns_) > 10 else None
+                old_g = os_[10] if len(os_) > 10 else None
+                if (new_g or None) == (old_g or None):
                     continue
                 if len(os_) > 8 and isinstance(os_[8], dict):
+                    continue
+                if not new_g:
+                    # Разрыв, которого новые правила не видят (ложный — Ц3,
+                    # RULES_VERSION 18), снимается: иначе карта «same»-проекта
+                    # хранила бы его вечно, и перевод обходил бы место, где
+                    # оригинал не стирается.
+                    try:
+                        same_ = all(abs(float(os_[k]) - float(ns_[k])) <= 0.6 for k in (0, 1, 2))
+                    except Exception:
+                        same_ = False
+                    if same_:
+                        os_[10] = None
+                        n += 1
                     continue
                 try:
                     same = all(abs(float(os_[k]) - float(ns_[k])) <= 0.6 for k in (0, 1, 2))

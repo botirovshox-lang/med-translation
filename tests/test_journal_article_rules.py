@@ -194,6 +194,21 @@ wrap = [(2, (48.0, 300.0, 545.0, 700.0), [], "the late stage of the disease and 
 check(not main._layer_echo("Age", wrap, (200.0, 500.0, 230.0, 510.0)),
       "«Age» на рисунке внутри рамки обтекающего абзаца — не эхо (не на его строке, не слово)")
 
+print("=== Ц3. Пересборка «same» снимает устаревший разрыв строки ===")
+_store = {"layout": {"boxes": {"13": [{"page": 0, "slots": [
+    [90.7, 395.2, 504.0, 9.0, "", 455.8, 102, 1, None, [0, 0, 0], [[164.8, 373.2]]]]}]}}}
+_saved = {}
+_lsm, _ssm = main._load_source_map, main._save_source_map
+main._load_source_map = lambda pid: _store
+main._save_source_map = lambda pid, d: _saved.setdefault("d", d)
+try:
+    n_ = main._merge_layout_fields(1, {"boxes": {"13": [{"page": 0, "slots": [
+        [90.7, 395.2, 504.0, 9.0, "", 455.8, 102, 1, None, [0, 0, 0], None]]}]}})
+finally:
+    main._load_source_map, main._save_source_map = _lsm, _ssm
+check(n_ == 1 and _store["layout"]["boxes"]["13"][0]["slots"][0][10] is None and "d" in _saved,
+      "ложный разрыв, которого новые правила не видят, снят из карты")
+
 print("=== Ц9. Красная строка, разрез адреса, «v. 2.050» ===")
 a = {"t": "СибГМУ, г. Томск, elena.bragina@medgenetics.ru, https://orcid.org/0000-0002-2962-1076",
      "geo": (6, 48.2, 266.1, 383.7, 9.0)}

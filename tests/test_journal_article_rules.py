@@ -228,6 +228,10 @@ check(not main._ident_misses({"source": "БА и OR, 95% CI", "target": "BA and 
 check(not main._ident_misses({"source": "HIV-1, IL-6, CO2, T2DM", "target": "ВИЧ-1, ИЛ-6, CO₂, СД2"}),
       "«HIV-1», «IL-6», «CO2», «T2DM» — законный перевод сокращения, не находка")
 check(any(x["kind"] == "ident" for x in main._repair_findings(seg)), "находка идёт в ремонт")
+exp = main._ident_misses({"source": "Ассоциация полиморфизма гена GATA3 (rs10905277)",
+                          "target": "GATA3（鸟嘌呤—腺嘌呤结合蛋白3）基因多态性（rs10905277）的关联"})
+check(exp and "GATA3" in exp[0]["text"] and "rs10905277" not in exp[0]["text"],
+      "Ц11б: своя расшифровка в скобках — находка; скобка из оригинала — нет: %s" % exp)
 sysp = main._translate_system("RU", "ZH", [], {}, False, "medical", {"id": "x", "label": "x"})
 check("GATA3, STAT5B, IL10, rs10905277" in sysp, "промпт перевода велит переносить символы как есть")
 

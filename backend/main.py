@@ -24562,6 +24562,26 @@ def _ident_misses(seg: dict) -> list:
         if len(t) >= 3 and t not in want:
             want.append(t)
     bad = [t for t in want if t not in tgt]
+    # Ц11б: символ на месте, но рядом — своя «расшифровка» в скобках, которой
+    # в оригинале нет: «GATA3（鸟嘌呤—腺嘌呤—胸腺嘧啶—腺嘌呤结合蛋白3）» и
+    # «…结合蛋白3（GATA3）» (боевой RU→ZH, после первого ремонта). Признак —
+    # скобка вплотную к символу в переводе, а в оригинале у символа скобки нет.
+    for t in want:
+        if t in bad:
+            continue
+        esc = re.escape(t)
+
+        def gloss(text, esc=esc):
+            # «GATA3 (что-то, где нет символов оригинала)» — расшифровка после символа
+            return any(not any(w in g for w in want)
+                       for g in re.findall(esc + r"\s*[（(]([^）)]{1,80})[）)]", text))
+
+        def wrapped(text, esc=esc):
+            # «…белок 3 (GATA3)» — символ в скобках после своей расшифровки
+            return bool(re.search(r"[（(]\s*" + esc + r"\s*[）)]", text))
+
+        if (gloss(tgt) and not gloss(src)) or (wrapped(tgt) and not wrapped(src)):
+            bad.append(t + " (расшифровка в скобках, которой нет в оригинале)")
     if not bad:
         return []
     return [{"kind": "ident",

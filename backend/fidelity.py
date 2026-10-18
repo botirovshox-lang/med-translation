@@ -127,7 +127,10 @@ def block_metrics(tp, a, b, it: dict) -> "dict | None":
         bg = ma.get("bg") or (255, 255, 255)
         da = tp.band_density(ca.astype(np.uint8), la, bg, ma["ink"])
         db = tp.band_density(cb.astype(np.uint8), lb, bg, mb["ink"])
-        if da and db and _cased(it.get("src") or "") == _cased(it.get("text") or ""):
+        # Плотность разных письменностей не сравнима (вязь против кириллицы):
+        # мерим, только когда у оригинала и перевода одинаково со строчными.
+        if (da and db and (it.get("src") or "").strip()
+                and _sclass(it.get("src") or "") == _sclass(it.get("text") or "")):
             out["dens"] = round(db / da, 3)
         out["dInk"] = round(float(np.sqrt(sum((float(p) - float(q)) ** 2
                                                 for p, q in zip(ma["ink"][:3], mb["ink"][:3])))), 1)
@@ -192,6 +195,23 @@ def _cased(t: str) -> bool:
     """Есть ли у письма строчные: «высота строчных» мерится только у него."""
     letters = [ch for ch in t if ch.isalpha()]
     return bool(letters) and sum(ch.islower() for ch in letters) * 2 >= len(letters)
+
+
+def _sclass(t: str) -> str:
+    """Класс письма для сравнения плотности: «cased» (латиница, кириллица,
+    греческий — у букв есть регистр, хоть текст и капсом) или имя письма
+    большинства букв (ARABIC, CJK, HEBREW…)."""
+    import unicodedata
+    letters = [ch for ch in t if ch.isalpha()]
+    if not letters:
+        return ""
+    if sum(ch.lower() != ch.upper() for ch in letters) * 2 >= len(letters):
+        return "cased"
+    names = {}
+    for ch in letters:
+        n = (unicodedata.name(ch, "") or "?").split(" ")[0]
+        names[n] = names.get(n, 0) + 1
+    return max(names, key=names.get)
 
 
 def _blobs(mask, amin: float = 12) -> int:

@@ -1,0 +1,11 @@
+{
+  "_about": "Кинсоку — знаки, которыми строка не начинается и не кончается, у письма без пробелов (японский, китайский, корейский в иероглифах). Данные, а не код: правит человек, знающий язык. Читает backend/linebreak.py; пользуются субтитры (media), надписи на картинках (image_text) и выгрузка PDF (layout_pdf). Классы — по JLREQ 3.1.7 и CLREQ, классы разрыва строки UAX #14 (CL, CP, EX, IS, NS, OP, QU).",
+  "sources": ["https://www.w3.org/TR/jlreq/#characters_not_starting_a_line",
+              "https://www.w3.org/TR/jlreq/#characters_not_ending_a_line",
+              "https://www.w3.org/TR/clreq/",
+              "https://unicode.org/reports/tr14/"],
+  "no_start": "。、，．・：；？！）」』】〕〉》ーぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮヵヶ々ゝゞ,.!?;:)",
+  "closing_quotes": "”’",
+  "postfix": "%％‰℃",
+  "no_end": "「『（【〔〈《([“‘"
+}

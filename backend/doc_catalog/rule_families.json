@@ -693,9 +693,11 @@
     "https://www.w3.org/TR/css-text-4/",
     "https://cldr.unicode.org/"
    ],
-   "handled_by": [],
-   "scope": "deferred",
-   "why": "сохраняются как знаки, правил нет"
+   "handled_by": [
+    "Х21"
+   ],
+   "scope": "in",
+   "why": "U+202F и U+2007 не рвут строку (Х21); ставит их перевод по правилам языка"
   },
   {
    "id": "nbsp-binding",
@@ -711,9 +713,11 @@
    "sources": [
     "https://unicode.org/reports/tr14/"
    ],
-   "handled_by": [],
+   "handled_by": [
+    "Х21"
+   ],
    "scope": "in",
-   "why": "media.fit_cues переносит только по обычному пробелу; в layout_pdf правила нет"
+   "why": "text_paint.words: перенос только по пробелам, где он разрешён (Х21)"
   },
   {
    "id": "first-line-indent",
@@ -835,14 +839,16 @@
    "params": [
     "NO_START/NO_END"
    ],
-   "data": "backend/subtitle_norms.json",
+   "data": "backend/line_break.json",
    "sources": [
     "https://www.w3.org/TR/jlreq/",
     "https://www.w3.org/TR/clreq/"
    ],
-   "handled_by": [],
+   "handled_by": [
+    "Х22"
+   ],
    "scope": "in",
-   "why": "media._NO_START/_NO_END (субтитры), image_text._NO_LINE_START и _cjk_units (картинки, подпункт «Кинсоку и кавычки» раздела Ф без номера); в layout_pdf нет"
+   "why": "наборы — данными (line_break.json, linebreak.py): субтитры, надписи на картинках, PDF (Х22)"
   },
   {
    "id": "break-within-cjk",

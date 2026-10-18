@@ -1637,7 +1637,9 @@ def _fill_and_ink(arr, box) -> tuple:
 # можно переносить между любыми двумя знаками — кроме знаков, которыми строка
 # не начинается (кинсоку: «。、」）» и т. п.).
 _CJK_RE = re.compile("[⺀-鿿豈-﫿가-힯　-〿＀-￯]")
-_NO_LINE_START = set("。、，．・：；？！）」』】〕〉》ー,.!?;:)%”’")
+# Х22: набор — данными (`line_break.json`), общий с субтитрами и PDF.
+import linebreak as _lb  # noqa: E402
+_NO_LINE_START = _lb.NO_START_ALL
 # Кавычка, за которой сразу стоит знак конца фразы, — закрывающая, какой бы
 # формы ни была («可是突然“。» — немецкие кавычки в китайском переводе):
 # строку она не начинает (16.10.2026, страница Чехова ZH).
@@ -1651,7 +1653,7 @@ def _cjk_units(word: str) -> list:
     out = []
     for n_, ch in enumerate(word):
         closing = ch in _QUOTES and n_ + 1 < len(word) and word[n_ + 1] in _NO_LINE_START
-        if out and (ch in _NO_LINE_START or closing
+        if out and (ch in _NO_LINE_START or closing or out[-1][-1] in _lb.NO_END
                     or not (_CJK_RE.match(ch) or _CJK_RE.match(out[-1][-1]))):
             out[-1] += ch
         else:
@@ -1685,7 +1687,8 @@ def _wrap(draw, text: str, font, width: float, split: bool = True) -> list:
     даёт «Алек/сандр» поперёк обложки — текст формально в рамке, а прочесть
     его нельзя."""
     lines, cur = [], ""
-    for word in (text or "").split():
+    tp = _tp()
+    for word in (tp.words(text) if tp is not None else (text or "").split()):   # Х21
         probe = (cur + " " + word).strip()
         if draw.textlength(probe, font=font) > width:
             # Иероглифы переносятся между знаками: без этого китайская фраза —
@@ -1892,6 +1895,14 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
                         hull = tp.cv2.dilate(hull, _np.ones((3, 3), _np.uint8))
                     em_ = em_ | (hull > 0)
                 m["erase_mask"] = em_
+        if ((it.get("fam") or "") != "hand" and not m["angle"] and not m.get("arc")
+                and len(m["bands"]) <= rows + 1):
+            fm = tp.foreign_marks(rgb, m["mask"], m["bands"], m["ink"], m.get("bg"))
+            if fm is not None:
+                # Х20: печать, подпись, пометка в рамке — не стираются.
+                m["erase_mask"] = m.get("erase_mask", m["mask"]).astype(bool) & ~fm
+                m["protect"] = fm
+                m["foreign"] = int(fm.sum())
         erased, alpha = tp.erase(rgb, m)
     except Exception:
         return None

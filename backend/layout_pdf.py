@@ -1145,7 +1145,7 @@ def _spread(text: str, slots: list, sw, font_of, nospace: bool = False) -> tuple
     есть подпись остаётся у своего блока, — и каждое место ужимается само:
     у подписей схемы кегли и так разные. Мест без счёта знаков — делим
     поровну."""
-    words = (text or "").split()
+    words = _tp().words(text)                # Х21: неразрывный пробел не рвёт
     sep = " "
     if nospace and len(words) < len(slots):
         # Письмо без пробелов: слова не выделить — делим по знакам.
@@ -1259,11 +1259,13 @@ def _break_point(word: str, n: int) -> int:
     """Где резать строку без пробелов, если влезает `n` знаков: на границе
     фразы не дальше `n` (и не ближе доли `PHRASE_FILL_MIN`), иначе — как
     прежде, не посреди буквы (`_cut_point`)."""
+    import linebreak
     if 1 < n < len(word):
         ok = [b for b in _phrase_bounds(word) if PHRASE_FILL_MIN * n <= b <= n]
         if ok:
-            return ok[-1]
-    return _cut_point(word, n)
+            return linebreak.fix_break(word, ok[-1])
+    # Х22: строка не начинается «。」」 и не кончается «「（» (кинсоку).
+    return linebreak.fix_break(word, _cut_point(word, n))
 
 
 def _cut_point(word: str, n: int) -> int:
@@ -1337,7 +1339,7 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
 
     `cap` — кегль не крупнее этой доли: общий кегль КЛАССА надписей
     (`_harmonize`) — у соседних надписей одного стиля он один."""
-    words0 = (text or "").split()
+    words0 = _tp().words(text)                # Х21
     # Узкое начертание оригинала («c», DIN Condensed и соседи) — перевод
     # сжат с самого начала, у всех таких строк одинаково.
     h0 = _h0_of(slots)
@@ -1804,7 +1806,7 @@ def _fit_flow(text: str, slots: list, sw, font_of, align: str, split_ok: bool = 
     floor = MIN_SIZE_SHARE if floor is None else floor
     cap = max(floor, min(1.0, cap))
     h0 = _h0_of(slots)
-    words = (text or "").split()
+    words = _tp().words(text)                # Х21
     if len(words) <= 1:
         # Одно слово по слогам не режется (Т2): ячейка «Нейтральное» в две
         # строки «Ней-/тральное» читается хуже, чем то же слово чуть мельче
@@ -2017,7 +2019,7 @@ def _flow_group(g: list, slot_plan: list, slot_meta: list, runs_of: dict) -> boo
         pitch = _run_box(runs_of[i][0])["pitch"]
         sizes = [round(sd["size"], 1) for sd in rs_all]
         paras.append({"msize": max(set(sizes), key=lambda v_: (sizes.count(v_), v_)),
-                      "i": i, "words": (m["text"] or "").split(), "first": rs_all[0],
+                      "i": i, "words": _tp().words(m["text"]), "first": rs_all[0],
                       "rest_t": next((sd for sd in rs_all[1:] if (sd.get("style") or "") == major),
                                      rs_all[0]),
                       "pitch": pitch, "major": major, "font_of": slot_plan[i][4],
@@ -2411,7 +2413,7 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
                 by_pg[-1][1].append(rs)
             else:
                 by_pg.append((rs[0]["page"], [rs]))
-        words = (slot_meta[i]["text"] or "").split()
+        words = _tp().words(slot_meta[i]["text"])   # Х21
         caps = [sum(max(0.0, sd["x1"] - sd["x"]) / max(sd["size"], 1.0) for rs in g for sd in rs)
                 for _pg, g in by_pg]
         tot = sum(caps) or 1.0
@@ -3198,7 +3200,7 @@ def _wrap(text: str, width: float, size: float, indent: float, sw, font: str) ->
     Слово длиннее строки не режется: переносов по слогам мы не умеем,
     а выдуманный перенос хуже вылезшего слова."""
     lines, cur = [], ""
-    for w in (text or "").split():
+    for w in _tp().words(text):              # Х21
         avail = width - (indent if not lines else 0.0)
         probe = (cur + " " + w) if cur else w
         if cur and sw(probe, font, size) > avail:
@@ -3347,6 +3349,13 @@ def _paint_measure(sampler, b: dict) -> bool:
                         hull = tp.cv2.dilate(hull, np.ones((3, 3), np.uint8))
                     em_ = em_ | (hull > 0)
                 m["erase_mask"] = em_
+        if (b.get("image") and b.get("fam") != "hand" and not m["angle"] and not m.get("arc")
+                and len(m["bands"]) <= rows + 1):
+            fm = tp.foreign_marks(rgb[..., :3], m["mask"], m["bands"], m["ink"], m.get("bg"))
+            if fm is not None:
+                # Х20: печать, подпись, пометка в рамке — не стираются.
+                m["erase_mask"] = m.get("erase_mask", m["mask"]).astype(bool) & ~fm
+                m["protect"] = fm
         out, alpha = tp.erase(rgb, m)
     except Exception:
         return False

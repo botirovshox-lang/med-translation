@@ -957,7 +957,7 @@ def split_text(text: str, weights: list) -> list:
         return [text]
     tot = float(sum(weights)) or 1.0
     paras = [p.strip() for p in (text or "").split("\n") if p.strip()]
-    units, sep = (paras, "\n") if len(paras) >= n else ((text or "").split(), " ")
+    units, sep = (paras, "\n") if len(paras) >= n else (words(text), " ")   # Х21
     lens = [len(u) + 1 for u in units]
     total_t = float(sum(lens)) or 1.0
     out = [[] for _ in range(n)]
@@ -1167,6 +1167,11 @@ def erase(rgb, m: dict):
     с мягким краем снаружи: вне её картинка не трогается."""
     mask = m.get("erase_mask", m["mask"]).astype(np.uint8) * 255
     grow = cv2.dilate(mask, np.ones((2 * MASK_GROW + 1, 2 * MASK_GROW + 1), np.uint8))
+    # Х20: защищённые точки (печать, подпись, пометка) не стираются ни
+    # маской, ни её расширением, ни добором бледной краски и ореола ниже.
+    prot = m.get("protect")
+    if prot is not None:
+        grow[prot] = 0
     lh = float(m.get("pitch") or 0) or 1.25 * float(m.get("em") or 0) or 20.0
     if not m.get("flat"):
         per = _paper_periodic(rgb, grow > 0, lh, float(m.get("em") or 0))
@@ -1206,6 +1211,8 @@ def erase(rgb, m: dict):
                 kr = _odd(2 * HALO_REACH * lh, 3, 61)
                 near_ = cv2.dilate(grow, np.ones((kr, kr), np.uint8)) > 0
                 grow = np.where(halo & near_, 255, grow).astype(np.uint8)
+    if prot is not None:
+        grow[prot] = 0
     if m.get("flat"):
         # Х5. «Ровный» фон заливается МЕСТНЫМ тоном бумаги (среднее известных
         # точек окрестности), а не одним цветом: у скана бумага зернистая
@@ -1475,6 +1482,34 @@ def _paper_periodic(rgb, hole, lh: float, em: float):
 FIT_HARD_FLOOR = 0.3
 
 
+# Х21. Неразрывный пробел строку не рвёт. Перевод ставит U+00A0 и U+202F
+# между числом и единицей («5 мг», «12 %»), перед «:;!?» во французском,
+# после инициалов; `str.split()` считал их обычным пробелом, и раскладка
+# переносила «5 / мг» на разные строки — набор, который не допустил бы
+# наборщик (Брингхерст, правило nbsp; CLDR). Слова режутся только по
+# пробелам, где перенос разрешён; неразрывные остаются внутри слова.
+_NOBREAK = "\u00a0\u202f\u2007\u2060"
+_BREAK_WS = re.compile(r"[^\S%s]+" % _NOBREAK)
+
+
+def words(text: str) -> list:
+    """Слова для переноса строк (Х21): по пробелам, где перенос разрешён.
+    Узкий неразрывный (U+202F) и пробел цифры (U+2007) печатаются обычным
+    неразрывным (U+00A0) — его знает любой шрифт, у прочих бывает
+    «квадратик»; соединитель слов (U+2060) невидим и снимается. Неразрывный
+    на краю слова (переноса там всё равно нет) снимается."""
+    t = (text or "").replace("\u202f", "\u00a0").replace("\u2007", "\u00a0").replace("\u2060", "")
+    out = []
+    for w in _BREAK_WS.split(t):
+        w = w.strip("\u00a0")
+        if w:
+            out.append(w)
+    return out
+
+
+words_of = words
+
+
 def fit_lines(text: str, width: float, height: float, em: float, pitch: float, measure_w,
               split_word=None, min_share: float = 0.45, rows_min: int = 1) -> tuple:
     """(кегль, шаг, [строки]) — самый крупный кегль ≤ `em`, при котором перевод
@@ -1488,7 +1523,7 @@ def fit_lines(text: str, width: float, height: float, em: float, pitch: float, m
     for k, part in enumerate((text or "").split("\n")):
         if k and words and words[-1] != "\n":
             words.append("\n")
-        words.extend(part.split())
+        words.extend(words_of(part))
     while words and words[-1] == "\n":
         words.pop()
     if not words:
@@ -1763,7 +1798,7 @@ def fit_rhythm(text: str, width: float, em: float, step: float, rows: int, extra
     for k, part in enumerate((text or "").split("\n")):
         if k and words and words[-1] != "\n":
             words.append("\n")
-        words.extend(part.split())
+        words.extend(words_of(part))
     while words and words[-1] == "\n":
         words.pop()
     if not words:
@@ -1815,7 +1850,7 @@ def rhythm_heads(text: str, width: float, size: float, measure_w, split_word=Non
     for k, part in enumerate((text or "").split("\n")):
         if k and words and words[-1] != "\n":
             words.append("\n")
-        words.extend(part.split())
+        words.extend(words_of(part))
     while words and words[-1] == "\n":
         words.pop()
     heads: list = []
@@ -2394,15 +2429,34 @@ ICON_TAIL = float(os.environ.get("PAINT_ICON_TAIL", "2.5"))
 ICON_MAX = int(os.environ.get("PAINT_ICON_MAX", "3"))
 
 
-def find_icons(rgb, mask, bands: list, ink, bg) -> list:
-    """Значки КОНЦА строки (Х18): [{box, band, atEnd, hx, lift, sprite
-    (RGBA, numpy), hull (маска полной вырезки)}]; значки посреди строки —
-    с atEnd False (их не ставят, только считают)."""
-    if np is None or cv2 is None or rgb is None or mask is None or not bands:
-        return []
+# Х20. Чужая краска в рамке надписи не стирается. Печать, подпись синей
+# ручкой, пометка маркером, цветная стрелка часто лежат ПОВЕРХ строки или
+# касаются её рамки, и стирание по маске букв уносило их вместе с текстом —
+# документ терял печать, то есть терял силу. Чужая краска — та же связная
+# область цветной краски, что у значка (Х18: насыщенность, далеко от краски
+# букв и от бумаги, краска блока сама не цветная), но КРУПНЕЕ буквы: выше
+# `FOREIGN_H` высот строчных своей полосы или шире `FOREIGN_W` высот строк.
+# Её точки из стирания исключаются; перевод пишется поверх неё, как в
+# оригинале текст лежал под печатью. Чёрная подпись цветом от букв не
+# отличается — её это правило не видит (названо).
+FOREIGN_H = float(os.environ.get("PAINT_FOREIGN_H", "3.0"))
+FOREIGN_W = float(os.environ.get("PAINT_FOREIGN_W", "6.0"))
+# Предохранители: сплошная заливка (цветная плашка, градиент, маркер под
+# чёрным текстом) — фон, а не печать: краска печати и подписи — штрих,
+# и в своей рамке занимает малую долю (`FOREIGN_FILL`). Защищённое — не больше
+# доли вырезки (`FOREIGN_SHARE`) и почти не задевает маску букв
+# (`FOREIGN_TEXT`), иначе правило молчит: оставить буквы оригинала под
+# переводом хуже, чем стереть печать.
+FOREIGN_FILL = float(os.environ.get("PAINT_FOREIGN_FILL", "0.45"))
+FOREIGN_SHARE = float(os.environ.get("PAINT_FOREIGN_SHARE", "0.25"))
+FOREIGN_TEXT = float(os.environ.get("PAINT_FOREIGN_TEXT", "0.1"))
+
+
+def _colour_parts(rgb, ink, bg):
+    """(метки, статистика) связных областей цветной краски или None."""
     ink_a = np.array(ink[:3], dtype=np.int32)
     if int(ink_a.max() - ink_a.min()) > ICON_SAT:
-        return []                                   # краска блока сама цветная
+        return None                                 # краска блока сама цветная
     bg_a = np.array((bg or (255, 255, 255))[:3], dtype=np.int32)
     im = rgb[..., :3].astype(np.int32)
     sat = im.max(axis=2) - im.min(axis=2)
@@ -2410,8 +2464,88 @@ def find_icons(rgb, mask, bands: list, ink, bg) -> list:
     d_bg = np.sqrt(((im - bg_a) ** 2).sum(axis=2))
     cand = ((sat > ICON_SAT) & (d_ink > ICON_DIST) & (d_bg > ICON_DIST)).astype(np.uint8)
     if cand.sum() < 12:
-        return []
+        return None
     n, lab, st, _c = cv2.connectedComponentsWithStats(cand, 8)
+    return lab, st, n
+
+
+def foreign_marks(rgb, mask, bands: list, ink, bg):
+    """Х20: маска чужой краски (печать, подпись, пометка) или None.
+
+    Чужая — цветная область, которая (1) доходит до верхнего или нижнего края
+    вырезки (продолжается за рамку строки — буква строки за неё не выходит),
+    или (2) крупнее буквы (`FOREIGN_H` высот строчных, `FOREIGN_W` высот
+    строк). Мелкие цветные области ВНУТРИ рамки найденной (буквы печати
+    «SEAL», дата в штампе) — её часть."""
+    if np is None or cv2 is None or rgb is None or mask is None:
+        return None
+    got = _colour_parts(rgb, ink, bg)
+    if got is None:
+        return None
+    lab, st, n = got
+    H = rgb.shape[0]
+    hs = [b1 - b0 + 1 for b0, b1 in bands] or [H]
+    lh = float(np.median(hs))
+    xh = 0.5 * lh
+    big, edges = [], []
+    for i in range(1, n):
+        x, y, w, h, a = (int(v) for v in st[i])
+        if a < 12:
+            continue
+        edge = y <= 0 or y + h >= H
+        if a > FOREIGN_FILL * w * h and w * h > 4 * lh * lh:
+            continue                                # сплошная заливка — фон
+        if edge or h > FOREIGN_H * xh or w > FOREIGN_W * lh:
+            big.append(i)
+            edges.append(edge)
+    if not big:
+        return None
+    out = np.isin(lab, big)
+    boxes = [[int(st[i][0]), int(st[i][1]), int(st[i][0] + st[i][2]), int(st[i][1] + st[i][3]), e]
+             for i, e in zip(big, edges)]
+    # Части одного предмета, разрезанного рамкой строки (две дуги кольца
+    # печати выходят за рамку обе), — одна рамка при зазоре до `FOREIGN_W`
+    # высот строк; прочие части — до двух высот.
+    merged = True
+    while merged and len(boxes) > 1:
+        merged = False
+        for p_ in range(len(boxes)):
+            for q_ in range(p_ + 1, len(boxes)):
+                A, B = boxes[p_], boxes[q_]
+                gap = max(A[0], B[0]) - min(A[2], B[2])
+                lim = FOREIGN_W * lh if (A[4] and B[4]) else 2.0 * lh
+                if gap <= lim and min(A[3], B[3]) > max(A[1], B[1]):
+                    boxes[p_] = [min(A[0], B[0]), min(A[1], B[1]), max(A[2], B[2]), max(A[3], B[3]),
+                                 A[4] and B[4]]
+                    del boxes[q_]
+                    merged = True
+                    break
+            if merged:
+                break
+    for i in range(1, n):
+        if i in big:
+            continue
+        cx, cy = st[i][0] + st[i][2] / 2.0, st[i][1] + st[i][3] / 2.0
+        if any(b_[0] <= cx <= b_[2] and b_[1] <= cy <= b_[3] for b_ in boxes):
+            out |= lab == i
+    if out.sum() > FOREIGN_SHARE * out.size:
+        return None
+    tm = mask.astype(bool)
+    if tm.sum() and (out & tm).sum() > FOREIGN_TEXT * tm.sum():
+        return None
+    return out
+
+
+def find_icons(rgb, mask, bands: list, ink, bg) -> list:
+    """Значки КОНЦА строки (Х18): [{box, band, atEnd, hx, lift, sprite
+    (RGBA, numpy), hull (маска полной вырезки)}]; значки посреди строки —
+    с atEnd False (их не ставят, только считают)."""
+    if np is None or cv2 is None or rgb is None or mask is None or not bands:
+        return []
+    got = _colour_parts(rgb, ink, bg)
+    if got is None:
+        return []
+    lab, st, n = got
     H, W = mask.shape[:2]
     out = []
     for i in range(1, n):

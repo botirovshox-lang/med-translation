@@ -34644,6 +34644,32 @@ def _hand_image(im: dict) -> bool:
     return tot > 0 and hand >= IMG_HAND_SHARE * tot
 
 
+def _echo_extend_slot(data: dict, page: int, rect: "tuple | None") -> bool:
+    """Ц8в: место строки слоя, на котором лежит эхо, продлить вправо до конца эха."""
+    if rect is None:
+        return False
+    bx0, by0, bx1, by1 = rect
+    bh = max(1e-6, by1 - by0)
+    for boxes in ((data.get("layout") or {}).get("boxes") or {}).values():
+        for b in boxes or []:
+            if int(b.get("page", -1)) != page:
+                continue
+            for sl in b.get("slots") or []:
+                if len(sl) > 8 and isinstance(sl[8], dict):
+                    continue
+                try:
+                    x0, y, x1, sz = (float(v) for v in sl[:4])
+                except Exception:
+                    continue
+                ry0, ry1 = y - 0.3 * sz, y + 0.9 * sz
+                if (min(by1, ry1) - max(by0, ry0) >= 0.5 * min(bh, ry1 - ry0)
+                        and x0 - sz <= bx0 <= x1 + 2 * sz and bx1 > x1):
+                    sl[2] = round(bx1, 1)
+                    b["x1"] = max(float(b.get("x1") or 0), sl[2])
+                    return True
+    return False
+
+
 _KEY_ARR: list = [None, None]
 
 
@@ -34748,6 +34774,11 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
                 continue
             if virt and _layer_echo((seg or {}).get("source") or "", layer_paras.get(page) or [], rect_pt):
                 skipped["layerEcho"] = skipped.get("layerEcho", 0) + 1
+                # Ц8в: эхо за концом строки — значит, конец строки слоя оценён
+                # коротко: строка продлевается до конца эха, и её закраска
+                # накрывает этот хвост оригинала («варианта» в «Заключении»
+                # оставалось русским, когда эхо перестало печататься).
+                _echo_extend_slot(data, page, rect_pt)
                 continue
             if (_dup_of_layer((seg or {}).get("source") or "", layer_words.get(page) or [], rect_pt)
                     and not (erase is not None

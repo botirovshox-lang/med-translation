@@ -185,6 +185,55 @@
     }
    ],
    "target": "uz"
+  },
+  {
+   "id": "qr-label",
+   "elements": [
+    "qr-code"
+   ],
+   "size": [
+    1200,
+    220
+   ],
+   "bg": [
+    250,
+    250,
+    250
+   ],
+   "lines": [
+    {
+     "text": "Scan the code to verify this certificate",
+     "font": "NotoSans-Regular.ttf",
+     "px": 30,
+     "qr": "https://example.org/c/12345",
+     "qrPx": 110
+    }
+   ],
+   "target": "uz"
+  },
+  {
+   "id": "signature-field",
+   "elements": [
+    "signature-field"
+   ],
+   "size": [
+    1200,
+    160
+   ],
+   "bg": [
+    250,
+    250,
+    250
+   ],
+   "lines": [
+    {
+     "text": "Signature of the patient",
+     "font": "NotoSans-Regular.ttf",
+     "px": 30,
+     "field": 420
+    }
+   ],
+   "target": "ru"
   }
  ]
 }

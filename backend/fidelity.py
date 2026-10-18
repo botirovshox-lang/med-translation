@@ -88,6 +88,17 @@ def block_metrics(tp, a, b, it: dict) -> "dict | None":
     box = [max(0, box[0] - pad), max(0, box[1] - pad), min(W, box[2] + pad), min(H, box[3] + pad)]
     if box[2] - box[0] < 4 or box[3] - box[1] < 4:
         return None
+    x0, y0, x1, y1 = box
+    obj = (tp.object_marks(np.ascontiguousarray(a[y0:y1, x0:x1]), lh,
+                           fields=not tp.typed_rule(it.get("src") or ""))
+           if hasattr(tp, "object_marks") else None)
+    if obj is not None:
+        # Х25: код и линия поля — не текст: с обеих сторон закрыты фоном,
+        # иначе сохранённый QR считался бы «оставшимся оригиналом».
+        bgv = np.median(np.concatenate([a[y0], a[y1 - 1], a[y0:y1, x0], a[y0:y1, x1 - 1]]), axis=0)
+        a, b = a.copy(), b.copy()
+        a[y0:y1, x0:x1][obj[0]] = bgv.astype(a.dtype)
+        b[y0:y1, x0:x1][obj[0]] = bgv.astype(b.dtype)
     ma = _measure(tp, a, it, box)
     if ma is None:
         return None

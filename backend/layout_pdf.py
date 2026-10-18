@@ -3330,8 +3330,17 @@ def _paint_measure(sampler, b: dict) -> bool:
     # у края вырезки, лежащая ВНЕ рамки, — соседняя надпись.
     inner = ((b["x0"] - cx0) * scale, (cy1 - b["top"]) * scale,
              (b["x1"] - cx0) * scale, (cy1 - b["bottom"]) * scale)
+    # Х25: код и линия поля — не текст: замер и значки без них.
+    om = (tp.object_marks(np.ascontiguousarray(rgb[..., :3]), float(line_pt * scale or 0)
+                          or rgb.shape[0] / max(1, rows), fields=not tp.typed_rule(b.get("src") or ""))
+          if b.get("image") and hasattr(tp, "object_marks") else None)
+    rgb_m = rgb
+    if om is not None:
+        rgb_m = np.array(rgb)
+        c3 = rgb_m[..., :3]
+        c3[om[0]] = np.median(np.concatenate([c3[0], c3[-1], c3[:, 0], c3[:, -1]]), axis=0).astype(c3.dtype)
     try:
-        m = tp.measure(rgb, b.get("src") or "", rows, line_pt * scale, inner=inner)
+        m = tp.measure(rgb_m, b.get("src") or "", rows, line_pt * scale, inner=inner)
         if not m.get("found"):
             return False
         icons = []
@@ -3339,7 +3348,7 @@ def _paint_measure(sampler, b: dict) -> bool:
                 and len(m["bands"]) <= rows + 1):
             # Х18: значок в строке (ORCID) — стирается целиком и ставится
             # после перевода (`_paint_icons`), как у картинки.
-            icons = [ic for ic in tp.find_icons(rgb[..., :3], m["mask"], m["bands"], m["ink"], m.get("bg"))
+            icons = [ic for ic in tp.find_icons(rgb_m[..., :3], m["mask"], m["bands"], m["ink"], m.get("bg"))
                      if ic["atEnd"]]
             if icons:
                 em_ = m.get("erase_mask", m["mask"]).astype(bool)
@@ -3351,11 +3360,16 @@ def _paint_measure(sampler, b: dict) -> bool:
                 m["erase_mask"] = em_
         if (b.get("image") and b.get("fam") != "hand" and not m["angle"] and not m.get("arc")
                 and len(m["bands"]) <= rows + 1):
-            fm = tp.foreign_marks(rgb[..., :3], m["mask"], m["bands"], m["ink"], m.get("bg"))
+            fm = tp.foreign_marks(rgb_m[..., :3], m["mask"], m["bands"], m["ink"], m.get("bg"))
             if fm is not None:
                 # Х20: печать, подпись, пометка в рамке — не стираются.
                 m["erase_mask"] = m.get("erase_mask", m["mask"]).astype(bool) & ~fm
                 m["protect"] = fm
+        if om is not None and not m["angle"] and not m.get("arc"):
+            # Х25: код и линия поля — не стираются (в PDF место перевода
+            # своё, по рамке блока; замер шёл уже без них).
+            m["erase_mask"] = m.get("erase_mask", m["mask"]).astype(bool) & ~om[0]
+            m["protect"] = (m["protect"] | om[0]) if m.get("protect") is not None else om[0]
         out, alpha = tp.erase(rgb, m)
     except Exception:
         return False

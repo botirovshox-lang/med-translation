@@ -83,6 +83,21 @@ def build(rec: dict):
             cy = (bb[1] + bb[3]) // 2
             dr.ellipse((bb[2] + 6, cy - r, bb[2] + 6 + 2 * r, cy + r), fill=(166, 206, 57))
             bb[2] += 8 + 2 * r
+        if ln.get("qr"):
+            # QR-код в строке (бланк, этикетка): рисует OpenCV, без библиотек.
+            import cv2
+            import numpy as np
+            q = cv2.QRCodeEncoder.create().encode(str(ln["qr"]))
+            side = int(ln.get("qrPx") or ln["px"] * 2)
+            qi = Image.fromarray(np.where(q > 0, 255, 0).astype("uint8")).resize((side, side), Image.NEAREST)
+            qx, qy = bb[2] + 20, max(8, bb[1] + (bb[3] - bb[1] - side) // 2)
+            im.paste(qi.convert("RGB"), (qx, qy))
+            bb = [bb[0], min(bb[1], qy), qx + side, max(bb[3], qy + side)]
+        if ln.get("field"):
+            # Поле формы: линия после подписи поля («Подпись: ______»).
+            fx0, fy = bb[2] + 12, bb[3] - 2
+            dr.line((fx0, fy, fx0 + int(ln["field"]), fy), fill=col, width=2)
+            bb[2] = fx0 + int(ln["field"])
         boxes.append(bb)
         texts.append(ln["text"])
         y = bb[3] + int(ln["px"] * 0.5)

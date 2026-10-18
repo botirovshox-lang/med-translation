@@ -757,9 +757,11 @@
    "sources": [
     "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
    ],
-   "handled_by": [],
+   "handled_by": [
+    "Х25"
+   ],
    "scope": "in",
-   "why": "не текст; не трогается"
+   "why": "детектор штрихкодов OpenCV, как QR (Х25); синтетикой проверен только QR"
   },
   {
    "id": "qr-code",
@@ -768,9 +770,11 @@
    "sources": [
     "https://ocr-d.de/en/gt-guidelines/trans/lyGraphik.html"
    ],
-   "handled_by": [],
+   "handled_by": [
+    "Х25"
+   ],
    "scope": "in",
-   "why": "не текст; не трогается"
+   "why": "находит детектор OpenCV, не стирается и не переводится; перевод — мимо него (Х25)"
   },
   {
    "id": "punch-hole",
@@ -948,9 +952,11 @@
    "sources": [
     "https://arxiv.org/abs/1905.13538"
    ],
-   "handled_by": [],
+   "handled_by": [
+    "Х25"
+   ],
    "scope": "in",
-   "why": "линия поля не стирается; правила нет"
+   "why": "линия поля без букв над ней не стирается, перевод встаёт до неё (Х25)"
   },
   {
    "id": "single-column",

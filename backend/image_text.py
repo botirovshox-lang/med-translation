@@ -1874,8 +1874,17 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     rows = max(1, int(it.get("rows") or 1))
     bx = it.get("box") or [x0, y0, x1, y1]
     inner = (bx[0] - x0, bx[1] - y0, bx[2] - x0, bx[3] - y0)
+    # Х25: код и линия поля — не текст: замер без них, стирание мимо них.
+    obj = tp.object_marks(rgb, float(it.get("lineH") or 0) or (y1 - y0) / rows,
+                          fields=not tp.typed_rule(it.get("src") or "")) \
+        if hasattr(tp, "object_marks") else None
+    rgb_m = rgb
+    if obj is not None:
+        rgb_m = rgb.copy()
+        bgv = _np.median(_np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]]), axis=0)
+        rgb_m[obj[0]] = bgv.astype(_np.uint8)
     try:
-        m = tp.measure(rgb, it.get("src") or "", rows, float(it.get("lineH") or 0), inner=inner)
+        m = tp.measure(rgb_m, it.get("src") or "", rows, float(it.get("lineH") or 0), inner=inner)
         if not m.get("found"):
             return None
         icons = []
@@ -1885,7 +1894,7 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
             # целиком (с белой серединой) и ставится после перевода.
             # Стирается только значок, который будет поставлен (конец строки):
             # ложное срабатывание посреди картинки иначе стёрло бы рисунок.
-            icons = [ic for ic in tp.find_icons(rgb, m["mask"], m["bands"], m["ink"], m.get("bg"))
+            icons = [ic for ic in tp.find_icons(rgb_m, m["mask"], m["bands"], m["ink"], m.get("bg"))
                      if ic["atEnd"]]
             if icons:
                 em_ = m.get("erase_mask", m["mask"]).astype(bool)
@@ -1897,12 +1906,22 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
                 m["erase_mask"] = em_
         if ((it.get("fam") or "") != "hand" and not m["angle"] and not m.get("arc")
                 and len(m["bands"]) <= rows + 1):
-            fm = tp.foreign_marks(rgb, m["mask"], m["bands"], m["ink"], m.get("bg"))
+            fm = tp.foreign_marks(rgb_m, m["mask"], m["bands"], m["ink"], m.get("bg"))
             if fm is not None:
                 # Х20: печать, подпись, пометка в рамке — не стираются.
                 m["erase_mask"] = m.get("erase_mask", m["mask"]).astype(bool) & ~fm
                 m["protect"] = fm
                 m["foreign"] = int(fm.sum())
+        tx = None
+        if obj is not None:
+            prot = obj[0]
+            m["erase_mask"] = m.get("erase_mask", m["mask"]).astype(bool) & ~prot
+            m["protect"] = (m["protect"] | prot) if m.get("protect") is not None else prot
+            m["objects"] = [b_[4] for b_ in obj[1]]
+            lh_ = float(it.get("lineH") or 0) or (y1 - y0) / rows
+            lo, hi = tp.text_span(m["mask"], obj[1], lh_, x1 - x0)
+            if lo > 0 or hi < x1 - x0:
+                tx = (x0 + lo, x0 + hi)
         erased, alpha = tp.erase(rgb, m)
     except Exception:
         return None
@@ -1952,6 +1971,11 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         ob = ([lbs[0][0] - x0, lbs[0][1] - y0, lbs[0][2] - x0, lbs[0][3] - y0] if len(lbs) == 1
               else [0, 0, m["mask"].shape[1], m["mask"].shape[0]])
         one = tp.one_line_geometry(ob, m["mask"], m["em"])
+    if tx is not None:
+        for g_ in (geo, one):
+            if g_:
+                g_["left"] = max(g_["left"], tx[0] - x0)
+                g_["right"] = min(g_["right"], tx[1] - x0)
     em = m["em"] * k
     src = " ".join((it.get("src") or "").split())
     if fam != "hand" and not m["angle"] and not m.get("arc"):
@@ -2012,7 +2036,7 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     if fam == "hand" and align == "justify":
         align = "left"                      # почерк по ширине не выключается
     return {"m": m, "erased": erased, "alpha": alpha, "fpath": fpath, "font_at": font_at,
-            "em": em, "h0": h0, "geo": geo, "one": one, "k": k, "pbox": pbox, "it": it, "fam": fam,
+            "em": em, "h0": h0, "geo": geo, "one": one, "tx": tx, "k": k, "pbox": pbox, "it": it, "fam": fam,
             "align": align,
             "ink": m["ink"], "stem": stem, "stemMid": stem_mid, "dens": dens, "bandDens": band_dens,
             "icons": icons,
@@ -2065,7 +2089,7 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
 
     def mw(t, s):
         return draw.textlength(t, font=font_at(s)) * h0
-    w = (x1 - x0) * k
+    w = ((pm["tx"][1] - pm["tx"][0]) if pm.get("tx") else (x1 - x0)) * k
     parts = None
     over = False
     geo = pm.get("geo")
@@ -2252,7 +2276,7 @@ def _paint_layout1(pm: dict, draw, em: Optional[float] = None, step: Optional[fl
                     dv[len(dv) // 2], lambda sf, smp=smp, sz=pr["size"], pth=pth:
                     tp.sample_density(pth, smp, sz, h0, ink_, bg_, sf), tp.STROKE_MAX * pr["size"])
             stroke_f = parts[0].get("strokeF", stroke_f)
-    return {"pbox": pm["pbox"], "stroke": stroke, "strokeF": stroke_f, "erased": pm["erased"],
+    return {"pbox": pm["pbox"], "tx": pm.get("tx"), "stroke": stroke, "strokeF": stroke_f, "erased": pm["erased"],
             "dash": pm.get("fam") == "hand" and _short_hyphen(pm["fpath"]),
             "alpha": pm["alpha"], "m": m, "lines": lines, "size": size, "step": step_, "h0": h0, "font": font_at(size),
             "k": k, "align": _start_align(pm.get("align") or it.get("align"), text), "parts": parts,
@@ -2557,12 +2581,13 @@ def _paint_put(big, p: dict) -> None:
         y = top + max(0.0, ((bot - top) - block_h) / 2.0) - (asc - 0.74 * size)
         for ln in part["lines"]:
             g = layer(ln, font, size)
+            tx0, tx1 = p.get("tx") or (x0, x1)      # Х25: место мимо кода и поля
             if p["align"] == "center":
-                x = (x0 + x1) / 2.0 * k - g.size[0] / 2.0
+                x = (tx0 + tx1) / 2.0 * k - g.size[0] / 2.0
             elif p["align"] == "right":
-                x = x1 * k - g.size[0]
+                x = tx1 * k - g.size[0]
             else:
-                x = x0 * k
+                x = tx0 * k
             _put(big, g, (x - sw, y - sw))
             last_at[-1] = (x - sw + 1, x - sw + g.size[0], y + asc, font, size, ln)
             y += step

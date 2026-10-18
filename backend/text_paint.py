@@ -2571,6 +2571,187 @@ def _colour_parts(rgb, ink, bg):
     return lab, st, n
 
 
+# Х25. Не текст в рамке надписи: машиночитаемый код (QR, штрихкод) и пустая
+# линия поля формы («Подпись: ______»). Цвет у них тот же, что у букв, и
+# Х20 (чужая краска по цвету) их не видит: они попадали в маску текста,
+# стирались вместе с ним и путали замер (QR — «вторая строка»). Код находят
+# детекторы OpenCV (`QRCodeDetector`, `barcode.BarcodeDetector` — правила
+# формата, а не наши), линию поля — форма: штрих тоньше `FIELD_THICK` высоты
+# строки, длиннее `FIELD_W` высот, и НАД ним пусто (у подчёркивания над
+# линией буквы — оно стирается с текстом, как прежде).
+FIELD_THICK = float(os.environ.get("PAINT_FIELD_THICK", "0.15"))
+FIELD_W = float(os.environ.get("PAINT_FIELD_W", "3"))
+FIELD_EMPTY = float(os.environ.get("PAINT_FIELD_EMPTY", "0.15"))
+OBJ_INK = int(os.environ.get("PAINT_OBJ_INK", "60"))
+OBJ_GAP = float(os.environ.get("PAINT_OBJ_GAP", "0.3"))
+# Детекторы кодов дороги (~40 мс на вырезку) — смотрят только кандидатов:
+# после растяжки краски ПО ГОРИЗОНТАЛИ строка текста остаётся высотой
+# в строку, а код (модули вплотную) — пятно выше `CODE_TALL` высот строки.
+CODE_TALL = float(os.environ.get("PAINT_CODE_TALL", "1.4"))
+# …и плотное: доля краски в рамке кода ~0.5, у текста — 0.15–0.25.
+CODE_FILL = float(os.environ.get("PAINT_CODE_FILL", "0.32"))
+# Найденное детектором — код, только если он ДВУХЦВЕТНЫЙ (доля пикселей
+# у краёв диапазона яркости не меньше `CODE_TWO_TONE`: у фото и градиента
+# середина диапазона), не больше `CODE_MAX` строк по стороне, а QR — ещё
+# и почти квадратный (стороны 1:`CODE_QR_ASPECT`).
+CODE_TWO_TONE = float(os.environ.get("PAINT_CODE_TWO_TONE", "0.8"))
+CODE_MAX = float(os.environ.get("PAINT_CODE_MAX", "12"))
+CODE_QR_ASPECT = float(os.environ.get("PAINT_CODE_QR_ASPECT", "1.6"))
+# Кандидатов к детектору — не больше (страница с сотней пятен — рисунок).
+CODE_CANDS = int(os.environ.get("PAINT_CODE_CANDS", "8"))
+
+
+def _two_tone(gray) -> bool:
+    if gray.size < 16:
+        return False
+    lo, hi = float(np.percentile(gray, 2)), float(np.percentile(gray, 98))
+    if hi - lo < 60:
+        return False
+    q = 0.25 * (hi - lo)
+    return float(((gray <= lo + q) | (gray >= hi - q)).mean()) >= CODE_TWO_TONE
+
+
+def object_marks(rgb, lh: float, fields: bool = True):
+    """Х25: (маска, рамки [[x0, y0, x1, y1, вид]]) не-текста в вырезке либо
+    None. Вид — "code" | "field". `fields=False` — линии полей не искать
+    (оригинал сам набран подчёркиваниями: их повторит перевод)."""
+    if np is None or cv2 is None or rgb is None or rgb.ndim != 3:
+        return None
+    H, W = rgb.shape[:2]
+    if H < 8 or W < 8:
+        return None
+    lh = float(lh) if lh and lh > 0 else float(H)
+    border = np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]]).astype(np.int16)
+    bg = np.median(border, axis=0)
+    ink = np.abs(rgb.astype(np.int16) - bg).max(axis=-1) > OBJ_INK
+    out = np.zeros((H, W), bool)
+    boxes = []
+    # Коды: детекторы смотрят с «тихой зоной» — кандидат в поле цвета фона.
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    bgg = int(np.median(cv2.cvtColor(bg.astype(np.uint8)[None, None], cv2.COLOR_RGB2GRAY)))
+    # Высота строки — по САМИМ буквам (медиана высот пятен, взвешенная по
+    # ширине: точки над i и сам код — выбросы; буква ≈ 0.7 строки): рамка
+    # строки с кодом выше строки на высоту кода, и мерить код ею нельзя.
+    n0, _l0, st0, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), 8)
+    hw = sorted((int(st0[i][3]), int(st0[i][2])) for i in range(1, n0) if st0[i][3] >= 6)
+    if hw:
+        tot, acc = sum(w_ for _h, w_ in hw), 0
+        for h_, w_ in hw:
+            acc += w_
+            if acc >= tot / 2.0:
+                lh = min(lh, max(6.0, h_ / 0.7))
+                break
+    hx = max(3, int(lh / 3))
+    spread = cv2.dilate(ink.astype(np.uint8), np.ones((1, hx), np.uint8))
+    nc, _lc, stc, _ = cv2.connectedComponentsWithStats(spread, 8)
+    polys = []
+    tried = 0
+    for i in range(1, nc):
+        x, y, w, h, _a = (int(v) for v in stc[i])
+        if h < CODE_TALL * lh or w < 0.8 * lh:
+            continue
+        if float(ink[y:y + h, x:x + w].mean()) < CODE_FILL:
+            continue                                # строки текста, слипшиеся выносными
+        # Детектору — только сам кандидат: чужие буквы рядом сбивают поиск
+        # меток кода, поэтому всё вне пятна закрашено фоном.
+        sub_ = gray[y:y + h, x:x + w].copy()
+        sub_[_lc[y:y + h, x:x + w] != i] = bgg
+        qz = max(8, int(0.25 * min(w, h)))
+        padded = cv2.copyMakeBorder(sub_, qz, qz, qz, qz, cv2.BORDER_CONSTANT, value=bgg)
+        off = np.array([x - qz, y - qz], np.float32)
+        if max(w, h) > CODE_MAX * lh:
+            continue                                # картина, а не код
+        if not _two_tone(gray[y:y + h, x:x + w]):
+            continue                                # фото и градиент — детектору не показываем
+        tried += 1
+        if tried > CODE_CANDS:
+            break
+        try:
+            ok, pts = cv2.QRCodeDetector().detectMulti(padded)
+            if ok and pts is not None:
+                polys += [(np.asarray(p, np.float32).reshape(-1, 2) + off, "qr") for p in pts]
+        except Exception:
+            pass
+        try:
+            bd = getattr(cv2, "barcode", None)
+            if bd is not None:
+                r = bd.BarcodeDetector().detect(padded)
+                ok, pts = (r[0], r[1]) if isinstance(r, tuple) and len(r) >= 2 else (False, None)
+                if ok and pts is not None:
+                    polys += [(np.asarray(p, np.float32).reshape(-1, 2) + off, "bar") for p in pts]
+        except Exception:
+            pass
+    grow = max(2, int(0.08 * lh))
+    for q, kind in polys:
+        x0, y0 = int(max(0, q[:, 0].min() - grow)), int(max(0, q[:, 1].min() - grow))
+        x1, y1 = int(min(W, q[:, 0].max() + grow + 1)), int(min(H, q[:, 1].max() + grow + 1))
+        if x1 - x0 < 4 or y1 - y0 < 4:
+            continue
+        ar = (x1 - x0) / float(y1 - y0)
+        if kind == "qr" and not (1.0 / CODE_QR_ASPECT <= ar <= CODE_QR_ASPECT):
+            continue
+        if not _two_tone(gray[y0:y1, x0:x1]):
+            continue                                # фото и градиент — не код
+        out[y0:y1, x0:x1] = True
+        boxes.append([x0, y0, x1, y1, "code"])
+    # Линии полей.
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink.astype(np.uint8), 8)
+    thick = max(3, int(round(FIELD_THICK * lh)))
+    for i in range(1, n if fields else 1):
+        x, y, w, h, a = (int(v) for v in st[i])
+        if h > thick or w < FIELD_W * lh or a < 0.6 * w * min(h, 2):
+            continue
+        if out[y:y + h, x:x + w].any():
+            continue
+        top = max(0, int(y - lh))
+        above = ink[top:y, x:x + w] & (lab[top:y, x:x + w] != i)
+        if above.size and float(above.any(axis=0).mean()) > FIELD_EMPTY:
+            continue                                # подчёркивание текста
+        out |= lab == i
+        boxes.append([x, y, x + w, y + h, "field"])
+    if not boxes:
+        return None
+    if cv2 is not None:
+        out = cv2.dilate(out.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+    return out, boxes
+
+
+_TYPED_RULE = re.compile(r"[_\u2017\uFF3F]{3,}|[.\u2026\u00b7]{6,}|[-\u2013\u2014]{4,}")
+
+
+def typed_rule(src: str) -> bool:
+    """Х25: оригинал сам набран подчёркиваниями («Имя: ______») — линия
+    поля тут текст, его повторит перевод; защищать её нельзя (вышла бы
+    двойная)."""
+    return bool(_TYPED_RULE.search(src or ""))
+
+
+def text_span(mask, boxes, lh: float, W: int) -> tuple:
+    """Х25: (лево, право) места перевода в вырезке: от краски текста до
+    ближайшего объекта (`object_marks`) по ту сторону, с зазором `OBJ_GAP`
+    высоты строки. Объекты над и под текстом места не сужают."""
+    cols = np.nonzero(mask.any(axis=0))[0] if mask is not None and mask.any() else None
+    if cols is None or not len(cols):
+        return 0.0, float(W)
+    rows_ = np.nonzero(mask.any(axis=1))[0]
+    t0, t1 = int(rows_[0]), int(rows_[-1]) + 1
+    a, b = float(cols[0]), float(cols[-1]) + 1.0
+    lo, hi = 0.0, float(W)
+    gap = OBJ_GAP * lh
+    for x0, y0, x1, y1, _k in boxes:
+        # Допуск по вертикали: линия поля у строки без выносных лежит чуть
+        # ниже букв, а всё равно продолжает ту же строку.
+        if y1 <= t0 - gap or y0 >= t1 + gap:
+            continue
+        if x0 >= b - 1:
+            hi = min(hi, x0 - gap)
+        elif x1 <= a + 1:
+            lo = max(lo, x1 + gap)
+    if hi - lo < 2 * lh:
+        return 0.0, float(W)
+    return lo, hi
+
+
 def foreign_marks(rgb, mask, bands: list, ink, bg):
     """Х20: маска чужой краски (печать, подпись, пометка) или None.
 

@@ -1623,6 +1623,16 @@ body { overflow-wrap: break-word; }
   background: var(--btn); color: var(--btn-ink); cursor: pointer;
   box-shadow: var(--shadow-pop); }
 .sup-fab:hover { background: var(--btn-hover); }
+/* Закрытый виджет — лицо поддержки на белом круге и «24/7» под ним:
+   «тут ответят в любое время» читается раньше любой подписи. */
+.sup-fab:not([aria-expanded="true"]) { width: 60px; height: 60px; padding: 0;
+  background: #fff; overflow: visible; border: 1px solid var(--border); }
+.sup-fab:not([aria-expanded="true"]):hover { background: #fff; transform: translateY(-1px); }
+.sup-face { width: 56px; height: 56px; border-radius: 50%; object-fit: cover; display: block; }
+.sup-247 { position: absolute; left: 50%; bottom: -7px; transform: translateX(-50%);
+  padding: 1px 6px; border-radius: 8px; background: var(--c-primary, #2563eb); color: #fff;
+  font-size: 10.5px; font-weight: 800; line-height: 1.4; letter-spacing: .02em;
+  white-space: nowrap; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
 .sup-fab:focus-visible { outline: 2px solid var(--c-primary); outline-offset: 3px; }
 /* Счётчик непрочитанного. Пилюля, а не точка: «вам ответили» и «вам
    ответили трижды» — разные новости. */
@@ -1656,6 +1666,26 @@ body { overflow-wrap: break-word; }
   border: 1px solid var(--control-line); border-radius: 10px; }
 .sup-form textarea:focus { outline: 2px solid var(--ring); outline-offset: 0; }
 .sup-form .btn { padding: 9px 12px; }
+.sup-who { display: block; margin-bottom: 2px; font-size: 10.5px; font-weight: 600; opacity: .7; }
+.sup-typing p { font-style: italic; opacity: .75; }
+.sup-human { align-self: center; margin: 0 0 6px; font-size: 12.5px; }
+/* Админка «Чаты»: список слева, переписка справа. */
+.chat-admin { display: grid; grid-template-columns: minmax(min(300px, 100%), 360px) 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) { .chat-admin { grid-template-columns: 1fr; } }
+.chat-list { display: flex; flex-direction: column; gap: 6px; max-height: 70vh; overflow-y: auto; }
+.chat-row { text-align: left; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--card); color: var(--text); cursor: pointer; font: inherit; }
+.chat-row[aria-pressed="true"] { border-color: var(--c-primary); box-shadow: 0 0 0 1px var(--c-primary); }
+.chat-row .chat-last { display: block; margin-top: 3px; font-size: 12.5px; color: var(--text-3);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-pill { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 11px;
+  font-weight: 600; background: var(--bg-sunken); color: var(--text-2, var(--text)); }
+.chat-pill.hot { background: var(--c-error); color: #fff; }
+.chat-pill.human { background: var(--c-primary-soft); }
+.chat-log { display: flex; flex-direction: column; gap: 8px; max-height: 60vh; overflow-y: auto;
+  padding: 12px; background: var(--bg-sunken); border-radius: 10px; }
+.chat-log .sup-msg.mine { align-self: flex-start; background: var(--card); }
+.chat-log .sup-msg.theirs { align-self: flex-end; background: var(--c-primary-soft); }
 
 /* Знакомство. Затемнение — ЧЕТЫРЕ прямоугольника вокруг цели, а не
    clip-path по одному: подсвеченный элемент остаётся нажимаемым, и человек

@@ -3987,8 +3987,12 @@ def _note_cost(step: str, model_id: str, tin: int, cached: int, tout: int, think
     журнал токенов. Одна на токенный (`_note_usage`) и поминутный
     (`_note_audio`) учёт — две копии однажды разошлись бы, и деньги одного
     из видов не легли бы на лимит или на бюджет файла."""
+    # Ассистент поддержки идёт своим потоком в процессе API, а `_USAGE_SINK`
+    # — счётчик ИДУЩЕГО прогона: без этой оговорки ответ в чате раздувал бы
+    # расход чужой книги, её смету-факт и бюджет файла.
+    service = getattr(_JOB_TENANT, "id", None) == "_support"
     with _USAGE_LOCK:
-        for bucket in (_USAGE_TOTAL, _USAGE_SINK):
+        for bucket in (_USAGE_TOTAL, None if service else _USAGE_SINK):
             if bucket is not None:
                 _usage_add(bucket, step, model_id, tin, cached, tout, think, cost)
         _spend_add(_current_tenant(), cost)
@@ -5668,6 +5672,9 @@ tg_mod = _safe_import("tg")
 # Диалог с поддержкой: человек пишет в приложении, владелец отвечает из
 # Telegram тем же ботом. Правила хранения переписки — в шапке модуля.
 support_mod = _safe_import("support")
+# Ассистент поддержки: отвечает в виджете сразу и зовёт владельца, когда
+# не справляется. Промпт и правила — в шапке модуля, вызов — `_support_bot_run`.
+support_bot_mod = _safe_import("support_bot")
 # Приглашения: кто привёл клиента, тот получает страницы. Считаются там
 # ДЕНЬГИ, и правила счёта (высшая точка, потолки, почему начисляем
 # по ПОДТВЕРЖДЁННОЙ почте) собраны в шапке модуля — читать её обязательно.
@@ -43245,6 +43252,218 @@ def _support_off():
 
 class SupportIn(BaseModel):
     text: str
+    tab: str = ""                # открытая вкладка — ассистенту для контекста
+
+
+# ── Ассистент поддержки ─────────────────────────────────────────────
+# Отвечает ПОТОКОМ, а не в теле запроса: вызов модели — секунды, а воркер
+# uvicorn один (инвариант 1). Виджет видит «печатает…» (`botBusy`) и
+# опрашивает чаще, пока ответ не придёт.
+#
+# Расход ассистента — НАШ, а не организации человека: поток идёт под
+# служебной организацией `_support` (`_JOB_TENANT`), поэтому лимит клиента
+# его не режет (написать в поддержку человек обязан мочь и на исчерпанном
+# лимите, инвариант 15), а в «Расходе по проектам» он виден своей строкой.
+SUPPORT_BOT_TENANT = "_support"
+
+
+def _support_bot_ready() -> bool:
+    if not (support_mod and support_bot_mod and support_bot_mod.enabled()):
+        return False
+    # Ассистент обещает «позвал специалиста» — без Telegram позвать некого,
+    # и человек остался бы в тупике. Тогда — прежний порядок без ассистента.
+    if not (tg_mod and tg_mod.enabled()):
+        return False
+    try:
+        return bool(_provider_ready(support_bot_mod.model_id()))
+    except Exception:
+        return False
+
+
+# Потолки ассистента. Его расход — наш, а регистрация открыта: без потолка
+# «много учётных записей × 30 сообщений в час» — неограниченные деньги.
+# Сверх потолка ассистент не зовётся, и сообщение идёт владельцу, как без него.
+SUPPORT_BOT_DAY_USD = float(os.environ.get("SUPPORT_BOT_DAY_USD", "5") or 0)
+SUPPORT_BOT_PER_HOUR = int(os.environ.get("SUPPORT_BOT_PER_HOUR", "12") or 0)
+_SUPPORT_BOT_DAY = {"day": "", "usd": 0.0}     # в памяти процесса API: рестарт обнуляет
+
+
+def _support_bot_room(t: dict) -> bool:
+    day = time.strftime("%Y-%m-%d")
+    if _SUPPORT_BOT_DAY["day"] != day:
+        _SUPPORT_BOT_DAY.update(day=day, usd=0.0)
+    if SUPPORT_BOT_DAY_USD > 0 and _SUPPORT_BOT_DAY["usd"] >= SUPPORT_BOT_DAY_USD:
+        return False
+    if SUPPORT_BOT_PER_HOUR > 0:
+        edge = time.time() - 3600
+        n = sum(1 for m in (t.get("msgs") or [])
+                if m.get("by") == support_mod.WHO_BOT and (m.get("at") or 0) > edge)
+        if n >= SUPPORT_BOT_PER_HOUR:
+            return False
+    return True
+
+
+def _support_notify(text: str) -> None:
+    if tg_mod:
+        tg_mod.notify_admin_async(text, chat_id=getattr(tg_mod, "SUPPORT_CHAT", None))
+
+
+def _support_handoff(t: dict, reason: str, user_name: str, tenant: str) -> None:
+    """Передать диалог человеку: ассистент замолкает, владельцу — Telegram
+    с хвостом переписки. Зовётся под `_SAVE_LOCK`; сохраняет вызывающий."""
+    t["mode"] = support_bot_mod.MODE_HUMAN
+    t["escalated"] = {"at": time.time(), "reason": (reason or "")[:300]}
+    _support_notify(support_bot_mod.handoff_text(
+        t, user_name, tenant, reason, support_mod.HEAD_MARK, support_mod.tag(t)))
+    _ev("support.handoff", tenant)
+
+
+def _support_bot_kick(thread_id: int, ctx: dict) -> None:
+    """Запустить ответ ассистента. Уже отвечает — пометить «есть ещё
+    вопрос»: второй поток на тот же диалог ответил бы дважды наперебой."""
+    with _SAVE_LOCK:
+        t = support_mod.thread_by_id(STATE, thread_id)
+        if not t:
+            return
+        if support_bot_mod.busy(t):
+            t["botAgain"] = True
+            return
+        t["botBusy"] = time.time()
+    threading.Thread(target=_support_bot_run, args=(thread_id, ctx),
+                     name="support-bot", daemon=True).start()
+
+
+def _support_bot_run(thread_id: int, ctx: dict) -> None:
+    _JOB_TENANT.id = SUPPORT_BOT_TENANT
+    try:
+        _support_bot_body(thread_id, ctx)
+    except Exception as e:
+        # Сбой НАШЕГО кода (не модели): человек не должен ждать «печатает…»
+        # до истечения срока — зовём владельца.
+        print("[backend] ассистент поддержки упал (диалог %s): %s" % (thread_id, e), flush=True)
+        with _SAVE_LOCK:
+            t = support_mod.thread_by_id(STATE, thread_id)
+            if t and support_bot_mod.mode(t) == support_bot_mod.MODE_BOT:
+                try:
+                    support_mod.add_message(t, support_mod.WHO_BOT,
+                                            support_bot_mod.fallback(ctx.get("lang")),
+                                            support_bot_mod.BOT_NAME)
+                    _support_handoff(t, "сбой ассистента", ctx.get("name") or "",
+                                     t.get("tenant") or "")
+                except Exception:
+                    pass
+            # Только в ветке сбоя: на обычном пути тело снимает отметку само,
+            # а `finally` снял бы её у СЛЕДУЮЩЕГО ответа, уже запущенного.
+            if t:
+                t.pop("botBusy", None)
+                t.pop("botAgain", None)
+                save_state(STATE)
+    finally:
+        _JOB_TENANT.id = None
+
+
+def _support_bot_body(thread_id: int, ctx: dict) -> None:
+    lang = ctx.get("lang") or DEFAULT_UI_LANG
+    know = support_bot_mod.knowledge(tutorial_mod)
+    model = support_bot_mod.model_id()
+    for _round in range(3):          # «есть ещё вопрос» — не больше двух повторов
+        with _SAVE_LOCK:
+            t = support_mod.thread_by_id(STATE, thread_id)
+            if not t or support_bot_mod.mode(t) != support_bot_mod.MODE_BOT:
+                if t:
+                    t.pop("botBusy", None)
+                return
+            t.pop("botAgain", None)
+            hist = support_bot_mod.history(t)
+        if not hist or hist[-1]["role"] != "user":
+            break
+        reply, handoff, reason, failed = "", False, "", False
+        try:
+            client = _llm_client(model, timeout=60, max_retries=1, step="support")
+            resp = client.chat.completions.create(
+                model=model, max_tokens=support_bot_mod.MAX_TOKENS,
+                messages=[{"role": "system",
+                           "content": support_bot_mod.system_prompt(know, ctx)}] + hist)
+            _note_usage("support", model, resp)
+            _SUPPORT_BOT_DAY["usd"] += _resp_cost(model, resp) or 0.0
+            reply, handoff, reason = support_bot_mod.parse(resp.choices[0].message.content)
+            # Промпт запрещает называть модели, но запрет мягкий — второй
+            # рубеж на выдаче (инвариант 24а).
+            reply = _text_without_models(reply)
+        except Exception as e:
+            print("[backend] ассистент поддержки не ответил (диалог %s): %s"
+                  % (thread_id, str(e)[:300]), flush=True)
+            failed = True
+        if failed or not reply:
+            handoff, reason = True, reason or "ассистент не смог ответить (сбой вызова)"
+            reply = support_bot_mod.fallback(lang)
+        with _SAVE_LOCK:
+            t = support_mod.thread_by_id(STATE, thread_id)
+            if not t:
+                return
+            if support_bot_mod.mode(t) != support_bot_mod.MODE_BOT:
+                # Специалист перехватил диалог, пока ассистент думал, —
+                # его ответ важнее, наш молча выбрасываем.
+                t.pop("botBusy", None)
+                save_state(STATE)
+                return
+            support_mod.add_message(t, support_mod.WHO_BOT, reply, support_bot_mod.BOT_NAME)
+            if handoff:
+                _support_handoff(t, reason, ctx.get("name") or "", t.get("tenant") or "")
+            again = bool(t.pop("botAgain", False)) and not handoff
+            if again:
+                t["botBusy"] = time.time()
+            else:
+                t.pop("botBusy", None)
+            save_state(STATE)
+            tenant = t.get("tenant")
+        _ev("support.bot", tenant)
+        if not again:
+            return
+    with _SAVE_LOCK:
+        t = support_mod.thread_by_id(STATE, thread_id)
+        if t:
+            t.pop("botBusy", None)
+            save_state(STATE)
+
+
+def _support_bot_resume() -> None:
+    """Выкат убивает поток ассистента посреди ответа, и вопрос оставался без
+    ответа навсегда («печатает…», потом тишина). При старте API находим
+    диалоги, где последнее слово за человеком, а отвечает ассистент, — и
+    отвечаем заново. Свежие (≤ 10 мин) — ответ ещё уместен; старше — уже
+    не ассистенту, а человеку."""
+    time.sleep(5)
+    if not _support_bot_ready():
+        return
+    edge = time.time() - 600
+    users = {u["id"]: u for u in _users()}
+    with _SAVE_LOCK:
+        todo = []
+        for t in support_mod.threads(STATE):
+            msgs = t.get("msgs") or []
+            if (msgs and msgs[-1].get("by") == support_mod.WHO_USER
+                    and support_bot_mod.mode(t) == support_bot_mod.MODE_BOT):
+                t.pop("botBusy", None)
+                if (msgs[-1].get("at") or 0) > edge and users.get(t.get("user")):
+                    todo.append(t)
+    for t in todo:
+        u = users[t["user"]]
+        _support_bot_kick(t["id"], {"name": u.get("name") or u.get("login") or "",
+                                    "lang": u.get("uiLang") or DEFAULT_UI_LANG,
+                                    "role": "", "tab": ""})
+
+
+@app.on_event("startup")
+def _support_bot_on_startup():
+    if IS_WORKER:
+        return
+    threading.Thread(target=_support_bot_resume, name="support-resume", daemon=True).start()
+
+
+def _support_ctx(u: dict, tab: str = "") -> dict:
+    return {"name": u.get("name") or u["login"], "lang": _explain_lang(),
+            "role": _actor_role() or "", "tab": (tab or "")[:40]}
 
 
 @app.get("/api/support")
@@ -43253,11 +43472,15 @@ def support_get(request: Request):
     if not support_mod:
         _support_off()
     u = _current_user(request)
-    t = support_mod.thread_of(STATE, u["id"], _current_tenant())
-    return {"ok": True, "thread": support_mod.public(t),
+    with _SAVE_LOCK:
+        t = support_mod.thread_of(STATE, u["id"], _current_tenant())
+        pub = support_mod.public(t)
+    return {"ok": True, "thread": pub,
             # Есть ли кому ответить. Без бота виджет честно говорит, что
             # ответ придёт почтой, а не молчит с видом работающего чата.
-            "live": bool(tg_mod and tg_mod.enabled())}
+            "live": bool(tg_mod and tg_mod.enabled()),
+            # Отвечает ли ассистент сразу (ключ модели есть, не выключен).
+            "bot": _support_bot_ready()}
 
 
 @app.post("/api/support")
@@ -43272,13 +43495,24 @@ def support_post(req: SupportIn, request: Request):
         raise HTTPException(413, "Сообщение длиннее %d знаков" % support_mod.MSG_MAX_LEN)
     u = _current_user(request)
     tid = _current_tenant()
-    t = support_mod.thread_of(STATE, u["id"], tid)
+    with _SAVE_LOCK:
+        t = support_mod.thread_of(STATE, u["id"], tid)
     # Потолок по УЧЁТНОЙ ЗАПИСИ, а не по IP: дверь за входом, и человек
     # известен. 429 словами — чтобы виджет сказал, а не замолчал.
     if support_mod.too_fast(t):
         raise HTTPException(429, "Слишком много сообщений за час — напишите чуть позже")
-    m = support_mod.add_message(t, support_mod.WHO_USER, text, u.get("name") or u["login"])
+    with _SAVE_LOCK:
+        m = support_mod.add_message(t, support_mod.WHO_USER, text, u.get("name") or u["login"])
     save_state(STATE)
+    _ev("support.msg", tid)
+    # Ассистент отвечает сам и зовёт владельца, когда нужно. Telegram на
+    # каждое сообщение — только когда диалог уже у человека (или ассистента нет).
+    if (_support_bot_ready() and support_bot_mod.mode(t) == support_bot_mod.MODE_BOT
+            and _support_bot_room(t)):
+        _support_bot_kick(t["id"], _support_ctx(u, req.tab))
+        with _SAVE_LOCK:
+            pub = support_mod.public(t)
+        return {"ok": True, "msg": m, "thread": pub, "bot": True}
     if tg_mod:
         # Асинхронно: недоступный Telegram иначе держал бы единственный
         # воркер на таймауте (тот же закон, что у суточной сводки метрик).
@@ -43289,8 +43523,29 @@ def support_post(req: SupportIn, request: Request):
         tg_mod.notify_admin_async(
             support_mod.notify_text(t, u.get("name") or u["login"], tid, text),
             chat_id=getattr(tg_mod, "SUPPORT_CHAT", None))
-    _ev("support.msg", tid)
     return {"ok": True, "msg": m, "thread": support_mod.public(t)}
+
+
+@app.post("/api/support/human")
+def support_human(request: Request):
+    """«Позвать человека» из виджета: ассистент замолкает, владельцу —
+    уведомление с хвостом переписки. Дверь открыта всегда, а не только
+    когда ассистент сам решил передать разговор."""
+    if not support_mod or not support_bot_mod:
+        _support_off()
+    u = _current_user(request)
+    tid = _current_tenant()
+    lang = _explain_lang()
+    with _SAVE_LOCK:
+        t = support_mod.thread_of(STATE, u["id"], tid)
+        if support_bot_mod.mode(t) != support_bot_mod.MODE_HUMAN:
+            support_mod.add_message(t, support_mod.WHO_BOT, support_bot_mod.called(lang),
+                                    support_bot_mod.BOT_NAME)
+            _support_handoff(t, "пользователь попросил человека",
+                             u.get("name") or u["login"], tid)
+        pub = support_mod.public(t)
+    save_state(STATE)
+    return {"ok": True, "thread": pub}
 
 
 @app.post("/api/support/read")
@@ -43299,11 +43554,14 @@ def support_read(request: Request):
     if not support_mod:
         _support_off()
     u = _current_user(request)
-    t = support_mod.thread_of(STATE, u["id"], _current_tenant())
-    if t.get("unread"):
+    with _SAVE_LOCK:
+        t = support_mod.thread_of(STATE, u["id"], _current_tenant())
+        dirty = bool(t.get("unread"))
         t["unread"] = 0
+        pub = support_mod.public(t)
+    if dirty:
         save_state(STATE)
-    return {"ok": True, "thread": support_mod.public(t)}
+    return {"ok": True, "thread": pub}
 
 
 class SupportReply(BaseModel):
@@ -43327,7 +43585,10 @@ def tg_support_reply(req: SupportReply):
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(400, "Пустой ответ")
-    support_mod.add_message(t, support_mod.WHO_SUPPORT, text, req.name or "Поддержка")
+    with _SAVE_LOCK:
+        support_mod.add_message(t, support_mod.WHO_SUPPORT, text, req.name or "Поддержка")
+        # Ответил человек — ассистент молчит, пока его не вернут из админки.
+        t["mode"] = "human"
     save_state(STATE)
     return {"ok": True, "thread": t.get("id"), "user": t.get("user")}
 
@@ -43462,15 +43723,26 @@ def admin_support(request: Request, thread: int = 0):
         raise HTTPException(403, "Диалоги поддержки — только суперпользователю")
     names = {u["id"]: (u.get("name") or u["login"]) for u in _users()}
     if thread:
-        t = support_mod.thread_by_id(STATE, thread)
-        if not t:
-            raise HTTPException(404, "Диалог не найден")
-        return {"ok": True, "thread": {**support_mod.public(t),
+        with _SAVE_LOCK:
+            t = support_mod.thread_by_id(STATE, thread)
+            if not t:
+                raise HTTPException(404, "Диалог не найден")
+            last = (t.get("msgs") or [{}])[-1]
+            seen = (last.get("at") or 0) > (t.get("adminSeen") or 0)
+            if seen:
+                t["adminSeen"] = time.time()
+            pub = support_mod.public(t)
+        if seen:
+            save_state(STATE)
+        return {"ok": True, "thread": {**pub,
+                                       "escalated": t.get("escalated"),
                                        "userName": names.get(t.get("user"), ""),
                                        "tenant": t.get("tenant")}}
-    rows = sorted(support_mod.threads(STATE), key=lambda x: x.get("updated") or 0, reverse=True)
-    return {"ok": True, "threads": [support_mod.admin_row(t, names.get(t.get("user"), ""))
-                                    for t in rows[:100]]}
+    with _SAVE_LOCK:
+        rows = sorted(support_mod.threads(STATE), key=lambda x: x.get("updated") or 0, reverse=True)
+        out = [support_mod.admin_row(t, names.get(t.get("user"), "")) for t in rows[:100]]
+    return {"ok": True, "threads": out,
+            "bot": _support_bot_ready()}
 
 
 class SupportAdminReply(BaseModel):
@@ -43486,13 +43758,44 @@ def admin_support_reply(req: SupportAdminReply, request: Request):
     me = _current_user(request)
     if not me.get("super"):
         raise HTTPException(403, "Ответы поддержки — только суперпользователю")
-    t = support_mod.thread_by_id(STATE, req.thread)
-    if not t:
-        raise HTTPException(404, "Диалог не найден")
     text = (req.text or "").strip()
     if not text:
         raise HTTPException(400, "Пустой ответ")
-    support_mod.add_message(t, support_mod.WHO_SUPPORT, text, me.get("name") or me["login"])
+    with _SAVE_LOCK:
+        t = support_mod.thread_by_id(STATE, req.thread)
+        if not t:
+            raise HTTPException(404, "Диалог не найден")
+        support_mod.add_message(t, support_mod.WHO_SUPPORT, text, me.get("name") or me["login"])
+        # Ответил человек — ассистент молчит, пока его не вернут (`/mode`).
+        t["mode"] = "human"
+        t["adminSeen"] = time.time()
+    save_state(STATE)
+    return {"ok": True, "thread": support_mod.public(t)}
+
+
+class SupportModeIn(BaseModel):
+    thread: int
+    mode: str                    # bot | human
+
+
+@app.post("/api/admin/support/mode")
+def admin_support_mode(req: SupportModeIn, request: Request):
+    """Кто ведёт диалог: ассистент или человек. Вернуть ассистенту — снять
+    отметку передачи; забрать — ассистент молчит."""
+    if not support_mod:
+        _support_off()
+    me = _current_user(request)
+    if not me.get("super"):
+        raise HTTPException(403, "Диалоги поддержки — только суперпользователю")
+    if req.mode not in ("bot", "human"):
+        raise HTTPException(400, "Неизвестный режим")
+    with _SAVE_LOCK:
+        t = support_mod.thread_by_id(STATE, req.thread)
+        if not t:
+            raise HTTPException(404, "Диалог не найден")
+        t["mode"] = req.mode
+        if req.mode == "bot":
+            t.pop("escalated", None)
     save_state(STATE)
     return {"ok": True, "thread": support_mod.public(t)}
 

@@ -40,6 +40,9 @@
    виден почти сразу» и при этом пять запросов в минуту на человека,
    а не тридцать. */
 const SUP_POLL_MS = 12000;
+/* Пока ассистент «печатает» — чаще: ответ приходит за секунды, и ждать
+   его двенадцать секунд значило бы прятать готовый ответ. */
+const SUP_TYPING_MS = 2500;
 
 function supTime(ts) {
   if (!ts) return "";
@@ -56,6 +59,7 @@ function SupportWidget({ store, toast }) {
   const [busy, setBusy] = useState(false);
   const [live, setLive] = useState(true);
   const bodyRef = useRef(null);
+  const [bot, setBot] = useState(false);
 
   const unread = (thread && thread.unread) || 0;
   const msgs = (thread && thread.msgs) || [];
@@ -66,7 +70,7 @@ function SupportWidget({ store, toast }) {
     let dead = false;
     window.API.support().then(r => {
       if (dead || !r || !r.ok) return;
-      setThread(r.thread); setLive(r.live !== false);
+      setThread(r.thread); setLive(r.live !== false); setBot(!!r.bot);
     }, () => {});
     return () => { dead = true; };
   }, []);
@@ -75,20 +79,23 @@ function SupportWidget({ store, toast }) {
      сообщение. Закрытый виджет без заданного вопроса не опрашивает
      ничего — там и ждать нечего. */
   const waiting = msgs.length > 0 && msgs[msgs.length - 1].by === "user";
+  const typing = !!(thread && thread.typing);
+  const human = !!(thread && thread.mode === "human");
   useEffect(() => {
-    if (!open && !waiting) return;
+    if (!open && !waiting && !typing) return;
+    const ms = typing ? SUP_TYPING_MS : SUP_POLL_MS;
     let dead = false, timer = null;
     const tick = () => {
-      if (dead || document.hidden) { timer = setTimeout(tick, SUP_POLL_MS); return; }
+      if (dead || document.hidden) { timer = setTimeout(tick, ms); return; }
       window.API.support().then(r => {
         if (dead || !r || !r.ok) return;
-        setThread(r.thread); setLive(r.live !== false);
-        timer = setTimeout(tick, SUP_POLL_MS);
-      }, () => { if (!dead) timer = setTimeout(tick, SUP_POLL_MS); });
+        setThread(r.thread); setLive(r.live !== false); setBot(!!r.bot);
+        timer = setTimeout(tick, ms);
+      }, () => { if (!dead) timer = setTimeout(tick, ms); });
     };
-    timer = setTimeout(tick, SUP_POLL_MS);
+    timer = setTimeout(tick, ms);
     return () => { dead = true; clearTimeout(timer); };
-  }, [open, waiting]);
+  }, [open, waiting, typing]);
 
   /* Открыть виджет умеет любой экран: событие, а не проп через всю
      оболочку. Кнопка «Написать в поддержку» стоит на вкладке «Обучение»
@@ -111,15 +118,27 @@ function SupportWidget({ store, toast }) {
   useEffect(() => {
     const el = bodyRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [open, msgs.length]);
+  }, [open, msgs.length, typing]);
 
   const send = () => {
     const t = text.trim();
     if (!t || busy) return;
     setBusy(true);
-    window.API.supportSend(t).then(r => {
+    window.API.supportSend(t, window._mcat_tab || "").then(r => {
       setBusy(false);
       if (r && r.ok) { setThread(r.thread); setText(""); }
+    }, (e) => {
+      setBusy(false);
+      toast && toast.error(TR("Не отправилось"), (e && e.message) || TR("Попробуйте ещё раз."));
+    });
+  };
+
+  const callHuman = () => {
+    if (busy) return;
+    setBusy(true);
+    window.API.supportHuman().then(r => {
+      setBusy(false);
+      if (r && r.ok) setThread(r.thread);
     }, (e) => {
       setBusy(false);
       toast && toast.error(TR("Не отправилось"), (e && e.message) || TR("Попробуйте ещё раз."));
@@ -132,13 +151,20 @@ function SupportWidget({ store, toast }) {
       "aria-label": open ? TR("Закрыть поддержку") : TR("Написать в поддержку"),
       "aria-expanded": open,
     },
-      React.createElement(Icon, { name: open ? "close" : "message", size: 21 }),
+      open ? React.createElement(Icon, { name: "close", size: 21 })
+        : React.createElement("img", { className: "sup-face", alt: "", "aria-hidden": true,
+            src: "vendor/img/support.png?v=" + ((window.BOOT && window.BOOT.v) || "0") }),
+      !open && React.createElement("span", { className: "sup-247", "aria-hidden": true }, "24/7"),
       !open && unread > 0 && React.createElement("i", { className: "sup-dot" }, unread)),
     open && React.createElement("section", { className: "sup-panel", "aria-label": TR("Поддержка") },
       React.createElement("header", { className: "sup-head" },
         React.createElement("div", null,
-          React.createElement("b", null, TR("Поддержка")),
-          React.createElement("span", null, live
+          React.createElement("b", null, TR("Поддержка 24/7")),
+          React.createElement("span", null, bot && !human
+            ? TR("Ассистент отвечает сразу, а если нужно — зовёт специалиста.")
+            : human
+            ? TR("Специалист подключён и ответит здесь же.")
+            : live
             ? TR("Обычно отвечаем в течение рабочего дня.")
             : TR("Ответ придёт на вашу почту."))),
         React.createElement(IconBtn, {
@@ -150,10 +176,18 @@ function SupportWidget({ store, toast }) {
                                           onClick: () => window.dispatchEvent(new Event("mct-idea-open")) },
             TR("Не хватает функции? Предложите её"))),
         msgs.map((m, i) => React.createElement("div", {
-          key: i, className: "sup-msg " + (m.by === "user" ? "mine" : "theirs"),
+          key: i, className: "sup-msg " + (m.by === "user" ? "mine" : "theirs") + (m.by === "bot" ? " bot" : ""),
         },
+          m.by !== "user" && React.createElement("small", { className: "sup-who" },
+            m.by === "bot" ? TR("Ассистент") : (m.name || TR("Поддержка"))),
           React.createElement("p", null, m.text),
-          React.createElement("time", null, supTime(m.at))))),
+          React.createElement("time", null, supTime(m.at)))),
+        typing && React.createElement("div", { className: "sup-msg theirs bot sup-typing", "aria-live": "polite" },
+          React.createElement("small", { className: "sup-who" }, TR("Ассистент")),
+          React.createElement("p", null, TR("печатает…")))),
+      bot && !human && msgs.length > 0 && React.createElement("button", {
+        type: "button", className: "linkbtn sup-human", disabled: busy, onClick: callHuman,
+      }, TR("Позвать человека")),
       React.createElement("form", {
         className: "sup-form",
         onSubmit: (e) => { e.preventDefault(); send(); },

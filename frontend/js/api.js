@@ -348,7 +348,11 @@ function onUnauthorized() {
        второй копии выбора языка в браузере быть не должно. */
     tutorial:      ()                       => call("GET",    "/tutorial"),
     support:       ()                       => call("GET",    "/support"),
-    supportSend:   (text)                   => call("POST",   "/support", { text }),
+    supportSend:   (text, tab)              => call("POST",   "/support", { text, tab: tab || "" }),
+    supportHuman:  ()                       => call("POST",   "/support/human", {}),
+    adminSupport:  (thread)                 => call("GET",    "/admin/support" + (thread ? "?thread=" + thread : "")),
+    adminSupportReply: (thread, text)       => call("POST",   "/admin/support/reply", { thread, text }),
+    adminSupportMode:  (thread, mode)       => call("POST",   "/admin/support/mode", { thread, mode }),
     supportRead:   ()                       => call("POST",   "/support/read", {}),
     teams:         ()                       => call("GET",    "/teams"),
     teamCreate:    (name)                   => call("POST",   "/teams", { name }),

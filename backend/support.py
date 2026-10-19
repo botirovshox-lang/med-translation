@@ -51,6 +51,8 @@ MSG_PER_HOUR = 30         # сообщений в час с одной учёт�
 # автоматикой, и `by: "bot"` не потребует миграции боевых данных.
 WHO_USER = "user"
 WHO_SUPPORT = "support"
+WHO_BOT = "bot"            # ассистент (`backend/support_bot.py`)
+WHO_NOTE = "note"          # служебная строка: «позвали специалиста»
 
 
 def threads(state) -> list:
@@ -98,7 +100,7 @@ def add_message(thread: dict, who: str, text: str, name: str = "") -> dict:
     if len(msgs) > THREAD_MAX:
         del msgs[:len(msgs) - THREAD_MAX]
     thread["updated"] = m["at"]
-    if who == WHO_SUPPORT:
+    if who in (WHO_SUPPORT, WHO_BOT):
         thread["unread"] = (thread.get("unread") or 0) + 1
         thread["open"] = True
     return m
@@ -116,8 +118,14 @@ def too_fast(thread: dict) -> bool:
 def public(thread: dict) -> dict:
     """То, что видит браузер. Имя организации и id человека здесь не нужны:
     он и так знает, кто он."""
+    busy = thread.get("botBusy") or 0
     return {"id": thread.get("id"), "open": bool(thread.get("open", True)),
             "unread": thread.get("unread") or 0,
+            # Кто сейчас отвечает: ассистент или человек (после передачи).
+            "mode": thread.get("mode") or "bot",
+            # «Ассистент печатает…». Старше 150 с — поток умер (рестарт),
+            # и виджет не должен ждать вечно.
+            "typing": bool(busy) and (_now() - busy) < 150,
             "msgs": [{"by": m.get("by"), "text": m.get("text") or "",
                       "at": m.get("at"), "name": m.get("name") or ""}
                      for m in (thread.get("msgs") or [])]}
@@ -131,7 +139,13 @@ def admin_row(thread: dict, user_name: str = "") -> dict:
             "userName": user_name, "tenant": thread.get("tenant"),
             "updated": thread.get("updated"), "open": bool(thread.get("open", True)),
             "count": len(msgs), "last": (last.get("text") or "")[:160],
-            "lastBy": last.get("by") or ""}
+            "lastBy": last.get("by") or "",
+            "mode": thread.get("mode") or "bot",
+            "escalated": thread.get("escalated"),
+            # Новое для админки: последнее слово за человеком, и владелец
+            # этот диалог после него не открывал.
+            "fresh": bool(msgs) and last.get("by") == WHO_USER
+                     and (last.get("at") or 0) > (thread.get("adminSeen") or 0)}
 
 
 # Метка треда в тексте сообщения Telegram. По ней `thread_for_reply`
@@ -200,4 +214,8 @@ def notify_text(thread: dict, user_name: str, tenant: str, text: str) -> str:
     сводки метрик): подставить перевод на границе показа некому."""
     return (HEAD_MARK + " Вопрос в поддержку %s\n\n%s (%s)\n\n%s\n\n"
             "Ответьте на это сообщение — ответ уйдёт человеку в приложение."
-            % (tag(thread), user_name or "—", tenant or "—", text))
+            % (tag(thread), user_name or "—", tenant or "—",
+               # Знак заголовка в тексте клиента обезврежен: иначе строка
+               # «💬 … #d7» в вопросе стала бы ПОСЛЕДНИМ заголовком, и ответ
+               # владельца ушёл бы в чужой диалог.
+               (text or "").replace(HEAD_MARK, "[" + HEAD_MARK + "]")))

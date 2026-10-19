@@ -2521,6 +2521,128 @@ function AdminPrices({ toast }) {
                   onClick: () => setPick(r.scope === "all" ? "all" : r.scope + ":" + r.id) }, TR("Открыть"))))))))));
 }
 
+/* ─── Чаты поддержки ─────────────────────────────────────────────
+   Все диалоги виджета: что ответил ассистент, кого он передал человеку,
+   и ответ отсюда — та же запись, что ответ из Telegram. Ответ человека
+   забирает диалог у ассистента (`mode: human`); вернуть — кнопкой. */
+const CHAT_POLL_MS = 8000;
+
+function chatWhen(ts) {
+  if (!ts) return "";
+  try {
+    const d = new Date(ts * 1000);
+    const today = new Date().toDateString() === d.toDateString();
+    return today ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : d.toLocaleDateString([], { day: "2-digit", month: "2-digit" }) + " "
+        + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch (e) { return ""; }
+}
+
+function AdminChats({ toast }) {
+  const [list, setList] = useState(null);
+  const [pick, setPick] = useState(0);
+  const [thread, setThread] = useState(null);
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [bot, setBot] = useState(false);
+  const [nonce, setNonce] = useState(0);
+  const logRef = useRef(null);
+
+  useEffect(() => {
+    let dead = false, timer = null;
+    const tick = () => {
+      if (dead) return;
+      if (document.hidden) { timer = setTimeout(tick, CHAT_POLL_MS); return; }
+      window.API.adminSupport().then(r => {
+        if (dead || !r || !r.ok) return;
+        setList(r.threads || []); setBot(!!r.bot);
+      }, () => {}).then(() => {
+        if (dead || !pick) return;
+        return window.API.adminSupport(pick).then(r => { if (!dead && r && r.ok) setThread(r.thread); }, () => {});
+      }).then(() => { if (!dead) timer = setTimeout(tick, CHAT_POLL_MS); });
+    };
+    tick();
+    return () => { dead = true; clearTimeout(timer); };
+  }, [pick, nonce]);
+
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [thread && thread.id, thread && (thread.msgs || []).length]);
+
+  const open = (id) => { setPick(id); setThread(null); setText(""); };
+  const reply = () => {
+    const t = text.trim();
+    if (!t || busy || !pick) return;
+    setBusy(true);
+    window.API.adminSupportReply(pick, t).then(() => {
+      setBusy(false); setText(""); setNonce(n => n + 1);
+    }, (e) => { setBusy(false); toast && toast.error(TR("Не отправилось"), e && e.message); });
+  };
+  const setMode = (mode) => {
+    if (busy || !pick) return;
+    setBusy(true);
+    window.API.adminSupportMode(pick, mode).then(() => { setBusy(false); setNonce(n => n + 1); },
+      (e) => { setBusy(false); toast && toast.error(TR("Не получилось"), e && e.message); });
+  };
+
+  if (!list) return React.createElement("div", { className: "dim" }, TR("Загружаем диалоги…"));
+  const row = list.find(x => x.id === pick) || {};
+  const msgs = (thread && thread.msgs) || [];
+  const human = thread && thread.mode === "human";
+  return React.createElement("div", { className: "col", style: { gap: 12 } },
+    React.createElement("p", { className: "dim", style: { margin: 0 } }, bot
+      ? TR("Ассистент отвечает сразу и зовёт вас, когда не справляется: такие диалоги отмечены «зовёт».")
+      : TR("Ассистент сейчас не отвечает (нет ключа модели или выключен) — все сообщения идут вам.")),
+    list.length === 0
+      ? React.createElement("p", { className: "dim" }, TR("Диалогов пока нет."))
+      : React.createElement("div", { className: "chat-admin" },
+        React.createElement("div", { className: "chat-list" },
+          list.map(x => React.createElement("button", {
+            key: x.id, type: "button", className: "chat-row", "aria-pressed": pick === x.id,
+            onClick: () => open(x.id),
+          },
+            React.createElement("b", null, x.userName || ("#" + x.user)),
+            React.createElement("span", { className: "dim", style: { fontSize: 12, marginLeft: 6 } }, x.tenant),
+            x.escalated && x.mode === "human" && React.createElement("span", { className: "chat-pill hot" }, TR("зовёт")),
+            !x.escalated && x.mode === "human" && React.createElement("span", { className: "chat-pill human" }, TR("вы")),
+            x.fresh && React.createElement("span", { className: "chat-pill" }, TR("новое")),
+            React.createElement("span", { className: "dim", style: { float: "right", fontSize: 12 } }, chatWhen(x.updated)),
+            React.createElement("span", { className: "chat-last" },
+              (x.lastBy === "bot" ? "🤖 " : x.lastBy === "support" ? "↩ " : "") + (x.last || ""))))),
+        !pick
+          ? React.createElement("p", { className: "dim" }, TR("Выберите диалог слева."))
+          : React.createElement("div", { className: "col", style: { gap: 10 } },
+            React.createElement("div", { className: "row between", style: { gap: 8, flexWrap: "wrap" } },
+              React.createElement("div", null,
+                React.createElement("b", null, row.userName || (thread && thread.userName) || ""),
+                React.createElement("span", { className: "dim", style: { marginLeft: 8 } }, row.tenant || ""),
+                thread && thread.escalated && thread.escalated.reason && React.createElement("div", {
+                  className: "dim", style: { fontSize: 12.5, marginTop: 2 } },
+                  TR("Причина передачи: ") + thread.escalated.reason)),
+              thread && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy,
+                onClick: () => setMode(human ? "bot" : "human") },
+                human ? TR("Вернуть ассистенту") : TR("Забрать у ассистента"))),
+            React.createElement("div", { className: "chat-log", ref: logRef },
+              !thread && React.createElement("div", { className: "dim" }, TR("Загружаем…")),
+              msgs.map((m, i) => React.createElement("div", {
+                key: i, className: "sup-msg " + (m.by === "user" ? "mine" : "theirs"),
+              },
+                React.createElement("small", { className: "sup-who" },
+                  m.by === "user" ? (row.userName || TR("Клиент")) : m.by === "bot" ? TR("Ассистент") : (m.name || TR("Поддержка"))),
+                React.createElement("p", null, m.text),
+                React.createElement("time", null, chatWhen(m.at)))),
+              thread && thread.typing && React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+                TR("Ассистент печатает…"))),
+            React.createElement("form", { className: "sup-form", style: { border: 0, padding: 0 },
+              onSubmit: (e) => { e.preventDefault(); reply(); } },
+              React.createElement("textarea", { value: text, rows: 3,
+                placeholder: TR("Ответ клиенту — уйдёт в его окно поддержки"),
+                onChange: (e) => setText(e.target.value),
+                onKeyDown: (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); reply(); } } }),
+              React.createElement(Btn, { variant: "primary", type: "submit", disabled: busy || !text.trim() }, TR("Ответить"))))));
+}
+
 function TabAdmin({ store, toast }) {
   const [ov, setOv] = useState(null);
   const [nonce, setNonce] = useState(0);
@@ -2547,6 +2669,8 @@ function TabAdmin({ store, toast }) {
         ? TR("Модели шагов на всю систему и пересчёт расхода по журналу токенов.")
         : view === "spend"
         ? TR("Сколько потратил каждый проект за выбранный период и сколько за это время продано страниц и минут.")
+        : view === "chats"
+        ? TR("Диалоги поддержки: ответы ассистента, передачи вам и ваши ответы.")
         : view === "payments"
         ? TR("Заказы на оплату, подтверждение оплат «по счёту», способы оплаты.")
         : view === "prices"
@@ -2560,7 +2684,7 @@ function TabAdmin({ store, toast }) {
       React.createElement("div", { className: "seg", role: "tablist" },
         [["summary", TR("Сводка")], ["access", TR("Роли и доступы")], ["chances", TR("Возможности")],
          ["metrics", TR("Метрики")], ["models", TR("Модели и расход")], ["spend", TR("Расход по проектам")],
-         ["prices", TR("Цены")], ["payments", TR("Оплаты")]].map(([key, label]) =>
+         ["prices", TR("Цены")], ["payments", TR("Оплаты")], ["chats", TR("Чаты")]].map(([key, label]) =>
           React.createElement("button", { key, role: "tab", "aria-pressed": view === key, "aria-selected": view === key,
             onClick: () => setView(key) }, label)))),
     view === "access" && React.createElement(TabAccess, { store, toast }),
@@ -2570,6 +2694,7 @@ function TabAdmin({ store, toast }) {
     view === "spend" && React.createElement(AdminProjectSpend, null),
     view === "prices" && React.createElement(AdminPrices, { toast }),
     view === "payments" && React.createElement(AdminPayments, { toast }),
+    view === "chats" && React.createElement(AdminChats, { toast }),
     view === "summary" && !ov && React.createElement("div", { className: "dim" }, TR("Загружаем сводку…")),
     view === "summary" && ov && React.createElement("div", { className: "col", style: { gap: 16 } },
       React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },

@@ -171,6 +171,21 @@ class FilePayOrders:
         orders.sort(key=lambda o: -int(o["id"]))
         return json.loads(json.dumps(orders[:int(limit)]))
 
+    def pay_paid_for(self, tenants) -> list:
+        """Оплаченные заказы списка организаций — ОДНИМ чтением (отчёт
+        партнёров: запрос на каждого клиента держал бы единственный воркер)."""
+        want = set(tenants or ())
+        with self._lock:
+            orders = list(self._load()["orders"].values())
+        got = [o for o in orders if o.get("tenant") in want and o.get("status") == "paid"]
+        return json.loads(json.dumps(got))
+
+    def pay_last_id(self, tenant: str) -> int:
+        """Номер последнего заказа организации (любого статуса), 0 — нет."""
+        with self._lock:
+            orders = list(self._load()["orders"].values())
+        return max((int(o["id"]) for o in orders if o.get("tenant") == tenant), default=0)
+
     def pay_next_id(self) -> int:
         with self._lock:
             data = self._load()
@@ -845,6 +860,21 @@ class PgStore:
             cur.execute(q, args)
             got = cur.fetchall()
         return [_as_doc(r[0]) for r in got]
+
+    def pay_paid_for(self, tenants) -> list:
+        want = list(tenants or ())
+        if not want:
+            return []
+        with self._cursor() as cur:
+            cur.execute("SELECT doc FROM pay_orders WHERE tenant = ANY(%s) AND status = 'paid'", (want,))
+            got = cur.fetchall()
+        return [_as_doc(r[0]) for r in got]
+
+    def pay_last_id(self, tenant: str) -> int:
+        with self._cursor() as cur:
+            cur.execute("SELECT max(id) FROM pay_orders WHERE tenant = %s", (tenant,))
+            got = cur.fetchone()
+        return int(got[0] or 0) if got else 0
 
     def pay_next_id(self) -> int:
         return self.next_counter("payOrder", 1000)

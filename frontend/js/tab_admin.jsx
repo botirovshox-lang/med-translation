@@ -321,6 +321,240 @@ function AdminReferral({ toast }) {
       TR("Уже начислено страниц: ") + (d.awarded || 0) + TR(" · пришло по ссылкам: ") + (d.invited || 0)));
 }
 
+/* ─── Партнёры: внешние сайты, приводящие клиентов ──────────────────
+   Ссылку `/r/КОД` выдаёт сервер; клиент закрепляется за партнёром при
+   регистрации навсегда; комиссию система СЧИТАЕТ по оплаченным заказам
+   (процент дня оплаты), а выплату администратор отмечает руками.
+   Отчёт партнёру собирается здесь текстом БЕЗ имён клиентов: это чужие
+   организации, и их названия партнёру не принадлежат. */
+function partnerUsd(v) { return "$" + Number(v || 0).toFixed(2); }
+function partnerMonth(today, back) {
+  const d = new Date((today || new Date().toISOString().slice(0, 10)) + "T12:00:00");
+  d.setDate(1); d.setMonth(d.getMonth() - back);
+  const a = d.toISOString().slice(0, 10);
+  d.setMonth(d.getMonth() + 1); d.setDate(0);
+  return [a, d.toISOString().slice(0, 10)];
+}
+function partnerReportText(p, d) {
+  const lines = [TR("Отчёт партнёру: ") + p.name,
+    TR("Период: ") + (d.from || d.to ? (d.from || "…") + " — " + (d.to || d.today) : TR("всё время")),
+    TR("Переходов по ссылке: ") + p.clicks + TR(" (с ") + d.clicksFrom + ")",
+    TR("Регистраций: ") + p.signups + TR(", подтвердили почту: ") + p.verified,
+    TR("Оплат за период: ") + p.period.orders + TR(" на ") + partnerUsd(p.period.usd),
+    TR("Ваш процент: ") + p.percent + "%",
+    TR("Начислено за период: ") + partnerUsd(p.period.commission),
+    TR("Начислено всего: ") + partnerUsd(p.life.commission) + TR(" · выплачено: ") + partnerUsd(p.paidOut)
+      + TR(" · к выплате: ") + partnerUsd(p.owed)];
+  const num = {};
+  (p.clients || []).slice().reverse().forEach((c, i) => { num[c.key] = i + 1; });
+  const rows = (p.orders || []).filter(o => o.inPeriod);
+  if (rows.length) {
+    lines.push("", TR("Оплаты:"));
+    rows.forEach(o => lines.push(o.day + " — " + TR("клиент ") + (num[o.client] || "?") + " — "
+      + partnerUsd(o.usd) + " → " + partnerUsd(o.commission) + " (" + o.percent + "%)"));
+  }
+  return lines.join("\n");
+}
+
+function AdminPartnerDetail({ p, d, run, toast }) {
+  const [att, setAtt] = useState("");
+  const [pay, setPay] = useState({ amount: "", at: "", note: "", paid: true });
+  const copy = (text, what) => { if (navigator.clipboard) navigator.clipboard.writeText(text); toast.info(TR("Скопировано"), what); };
+  const save = (body) => run(() => window.API.partnerSave(p.id, body), TR("Сохранено"));
+  const field = (key, label, extra) => React.createElement("label", { className: "col", style: { gap: 4, flex: "1 1 180px", minWidth: 0 } },
+    React.createElement("span", { className: "dim", style: { fontSize: 12 } }, label),
+    React.createElement("input", Object.assign({ className: "input", defaultValue: p[key], style: { fontSize: 16 },
+      onBlur: e => {
+        const num = extra && extra.type === "number";
+        // Пустое числовое поле — не «ноль»: стёртый процент обнулил бы комиссию.
+        if (num && String(e.target.value).trim() === "") { e.target.value = p[key]; return; }
+        const v = num ? Number(e.target.value) : e.target.value;
+        if (String(v) !== String(p[key])) save({ [key]: v }); } }, extra || {})));
+  const free = (d.tenants || []).filter(t => t.partner !== p.id);
+  const th = (hs) => React.createElement("thead", null, React.createElement("tr", null, hs.map((h, i) => React.createElement("th", { key: i }, h))));
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8, alignItems: "center" } },
+      React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, p.name + " · " + p.code),
+      React.createElement("label", { className: "row", style: { gap: 6, fontSize: 13 } },
+        React.createElement("input", { type: "checkbox", checked: p.active, onChange: e => save({ active: e.target.checked }) }),
+        TR("Партнёр действует"))),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center" } },
+      React.createElement("code", { style: { fontSize: 14, wordBreak: "break-all" } }, p.link),
+      React.createElement(Btn, { variant: "ghost", size: "sm", icon: "copy", onClick: () => copy(p.link, TR("Ссылка партнёра в буфере обмена.")) }, TR("Копировать ссылку"))),
+    React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 12 } },
+      TR("Эту ссылку партнёр ставит на свой сайт. Засчитывается последний переход до регистрации в течение ") + d.window
+      + TR(" дней; после регистрации клиент закреплён за партнёром навсегда, и процент идёт со всех его оплат.")),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 10 } },
+      field("name", TR("Название")),
+      field("contact", TR("Контакт (телефон, почта, Telegram)")),
+      field("percent", TR("Процент с оплат, %"), { type: "number", min: 0, max: 100, step: "0.1" }),
+      React.createElement("label", { className: "col", style: { gap: 4, flex: "1 1 180px" } },
+        React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("Куда ведёт ссылка")),
+        React.createElement(Select, { value: p.target, onChange: e => save({ target: e.target.value }) },
+          React.createElement("option", { value: "app" }, TR("Регистрация в сервисе")),
+          React.createElement("option", { value: "landing" }, TR("Лендинг сервиса")))),
+      React.createElement("label", { className: "col", style: { gap: 4, flex: "1 1 140px" } },
+        React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("Язык страницы")),
+        React.createElement(Select, { value: p.lang, onChange: e => save({ lang: e.target.value }) },
+          React.createElement("option", { value: "" }, TR("как у посетителя")),
+          React.createElement("option", { value: "ru" }, "Русский"),
+          React.createElement("option", { value: "uz" }, "O‘zbekcha"),
+          React.createElement("option", { value: "en" }, "English")))),
+    field("note", TR("Заметка")),
+    (p.percentLog || []).length > 1 ? React.createElement("div", { className: "dim", style: { fontSize: 12 } },
+      TR("Процент менялся: ") + p.percentLog.map(x => String(x.from).slice(0, 16) + " — " + x.percent + "%").join("; ")
+      + TR(". Каждая оплата считается процентом своего дня.")) : null,
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
+      React.createElement(Btn, { variant: "primary", size: "sm", icon: "copy", onClick: () => copy(partnerReportText(p, d), TR("Отчёт в буфере обмена — перешлите партнёру.")) }, TR("Скопировать отчёт для партнёра")),
+      p.clientsTotal === 0 && !(p.payouts || []).length
+        ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => { if (window.confirm(TR("Удалить партнёра?"))) run(() => window.API.partnerDelete(p.id), TR("Удалено")); } }, TR("Удалить"))
+        : null),
+
+    React.createElement("div", { className: "eyebrow", style: { margin: "8px 0 0" } }, TR("Клиенты")),
+    p.clients.length === 0 ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("По ссылке ещё никто не зарегистрировался."))
+    : React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
+        th([TR("Организация"), TR("С"), TR("Откуда"), TR("Почта"), TR("Оплат"), TR("Оплачено"), TR("Комиссия"), ""]),
+        React.createElement("tbody", null, p.clients.map(c => React.createElement("tr", { key: c.key },
+          React.createElement("td", null, c.name + (c.gone ? (c.why === "deleted" ? TR(" (удалена ") : c.why === "moved" ? TR(" (перенесена ") : TR(" (отвязана ")) + String(c.until || "").slice(0, 10) + ")" : c.active ? "" : TR(" (отключена)"))),
+          React.createElement("td", null, String(c.at || "—").slice(0, 10)),
+          React.createElement("td", null, c.via === "admin" ? TR("привязан вручную") : TR("по ссылке")),
+          React.createElement("td", null, c.verified ? TR("подтверждена") : TR("не подтверждена")),
+          React.createElement("td", null, c.orders),
+          React.createElement("td", null, partnerUsd(c.usd)),
+          React.createElement("td", null, partnerUsd(c.commission)),
+          React.createElement("td", { style: { textAlign: "right" } }, c.gone ? null :
+            React.createElement(Btn, { variant: "ghost", size: "sm",
+              onClick: () => { if (window.confirm(TR("Отвязать клиента от партнёра? Процент с его оплат перестанет считаться."))) run(() => window.API.partnerClient(p.id, { tenant: c.tenant, attach: false }), TR("Отвязан")); } },
+              TR("Отвязать")))))))),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center" } },
+      React.createElement(Select, { value: att, onChange: e => setAtt(e.target.value), "aria-label": TR("Организация") },
+        React.createElement("option", { value: "" }, TR("Привязать организацию вручную…")),
+        free.map(t => React.createElement("option", { key: t.id, value: t.id }, t.name + (t.partner ? TR(" (у другого партнёра)") : "")))),
+      React.createElement(Btn, { variant: "ghost", size: "sm", disabled: !att,
+        onClick: () => {
+          const t = free.find(x => x.id === att);
+          // Клиент другого партнёра переносится только с подтверждения: его
+          // прошлые оплаты остаются тому партнёру, новые пойдут этому.
+          if (t && t.partner && !window.confirm(TR("Эта организация — клиент другого партнёра. Перенести? Прошлые оплаты останутся за прежним партнёром."))) return;
+          run(() => window.API.partnerClient(p.id, { tenant: att, attach: true, move: !!(t && t.partner) }), TR("Привязан")).then(() => setAtt(""));
+        } }, TR("Привязать"))),
+
+    React.createElement("div", { className: "eyebrow", style: { margin: "8px 0 0" } }, TR("Оплаты клиентов")),
+    p.orders.length === 0 ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Оплат пока нет. Считаются только оплаченные заказы; пополнение страниц вручную в карточке организации сюда не входит."))
+    : React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
+        th([TR("Дата"), TR("Заказ"), TR("Организация"), TR("Сумма"), "$", "%", TR("Комиссия")]),
+        React.createElement("tbody", null, p.orders.map(o => React.createElement("tr", { key: o.id, style: o.inPeriod ? null : { opacity: 0.55 } },
+          React.createElement("td", null, o.day),
+          React.createElement("td", null, "№" + o.id),
+          React.createElement("td", null, o.name),
+          React.createElement("td", null, (o.amount || "") + " " + (o.currency || "")),
+          React.createElement("td", null, partnerUsd(o.usd)),
+          React.createElement("td", null, o.percent + "%"),
+          React.createElement("td", null, partnerUsd(o.commission))))))),
+
+    React.createElement("div", { className: "eyebrow", style: { margin: "8px 0 0" } }, TR("Выплаты партнёру")),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center" } },
+      React.createElement("input", { className: "input", type: "number", min: 0, step: "0.01", placeholder: TR("Сумма, $"), value: pay.amount, style: { maxWidth: 130, fontSize: 16 },
+        onChange: e => setPay(Object.assign({}, pay, { amount: e.target.value })) }),
+      React.createElement("input", { className: "input", type: "date", value: pay.at, max: d.today, style: { maxWidth: 160 },
+        onChange: e => setPay(Object.assign({}, pay, { at: e.target.value })) }),
+      React.createElement("input", { className: "input", placeholder: TR("Заметка (за какой период, как перевели)"), value: pay.note, style: { flex: "1 1 200px", fontSize: 16 },
+        onChange: e => setPay(Object.assign({}, pay, { note: e.target.value })) }),
+      React.createElement("label", { className: "row", style: { gap: 6, fontSize: 13 } },
+        React.createElement("input", { type: "checkbox", checked: pay.paid, onChange: e => setPay(Object.assign({}, pay, { paid: e.target.checked })) }),
+        TR("Выплачено")),
+      React.createElement(Btn, { variant: "primary", size: "sm", disabled: !(Number(pay.amount) > 0),
+        onClick: () => run(() => window.API.partnerPayout(p.id, { amount: Number(pay.amount), at: pay.at || null, note: pay.note, paid: pay.paid }), TR("Записано"))
+          .then(() => setPay({ amount: "", at: "", note: "", paid: true })) }, TR("Записать"))),
+    (p.payouts || []).length === 0 ? null : React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
+      th([TR("Дата"), TR("Сумма"), TR("Заметка"), TR("Выплачено"), ""]),
+      React.createElement("tbody", null, p.payouts.map(x => React.createElement("tr", { key: x.id },
+        React.createElement("td", null, x.at),
+        React.createElement("td", null, partnerUsd(x.amount)),
+        React.createElement("td", null, x.note || ""),
+        React.createElement("td", null, React.createElement("input", { type: "checkbox", checked: !!x.paid, "aria-label": TR("Выплачено"),
+          onChange: e => run(() => window.API.partnerPayoutSave(p.id, x.id, { paid: e.target.checked }), TR("Сохранено")) })),
+        React.createElement("td", { style: { textAlign: "right" } }, React.createElement(Btn, { variant: "ghost", size: "sm",
+          onClick: () => { if (window.confirm(TR("Удалить запись о выплате?"))) run(() => window.API.partnerPayoutDelete(p.id, x.id), TR("Удалено")); } }, TR("Удалить")))))))));
+}
+
+function AdminPartners({ toast }) {
+  const [d, setD] = useState(null);
+  const [range, setRange] = useState(["", ""]);
+  const [nonce, setNonce] = useState(0);
+  const [open, setOpen] = useState(null);
+  const [nw, setNw] = useState({ name: "", percent: "", target: "app" });
+  useEffect(() => {
+    let dead = false;
+    window.API.safeCall(() => window.API.partners(range[0], range[1])).then(r => { if (!dead && r && r.ok) setD(r); });
+    return () => { dead = true; };
+  }, [range[0], range[1], nonce]);
+  if (!d) return React.createElement("div", { className: "dim" }, TR("Загружаем партнёров…"));
+  const run = async (fn, okMsg) => {
+    try { await fn(); if (okMsg) toast.success(okMsg); setNonce(n => n + 1); }
+    catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+  };
+  const preset = (key) => setRange(key === "all" ? ["", ""] : partnerMonth(d.today, key === "prev" ? 1 : 0));
+  const sel = d.partners.find(p => p.id === open);
+  const tot = d.partners.reduce((a, p) => ({ usd: a.usd + p.period.usd, com: a.com + p.period.commission, owed: a.owed + p.owed }), { usd: 0, com: 0, owed: 0 });
+  return React.createElement("div", { className: "col", style: { gap: 16 } },
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+      React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Новый партнёр")),
+      React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 12 } },
+        TR("Партнёр — сайт или человек, который приводит клиентов. Он получает ссылку; кто по ней зарегистрировался, тот его клиент навсегда. Комиссию система считает по оплаченным заказам, выплату вы отмечаете здесь руками.")),
+      React.createElement("div", { className: "row row-wrap", style: { gap: 8, alignItems: "center" } },
+        React.createElement("input", { className: "input", placeholder: TR("Название (сайт, человек)"), value: nw.name, style: { flex: "1 1 220px", fontSize: 16 },
+          onChange: e => setNw(Object.assign({}, nw, { name: e.target.value })) }),
+        React.createElement("input", { className: "input", type: "number", min: 0, max: 100, step: "0.1", placeholder: TR("Процент, %"), value: nw.percent, style: { maxWidth: 120, fontSize: 16 },
+          onChange: e => setNw(Object.assign({}, nw, { percent: e.target.value })) }),
+        React.createElement(Select, { value: nw.target, onChange: e => setNw(Object.assign({}, nw, { target: e.target.value })), "aria-label": TR("Куда ведёт ссылка") },
+          React.createElement("option", { value: "app" }, TR("Регистрация в сервисе")),
+          React.createElement("option", { value: "landing" }, TR("Лендинг сервиса"))),
+        React.createElement(Btn, { variant: "primary", size: "sm", disabled: !nw.name.trim(),
+          onClick: () => run(async () => { const r = await window.API.partnerCreate({ name: nw.name, percent: Number(nw.percent || 0), target: nw.target }); setOpen(r.id); }, TR("Партнёр заведён"))
+            .then(() => setNw({ name: "", percent: "", target: "app" })) }, TR("Завести и получить ссылку")))),
+    React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
+      React.createElement("div", { className: "row between row-wrap", style: { gap: 8, alignItems: "center" } },
+        React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Партнёры")),
+        React.createElement("div", { className: "row row-wrap", style: { gap: 6, alignItems: "center" } },
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => preset("cur") }, TR("Этот месяц")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => preset("prev") }, TR("Прошлый месяц")),
+          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => preset("all") }, TR("Всё время")),
+          React.createElement("input", { type: "date", className: "input", value: range[0], max: d.today, style: { maxWidth: 160 }, "aria-label": TR("С"), onChange: e => setRange([e.target.value, range[1]]) }),
+          React.createElement("input", { type: "date", className: "input", value: range[1], max: d.today, style: { maxWidth: 160 }, "aria-label": TR("По"), onChange: e => setRange([range[0], e.target.value]) }))),
+      React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 12 } },
+        TR("Регистрации и оплаты — за выбранный период, «к выплате» — за всё время. Переходы считаются с ") + d.clicksFrom
+        + TR(": журнал переходов хранится ") + (d.clicksDays || 90) + TR(" дн., повтор с той же сети за час не считается.")),
+      d.partners.length === 0 ? React.createElement("p", { className: "dim", style: { margin: 0 } }, TR("Партнёров пока нет."))
+      : React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
+          React.createElement("thead", null, React.createElement("tr", null,
+            [TR("Партнёр"), "%", TR("Переходы"), TR("Регистрации"), TR("Платящие"), TR("Оплачено"), TR("Комиссия"), TR("Выплачено"), TR("К выплате"), ""]
+              .map((h, i) => React.createElement("th", { key: i }, h)))),
+          React.createElement("tbody", null, d.partners.map(p => React.createElement("tr", { key: p.id, style: p.active ? null : { opacity: 0.6 } },
+            React.createElement("td", null, p.name + (p.active ? "" : TR(" (отключён)"))),
+            React.createElement("td", null, p.percent),
+            React.createElement("td", null, p.clicks),
+            React.createElement("td", null, p.signups + " / " + p.verified),
+            React.createElement("td", null, p.paying),
+            React.createElement("td", null, partnerUsd(p.period.usd)),
+            React.createElement("td", null, partnerUsd(p.period.commission)),
+            React.createElement("td", null, partnerUsd(p.paidOut)),
+            React.createElement("td", { style: { fontWeight: p.owed > 0 ? 700 : 400 } }, partnerUsd(p.owed)),
+            React.createElement("td", { style: { textAlign: "right" } },
+              React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setOpen(open === p.id ? null : p.id) },
+                open === p.id ? TR("Свернуть") : TR("Открыть")))))),
+          React.createElement("tfoot", null, React.createElement("tr", null,
+            React.createElement("td", { colSpan: 5 }, TR("Итого")),
+            React.createElement("td", null, partnerUsd(tot.usd)),
+            React.createElement("td", null, partnerUsd(tot.com)),
+            React.createElement("td", null, ""),
+            React.createElement("td", null, partnerUsd(tot.owed)),
+            React.createElement("td", null, ""))))),
+      React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 12 } },
+        TR("Регистрации: всего / подтвердили почту. Комиссия — процент, действовавший в день оплаты; пополнение страниц вручную в неё не входит."))),
+    sel ? React.createElement(AdminPartnerDetail, { key: sel.id, p: sel, d, run, toast }) : null);
+}
+
 function AdminTesting({ toast }) {
   const [d, setD] = useState(null);
   const reload = () => window.API.safeCall(() => window.API.testing()).then(r => setD(r && r.ok ? r : null));
@@ -2673,6 +2907,8 @@ function TabAdmin({ store, toast }) {
         ? TR("Диалоги поддержки: ответы ассистента, передачи вам и ваши ответы.")
         : view === "payments"
         ? TR("Заказы на оплату, подтверждение оплат «по счёту», способы оплаты.")
+        : view === "partners"
+        ? TR("Сайты и люди, которые приводят клиентов: переходы, регистрации, оплаты, комиссия и выплаты.")
         : view === "prices"
         ? TR("Цены продажи, курсы и правила по функциям: всем, организации или отдельному человеку.")
         : view === "chances"
@@ -2684,7 +2920,7 @@ function TabAdmin({ store, toast }) {
       React.createElement("div", { className: "seg", role: "tablist" },
         [["summary", TR("Сводка")], ["access", TR("Роли и доступы")], ["chances", TR("Возможности")],
          ["metrics", TR("Метрики")], ["models", TR("Модели и расход")], ["spend", TR("Расход по проектам")],
-         ["prices", TR("Цены")], ["payments", TR("Оплаты")], ["chats", TR("Чаты")]].map(([key, label]) =>
+         ["prices", TR("Цены")], ["payments", TR("Оплаты")], ["partners", TR("Партнёры")], ["chats", TR("Чаты")]].map(([key, label]) =>
           React.createElement("button", { key, role: "tab", "aria-pressed": view === key, "aria-selected": view === key,
             onClick: () => setView(key) }, label)))),
     view === "access" && React.createElement(TabAccess, { store, toast }),
@@ -2694,6 +2930,7 @@ function TabAdmin({ store, toast }) {
     view === "spend" && React.createElement(AdminProjectSpend, null),
     view === "prices" && React.createElement(AdminPrices, { toast }),
     view === "payments" && React.createElement(AdminPayments, { toast }),
+    view === "partners" && React.createElement(AdminPartners, { toast }),
     view === "chats" && React.createElement(AdminChats, { toast }),
     view === "summary" && !ov && React.createElement("div", { className: "dim" }, TR("Загружаем сводку…")),
     view === "summary" && ov && React.createElement("div", { className: "col", style: { gap: 16 } },

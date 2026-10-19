@@ -290,7 +290,10 @@ function onUnauthorized() {
     adminFeedbackDelete: (id)               => call("DELETE", "/admin/feedback/" + encodeURIComponent(id)),
     register:      (body)                   => call("POST",   "/auth/register", Object.assign({ uiLang: uiLangNow(),
                                                   // Страница лендинга, с которой пришли (когорта по источнику).
-                                                  srcPage: (window.TELEMETRY && window.TELEMETRY.entry && window.TELEMETRY.entry()) || "" }, body)),
+                                                  srcPage: (window.TELEMETRY && window.TELEMETRY.entry && window.TELEMETRY.entry()) || "",
+                                                  // Когда в браузер попал `ref`: сервер сравнит его с меткой
+                                                  // ссылки партнёра — засчитывается ПОСЛЕДНИЙ переход.
+                                                  refAt: (() => { try { return Number(localStorage.getItem("mct-ref-at")) || 0; } catch (e) { return 0; } })() }, body)),
     resendCode:    (email)                  => call("POST",   "/auth/resend", { email, uiLang: uiLangNow() }),
     forgotPassword:(email)                  => call("POST",   "/auth/forgot", { email, uiLang: uiLangNow() }),
     /* Эти две двери — тоже вход, и язык экрана до них уже доехал своим
@@ -393,6 +396,15 @@ function onUnauthorized() {
     projectSpendDetail: (tenant, project, from, to) => call("GET", `/admin/project-spend/detail?tenant=${encodeURIComponent(tenant || "")}&project=${encodeURIComponent(project || 0)}&from=${encodeURIComponent(from || "")}&to=${encodeURIComponent(to || "")}`),
     referralCfg:   ()                       => call("GET",    "/admin/referral"),
     referralSave:  (body)                   => call("POST",   "/admin/referral", body),
+    // Партнёры: внешние сайты, их клиенты, оплаты и выплаты (только суперу).
+    partners:      (from, to)               => call("GET",    `/admin/partners?from=${encodeURIComponent(from || "")}&to=${encodeURIComponent(to || "")}`),
+    partnerCreate: (body)                   => call("POST",   "/admin/partners", body),
+    partnerSave:   (pid, body)              => call("POST",   `/admin/partners/${pid}`, body),
+    partnerDelete: (pid)                    => call("DELETE", `/admin/partners/${pid}`),
+    partnerClient: (pid, body)              => call("POST",   `/admin/partners/${pid}/clients`, body),
+    partnerPayout: (pid, body)              => call("POST",   `/admin/partners/${pid}/payouts`, body),
+    partnerPayoutSave: (pid, xid, body)     => call("POST",   `/admin/partners/${pid}/payouts/${xid}`, body),
+    partnerPayoutDelete: (pid, xid)         => call("DELETE", `/admin/partners/${pid}/payouts/${xid}`),
     userDelete:    (uid)                    => call("DELETE", `/admin/users/${uid}`),
     // Область действия записи глоссария: знание проекта ↔ знание организации.
     promoteTerm:   (body)                   => call("POST",   "/glossary/promote", body),

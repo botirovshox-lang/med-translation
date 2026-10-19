@@ -1079,6 +1079,35 @@ __METRIKA__
   var root = document.documentElement;
   root.classList.remove("nojs"); root.classList.add("js");
   var APP = "https://simpletranslate.me";
+  /* Метка партнёра или приглашения (?ref=КОД) переживает переходы по
+     лендингу и доезжает до приложения в каждой ссылке на него: человек
+     пришёл со страницы партнёра, почитал цены и нажал «Войти» — клиент
+     всё равно его. Окно — 90 дней, как у cookie ссылки /r/КОД. */
+  var REF = (function () {
+    var got = (new URLSearchParams(location.search).get("ref") || "").toUpperCase().replace(/-/g, "");
+    try {
+      if (/^[A-Z2-9]{4,16}$/.test(got)) { localStorage.setItem("mct-land-ref", got + "|" + Date.now()); return got; }
+      var v = (localStorage.getItem("mct-land-ref") || "").split("|");
+      if (/^[A-Z2-9]{4,16}$/.test(v[0]) && Date.now() - Number(v[1] || 0) < 90 * 864e5) return v[0];
+    } catch (e) { /* хранилище закрыто */ }
+    return /^[A-Z2-9]{4,16}$/.test(got) ? got : "";
+  })();
+  function withRef(q) { if (REF && !q.get("ref")) q.set("ref", REF); return q; }
+  /* И обычное нажатие, и средняя кнопка («открыть в новой вкладке»), и
+     клавиатура: метка дописывается к адресу ДО перехода. Оферта и политика
+     метки не получают — регистрацией они не являются. */
+  function refLink(e) {
+    var el = e.target && e.target.closest ? e.target.closest("a[href]") : null;
+    if (!el || !REF) return;
+    var h = el.getAttribute("href") || "";
+    if (h.indexOf(APP + "/") !== 0 || /[?&]ref=/.test(h)) return;
+    var path = h.slice(APP.length).split(/[?#]/)[0];
+    if (path === "/terms" || path === "/privacy") return;
+    el.setAttribute("href", h + (h.indexOf("?") < 0 ? "?" : "&") + "ref=" + encodeURIComponent(REF));
+  }
+  document.addEventListener("click", refLink, true);
+  document.addEventListener("auxclick", refLink, true);
+  document.addEventListener("contextmenu", refLink, true);
   /* Макет: «Перевести» открывает окно-заглушку, файл никуда не уходит.
      Боевая передача (фрейм /handoff) ниже уже написана и выключена этим
      флагом; включение и проверка: пункт 1 в design/start/BACKLOG.md. */
@@ -1417,7 +1446,7 @@ __METRIKA__
     if (!tgt) { say("eTgt"); chipsEl.classList.add("need"); otherEl.classList.add("need"); var c = chipsEl.querySelector(".chip"); if (c) c.focus(); return; }
     if (src === tgt) { say("eSame"); return; }
     /* Всё, что пришло в адресе (метка приглашения, utm), едет дальше. */
-    var q = new URLSearchParams(location.search);
+    var q = withRef(new URLSearchParams(location.search));
     q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang); q.set("from", lang === "ru" ? "index" : lang);
     var url = APP + "/?" + q.toString();
     ymGoal("tr_submit");
@@ -2022,7 +2051,7 @@ __METRIKA__
     });
   }
   function tlServiceUrl(src, tgt) {
-    var q = new URLSearchParams(location.search);
+    var q = withRef(new URLSearchParams(location.search));
     q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang); q.set("from", lang === "ru" ? "index" : lang);
     return APP + "/?" + q.toString();
   }

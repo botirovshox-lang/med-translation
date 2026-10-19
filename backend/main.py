@@ -55,7 +55,7 @@ from datetime import datetime, timedelta
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi import Response, Query
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
@@ -5679,6 +5679,9 @@ support_bot_mod = _safe_import("support_bot")
 # ДЕНЬГИ, и правила счёта (высшая точка, потолки, почему начисляем
 # по ПОДТВЕРЖДЁННОЙ почте) собраны в шапке модуля — читать её обязательно.
 referral_mod = _safe_import("referral")
+# Партнёры: внешние сайты, приводящие клиентов, и их комиссия деньгами
+# (выплата руками). Законы — в шапке модуля.
+partners_mod = _safe_import("partners")
 # Наглядная инструкция `/tutorial`: рисунки экранов, три языка, без STATE.
 tutorial_mod = _safe_import("tutorial")
 # PDF собирается сторонним конвертером из готового «как в оригинале».
@@ -6409,6 +6412,10 @@ class RegisterRequest(BaseModel):
     # Неизвестный код молча игнорируется — чужая или устаревшая ссылка
     # не должна закрывать регистрацию.
     ref: str = ""
+    # Когда этот `ref` попал в браузер (мс, localStorage `mct-ref-at`): нужен,
+    # чтобы сравнить его с меткой ссылки партнёра (cookie) — засчитывается
+    # ПОСЛЕДНИЙ переход (`partners.py`, закон 2). Ноль — метка старше окна.
+    refAt: float = 0
     # С какой страницы лендинга пришли (`?from=` → telemetry.js). Закрытый
     # список LAND_PAGES; чужое — «direct». Это метка для когорты, а не дверь.
     srcPage: str = ""
@@ -6486,7 +6493,7 @@ def signup_info():
 
 
 @app.post("/api/auth/register")
-def register(req: RegisterRequest, request: Request):
+def register(req: RegisterRequest, request: Request, response: Response):
     """Своя организация одним шагом: почта, пароль, название. Человек
     становится её владельцем; лимит расхода — SIGNUP_TRIAL_USD."""
     if not SIGNUP_ENABLED:
@@ -6543,7 +6550,26 @@ def register(req: RegisterRequest, request: Request):
     # которого никто не открывал. Код кладём как ПРИШЁЛ (нормализованным),
     # не проверяя, есть ли такой: проверка — дело начисления, а отказ
     # регистрации из-за чужой ссылки был бы наказанием не тому человеку.
-    if referral_mod:
+    # Следов перехода два: код в теле (localStorage — последний `?ref=` в адресе
+    # приложения, со временем `refAt`) и cookie ссылки партнёра `/r/КОД` (со
+    # своим временем). Засчитывается ПОСЛЕДНИЙ (`partners.py`, закон 2): ссылка
+    # партнёра, ведущая на лендинг, localStorage приложения не трогает, и без
+    # сравнения старый код в теле перекрывал бы свежий переход партнёра.
+    _ck_partner, _ck_at = _partner_cookie(request)
+    _use_body = bool(referral_mod and referral_mod.norm_code(req.ref))
+    _partner = _partner_by_code(req.ref) if _use_body else None
+    if _ck_partner is not None and (not _use_body or _ck_at > float(req.refAt or 0) / 1000.0):
+        _partner, _use_body = _ck_partner, False
+    if _ck_at or request.cookies.get(partners_mod.COOKIE if partners_mod else "mct_ref"):
+        # Метка сделала своё дело: на общем компьютере следующий человек
+        # не должен унаследовать чужое происхождение.
+        response.delete_cookie(partners_mod.COOKIE if partners_mod else "mct_ref", path="/")
+    if _partner is not None:
+        # Клиент партнёра закрепляется НАВСЕГДА (`partners.py`, закон 2).
+        tenant["partner"] = int(_partner["id"])
+        tenant["partnerAt"] = today
+        tenant["partnerVia"] = "link"
+    elif referral_mod and _use_body:
         code = referral_mod.norm_code(req.ref)
         if code:
             tenant["refBy"] = code
@@ -6744,6 +6770,11 @@ def reset_password(req: CodeRequest, request: Request):
         trec = _tenant_rec(user.get("tenant") or "")
         if trec is not None and trec.get("signup") and trec.get("refBy") and not trec.get("refPaidAt"):
             trec.pop("refBy", None)
+        # Та же причина для партнёра: регистрацию делал не хозяин ящика,
+        # и процент с оплат хозяина партнёру не принадлежит.
+        if trec is not None and trec.get("signup") and trec.get("partnerVia") == "link":
+            for k in ("partner", "partnerAt", "partnerVia"):
+                trec.pop(k, None)
     user["hash"], user["salt"] = _hash_password(req.password)
     user.pop("replacedOther", None)     # пароль теперь задал хозяин ящика
     user["emailVerified"] = True        # код пришёл на эту почту — она рабочая
@@ -8036,6 +8067,13 @@ def admin_tenant_delete(tid: str, request: Request):
             for k in ("refBy", "refAt", "refPaid", "refPaidAt", "refPaidOut"):
                 t.pop(k, None)
             ref_orphans += 1
+    # Клиент партнёра: оплаты удалённой организации остаются деньгами,
+    # с которых партнёру уже причитается процент, — отчёт обязан их видеть.
+    # Номер организации переиспользуется (`_new_tenant_id`), поэтому вместе
+    # с номером запоминается водораздел — последний номер заказа: оплаты
+    # новой жизни слага не его (`_partner_leave`).
+    if rec.get("partner") is not None:
+        _partner_leave(rec, "deleted")
     _tenants().remove(rec)
     _invalidate_gloss_index()
     _audit("tenant.delete", tenant_target=tid, users=len(users), members=orphans,
@@ -8410,6 +8448,11 @@ def _metrics_events(rows: list) -> dict:
             by_tenant_dead[t][code[5:]] = by_tenant_dead[t].get(code[5:], 0) + n
         elif code.startswith("funnel."):
             funnel[code[7:]] = funnel.get(code[7:], 0) + n
+            if str(r.get("tenant") or "").startswith("partner:"):
+                # Переход по ссылке партнёра: «организация» события — сам
+                # партнёр (`partner_redirect`), а не клиент; среди организаций
+                # ей не место, подсказки по организациям её не касаются.
+                continue
             # Организация нужна тут по той же причине, что у `cap.`/`dead.`:
             # «файлов принесли 40, прогонов 0» — наблюдение, а «организация X
             # принесла 12 файлов и не запустила ни одного» — разговор
@@ -13617,8 +13660,7 @@ def _ref_code_of(tid: str) -> str:
         if rec is None:
             return ""
         if not rec.get("refCode"):
-            taken = {t.get("refCode") for t in _tenants() if t.get("refCode")}
-            code = referral_mod.new_code(taken)
+            code = referral_mod.new_code(_taken_ref_codes())
             if not code:
                 return ""
             rec["refCode"] = code
@@ -43711,6 +43753,496 @@ def admin_referral_set(req: ReferralPatch, request: Request):
     _audit("referral.settings", **{k: cfg.get(k) for k in referral_mod.defaults()})
     save_state(STATE)
     return {"ok": True, "referral": cfg}
+
+
+# ─── Партнёры: внешние сайты, приводящие клиентов ───────────────────
+# Законы — в шапке `backend/partners.py`. Здесь:
+#   * `GET /r/{код}` — ссылка партнёра: считает переход, ставит метку
+#     (cookie «КОД.время» на WINDOW_DAYS) и ведёт на регистрацию или лендинг;
+#   * `/api/admin/partners…` — заведение, отчёт, выплаты; ТОЛЬКО супер.
+# Комиссию система СЧИТАЕТ, а выплачивает администратор руками.
+# Модель не зовётся нигде, в `_PAID` этим дверям не место.
+#
+# История клиента: пока он закреплён, его оплаты считаются по записи
+# организации (`partner`, `partnerAt`). Ушёл — удалили организацию, отвязали
+# или перенесли к другому партнёру — у партнёра остаётся запись `gone`
+# с ВОДОРАЗДЕЛОМ `upto` (номер последнего заказа организации на тот момент).
+# Номера заказов растут на весь сервис, поэтому водораздел однозначно делит
+# оплаты прежней жизни и новой даже в пределах одного дня и при
+# переиспользованном номере организации (`_new_tenant_id`): ни одна оплата
+# не засчитывается двоим и не пропадает у того, кому уже причиталась.
+
+def _partners() -> list:
+    return STATE.setdefault("partners", [])
+
+
+def _partner_by_id(pid) -> Optional[dict]:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return None
+    return next((p for p in _partners() if int(p.get("id") or 0) == pid), None)
+
+
+def _partner_by_code(raw) -> Optional[dict]:
+    """Действующий партнёр по коду; отключённый — None: новых клиентов ему
+    не засчитываем, прежние остаются за ним."""
+    code = referral_mod.norm_code(raw) if referral_mod else ""
+    if not code:
+        return None
+    p = next((p for p in _partners() if p.get("code") == code), None)
+    return p if p is not None and p.get("active", True) else None
+
+
+def _partner_cookie(request: Request) -> tuple:
+    """(партнёр, время перехода в секундах) из cookie ссылки `/r/`. Время
+    нужно регистрации, чтобы сравнить переход с кодом в теле запроса."""
+    raw = request.cookies.get(partners_mod.COOKIE) if partners_mod else None
+    if not raw:
+        return None, 0.0
+    code, _, at = str(raw).partition(".")
+    try:
+        at_f = float(at or 0)
+    except ValueError:
+        at_f = 0.0
+    p = _partner_by_code(code)
+    return (p, at_f) if p is not None else (None, 0.0)
+
+
+def _taken_ref_codes() -> set:
+    """Коды приглашений и партнёров — ОДНО пространство: по коду регистрация
+    решает, чья это метка, и совпадение отдало бы клиента не тому."""
+    taken = {t.get("refCode") for t in _tenants() if t.get("refCode")}
+    taken |= {p.get("code") for p in _partners() if p.get("code")}
+    return taken
+
+
+def _partner_link(p: dict) -> str:
+    site = (getattr(tg_mod, "SITE", "") or os.environ.get("PUBLIC_BASE_URL", "")).strip().rstrip("/")
+    return (site + "/r/" + p["code"]) if site else "/r/" + p["code"]
+
+
+def _partner_now() -> str:
+    """Часы партнёрского учёта — те же, что у `paidAt` заказов: сравнивать
+    моменты из разных часов значило бы у полуночи отдать оплату не тому
+    проценту или не той жизни клиента."""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _partner_leave(rec: dict, why: str) -> None:
+    """Клиент уходит от своего партнёра (удаление, отвязка, перенос): у
+    партнёра остаётся запись прошлого с водоразделом. Под `_SAVE_LOCK`."""
+    pid = rec.get("partner")
+    p = _partner_by_id(pid) if pid is not None else None
+    if p is not None:
+        try:
+            upto = int(_pays().pay_last_id(rec["id"]))
+        except Exception as e:
+            # Без водораздела отчёт не поделит оплаты — лучше отказать, чем
+            # молча отдать чужие деньги не тому партнёру.
+            raise HTTPException(503, "Заказы не прочитаны — повторите: %s" % e)
+        p.setdefault("gone", []).append({"tenant": rec["id"], "name": rec.get("name") or rec["id"],
+                                         "at": rec.get("partnerAt") or "", "via": rec.get("partnerVia") or "link",
+                                         "until": _partner_now(), "upto": upto, "why": why})
+    for k in ("partner", "partnerAt", "partnerVia"):
+        rec.pop(k, None)
+
+
+_PARTNER_SEEN: dict = {}            # (партнёр, сеть) → время: повтор за час не считается
+_PARTNER_SEEN_LOCK = threading.Lock()
+_PARTNER_SEEN_MAX = 20000
+
+
+@app.get("/r/{code}")
+def partner_redirect(code: str, request: Request):
+    """Ссылка партнёра. Неизвестный или отключённый код ведёт на главную
+    приложения без метки: битая ссылка на чужом сайте не должна показывать
+    ошибку человеку, который ни в чём не виноват."""
+    p = _partner_by_code(code) if partners_mod else None
+    if p is None:
+        resp = RedirectResponse("/", status_code=302)
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+    # Переход — счётчик событий, а не запись в STATE (инвариант 34). Обновление
+    # страницы и боты-предпросмотрщики мессенджеров дали бы второй счёт,
+    # поэтому одна сеть — один переход в час. Память ограничена: под потоком
+    # запросов она чистится целиком, а не растёт (худшее — лишний счёт).
+    now = time.time()
+    key = (int(p["id"]), _rate_ip(request))
+    with _PARTNER_SEEN_LOCK:
+        fresh = now - _PARTNER_SEEN.get(key, 0) > 3600
+        if len(_PARTNER_SEEN) >= _PARTNER_SEEN_MAX:
+            for k in [k for k, t in _PARTNER_SEEN.items() if now - t > 3600]:
+                _PARTNER_SEEN.pop(k, None)
+            if len(_PARTNER_SEEN) >= _PARTNER_SEEN_MAX:
+                _PARTNER_SEEN.clear()
+        _PARTNER_SEEN[key] = now
+    if fresh:
+        _ev("funnel.partnerClick", "partner:%d" % int(p["id"]))
+    url = partners_mod.target_url(p, "", (LANDING_ORIGINS[0] if LANDING_ORIGINS else ""),
+                                  p["code"], dict(request.query_params))
+    resp = RedirectResponse(url, status_code=302)
+    resp.headers["Cache-Control"] = "no-store"
+    https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    # Метка на ДОМЕНЕ ПРИЛОЖЕНИЯ: человек может уйти на лендинг, почитать
+    # и вернуться через его кнопку — cookie доедет до регистрации сама.
+    # Время перехода внутри метки: регистрация сравнит его с кодом в теле.
+    resp.set_cookie(partners_mod.COOKIE, "%s.%d" % (p["code"], int(now)),
+                    max_age=partners_mod.WINDOW_DAYS * 86400,
+                    path="/", samesite="lax", secure=https, httponly=True)
+    return resp
+
+
+def _partner_super(request: Request) -> None:
+    if not _is_super(request):
+        raise HTTPException(403, "Партнёры — только суперпользователю")
+    if not partners_mod or not referral_mod:
+        raise HTTPException(503, "Партнёрская программа недоступна")
+
+
+def _partner_clicks(d_from: str, d_to: str) -> dict:
+    """Переходы по партнёрам за период. Дальше срока хранения счётчиков
+    событий (`_partner_clicks_days`) переходов нет."""
+    out: dict = {}
+    for r in _events_rows(d_from, d_to):
+        if r.get("code") == "funnel.partnerClick" and str(r.get("tenant") or "").startswith("partner:"):
+            try:
+                pid = int(str(r["tenant"]).split(":", 1)[1])
+            except (ValueError, IndexError):
+                continue
+            out[pid] = out.get(pid, 0) + int(r.get("n") or 0)
+    return out
+
+
+def _partner_clicks_days() -> int:
+    return int(getattr(metrics_mod, "KEEP_DAYS", 90)) if STORE.kind == "pg" else int(EVENTS_FILE_DAYS)
+
+
+def _partner_report(p: dict, d_from: str, d_to: str, clicks: int, verified_tenants: set,
+                    paid_by_tenant: dict, marks: dict) -> dict:
+    """Отчёт одного партнёра. `paid_by_tenant` — оплаченные заказы клиентов
+    (одним чтением на всех), `marks` — {организация: наибольший водораздел
+    её прошлых жизней у ВСЕХ партнёров}: живой клиент считает только оплаты
+    после него."""
+    D = partners_mod.dec
+    pid = int(p["id"])
+    clients = [{"tenant": t["id"], "name": t.get("name") or t["id"], "at": t.get("partnerAt") or "",
+                "via": t.get("partnerVia") or "link", "active": bool(t.get("active", True)),
+                "verified": t["id"] in verified_tenants, "gone": False, "why": "", "until": "",
+                "lo": int(marks.get(t["id"]) or 0), "hi": None}
+               for t in _tenants() if t.get("partner") is not None and int(t["partner"]) == pid]
+    for g in (p.get("gone") or []):
+        # Нижняя граница прошлой жизни — её же начало (`at`); верхняя — водораздел.
+        clients.append({"tenant": g.get("tenant"), "name": g.get("name"), "at": g.get("at") or "",
+                        "via": g.get("via") or "link", "active": False, "verified": True, "gone": True,
+                        "why": g.get("why") or "deleted", "until": str(g.get("until") or g.get("deletedAt") or ""),
+                        "lo": 0, "hi": int(g.get("upto") if g.get("upto") is not None else 10 ** 12)})
+    orders, life_usd, life_com, per_usd, per_com = [], D(0), D(0), D(0), D(0)
+    for n, c in enumerate(clients):
+        c.update({"key": "%s#%d" % (c["tenant"], n), "orders": 0, "usd": 0.0, "commission": 0.0})
+        cu, cc = D(0), D(0)
+        for o in paid_by_tenant.get(c["tenant"], ()):
+            oid = int(o.get("id") or 0)
+            at = str(o.get("paidAt") or "")
+            if oid <= c["lo"] or (c["hi"] is not None and oid > c["hi"]):
+                continue          # оплата другой жизни этой организации
+            if at[:len(c["at"])] < c["at"]:
+                continue          # оплата до того, как клиент стал клиентом партнёра
+            day = at[:10]
+            pct = partners_mod.percent_at(p, at)
+            com = partners_mod.commission(o.get("usd"), pct)
+            usd = D(o.get("usd"))
+            cu += usd
+            cc += com
+            c["orders"] += 1
+            life_usd += usd
+            life_com += com
+            inp = partners_mod.in_period(day, d_from, d_to)
+            if inp:
+                per_usd += usd
+                per_com += com
+            orders.append({"id": oid, "client": c["key"], "tenant": c["tenant"], "name": c["name"], "day": day,
+                           "usd": partners_mod.money(usd), "pages": int(o.get("pages") or 0),
+                           "minutes": int(o.get("minutes") or 0), "amount": o.get("amount"),
+                           "currency": o.get("currency"), "percent": float(pct),
+                           "commission": partners_mod.money(com), "inPeriod": inp})
+        c["usd"], c["commission"] = partners_mod.money(cu), partners_mod.money(cc)
+        c.pop("lo", None)
+        c.pop("hi", None)
+    orders.sort(key=lambda o: (o["day"], o.get("id") or 0), reverse=True)
+    pays = p.get("payouts") or []
+    paid = sum((D(x.get("amount")) for x in pays if x.get("paid")), D(0))
+    planned = sum((D(x.get("amount")) for x in pays if not x.get("paid")), D(0))
+    # Регистрации периода — только пришедшие ПО ССЫЛКЕ и только живые записи
+    # (у прошлой жизни своя дата начала уже посчитана тогда).
+    in_per = [c for c in clients if not c["gone"] and c["via"] == "link"
+              and partners_mod.in_period(c["at"][:10], d_from, d_to)]
+    return {
+        "id": pid, "code": p.get("code"), "name": p.get("name") or "", "contact": p.get("contact") or "",
+        "note": p.get("note") or "", "percent": float(D(p.get("percent"))), "target": p.get("target") or "app",
+        "lang": p.get("lang") or "", "active": bool(p.get("active", True)), "createdAt": p.get("createdAt"),
+        "link": _partner_link(p), "percentLog": p.get("percentLog") or [],
+        "clicks": clicks,
+        "signups": len(in_per), "verified": sum(1 for c in in_per if c["verified"]),
+        "paying": sum(1 for c in clients if c["orders"]),
+        "clientsTotal": len(clients),
+        "period": {"orders": sum(1 for o in orders if o["inPeriod"]),
+                   "usd": partners_mod.money(per_usd), "commission": partners_mod.money(per_com)},
+        "life": {"orders": len(orders), "usd": partners_mod.money(life_usd),
+                 "commission": partners_mod.money(life_com)},
+        "paidOut": partners_mod.money(paid), "planned": partners_mod.money(planned),
+        "owed": partners_mod.money(life_com - paid),
+        "clients": sorted(sorted(clients, key=lambda c: str(c.get("at") or ""), reverse=True),
+                          key=lambda c: c["gone"]),
+        "orders": orders[:300],
+        "payouts": sorted(pays, key=lambda x: (str(x.get("at") or ""), int(x.get("id") or 0)), reverse=True)}
+
+
+_DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+@app.get("/api/admin/partners")
+def admin_partners(request: Request, d_from: str = Query("", alias="from"),
+                   d_to: str = Query("", alias="to")):
+    """Партнёры и отчёт за период. Пустой период — вся жизнь; переходы
+    без начала периода — за срок хранения счётчиков событий."""
+    _partner_super(request)
+    d_from = d_from if _DAY_RE.match(d_from or "") else ""
+    d_to = d_to if _DAY_RE.match(d_to or "") else ""
+    keep = _partner_clicks_days()
+    c_from = max(d_from, (_biz_now() - timedelta(days=keep)).strftime("%Y-%m-%d"))
+    clicks = _partner_clicks(c_from, d_to or _biz_day())
+    verified = {u.get("tenant") for u in _users() if u.get("emailVerified")}
+    parts = list(_partners())
+    # Водоразделы прошлых жизней — по всем партнёрам: оплату, отданную
+    # прежнему партнёру, нынешний считать не вправе.
+    marks: dict = {}
+    want = {t["id"] for t in _tenants() if t.get("partner") is not None}
+    for p in parts:
+        for g in (p.get("gone") or []):
+            want.add(g.get("tenant"))
+            if g.get("upto") is not None:
+                marks[g.get("tenant")] = max(int(marks.get(g.get("tenant")) or 0), int(g["upto"]))
+    by_t: dict = {}
+    for o in _pays().pay_paid_for(sorted(x for x in want if x)):
+        by_t.setdefault(o.get("tenant"), []).append(o)
+    rows = [_partner_report(p, d_from, d_to, clicks.get(int(p["id"]), 0), verified, by_t, marks) for p in parts]
+    rows.sort(key=lambda r: (not r["active"], -r["life"]["usd"], r["name"]))
+    return {"ok": True, "partners": rows, "from": d_from, "to": d_to, "clicksFrom": c_from,
+            "clicksDays": keep, "window": partners_mod.WINDOW_DAYS, "today": _biz_day(),
+            "tenants": [{"id": t["id"], "name": t.get("name") or t["id"], "partner": t.get("partner")}
+                        for t in _tenants() if not t.get("team")]}
+
+
+class PartnerPatch(BaseModel):
+    name: Optional[str] = None
+    contact: Optional[str] = None
+    note: Optional[str] = None
+    percent: Optional[float] = None
+    target: Optional[str] = None
+    lang: Optional[str] = None
+    active: Optional[bool] = None
+
+
+def _partner_apply(p: dict, req: PartnerPatch, me: dict) -> None:
+    """Все проверки — до первой записи (тот же закон, что у приглашений)."""
+    if req.percent is not None and not (0 <= req.percent <= 100):
+        raise HTTPException(400, "Процент — от 0 до 100")
+    if req.target is not None and req.target not in partners_mod.TARGETS:
+        raise HTTPException(400, "Ссылка ведёт на регистрацию или на лендинг")
+    if req.lang is not None and req.lang not in partners_mod.LANGS:
+        raise HTTPException(400, "Неизвестный язык страницы")
+    if req.name is not None and not req.name.strip():
+        raise HTTPException(400, "Назовите партнёра")
+    for k in ("name", "contact", "note"):
+        v = getattr(req, k)
+        if v is not None:
+            p[k] = v.strip()[:300 if k == "note" else 120]
+    if req.target is not None:
+        p["target"] = req.target
+    if req.lang is not None:
+        p["lang"] = req.lang
+    if req.active is not None:
+        p["active"] = bool(req.active)
+    if req.percent is not None and (not p.get("percentLog")
+                                    or partners_mod.dec(req.percent) != partners_mod.dec(p.get("percent"))):
+        # Момент правки, а не день: оплата, прошедшая утром, сохраняет
+        # утренний процент, даже если вечером его поменяли.
+        p["percent"] = float(req.percent)
+        p.setdefault("percentLog", []).append({"from": _partner_now(), "percent": float(req.percent),
+                                               "by": me.get("id")})
+
+
+@app.post("/api/admin/partners")
+def admin_partner_create(req: PartnerPatch, request: Request):
+    _partner_super(request)
+    me = _current_user(request)
+    if not (req.name or "").strip():
+        raise HTTPException(400, "Назовите партнёра")
+    with _SAVE_LOCK:
+        code = referral_mod.new_code(_taken_ref_codes())
+        if not code:
+            raise HTTPException(503, "Не нашли свободный код — повторите")
+        p = {"id": max((int(x.get("id") or 0) for x in _partners()), default=0) + 1,
+             "code": code, "percent": 0.0, "target": "app", "lang": "", "active": True,
+             "createdAt": _partner_now()[:10], "createdBy": me.get("id"), "payouts": []}
+        _partner_apply(p, req, me)
+        if not p.get("percentLog"):
+            p["percentLog"] = [{"from": _partner_now(), "percent": float(p.get("percent") or 0),
+                                "by": me.get("id")}]
+        _partners().append(p)
+        save_state(STATE)
+    _audit("partner.create", partner=p["id"], percent=p.get("percent"))
+    return {"ok": True, "id": p["id"], "code": code, "link": _partner_link(p)}
+
+
+@app.post("/api/admin/partners/{partner}")
+def admin_partner_update(partner: int, req: PartnerPatch, request: Request):
+    _partner_super(request)
+    me = _current_user(request)
+    with _SAVE_LOCK:
+        p = _partner_by_id(partner)
+        if p is None:
+            raise HTTPException(404, "Нет такого партнёра")
+        _partner_apply(p, req, me)
+        save_state(STATE)
+    _audit("partner.update", partner=partner,
+           **{k: v for k, v in req.dict().items() if v is not None and k not in ("note", "contact")})
+    return {"ok": True}
+
+
+@app.delete("/api/admin/partners/{partner}")
+def admin_partner_delete(partner: int, request: Request):
+    """Удалить можно только партнёра без клиентов и выплат: с ними запись —
+    это деньги и история, и её отключают, а не стирают."""
+    _partner_super(request)
+    with _SAVE_LOCK:
+        p = _partner_by_id(partner)
+        if p is None:
+            raise HTTPException(404, "Нет такого партнёра")
+        if (any(t.get("partner") is not None and int(t["partner"]) == partner for t in _tenants())
+                or p.get("gone") or p.get("payouts")):
+            raise HTTPException(409, "У партнёра есть клиенты или выплаты — отключите его, а не удаляйте")
+        _partners().remove(p)
+        save_state(STATE)
+    _audit("partner.delete", partner=partner)
+    return {"ok": True}
+
+
+class PartnerClientReq(BaseModel):
+    tenant: str
+    attach: bool = True
+    move: bool = False          # клиент другого партнёра — перенести (иначе 409)
+
+
+@app.post("/api/admin/partners/{partner}/clients")
+def admin_partner_client(partner: int, req: PartnerClientReq, request: Request):
+    """Привязать клиента руками (пришёл от партнёра, но не по ссылке) или
+    отвязать. Решение администратора, и след у записи — `partnerVia: admin`.
+
+    Комиссия идёт с оплат, сделанных С МОМЕНТА ПРИВЯЗКИ: привязка задним
+    числом переписала бы уже отправленные отчёты и долг после выплат.
+    Отвязка и перенос оставляют у прежнего партнёра запись прошлого
+    (`_partner_leave`): заработанное им до этого не пропадает."""
+    _partner_super(request)
+    with _SAVE_LOCK:
+        p = _partner_by_id(partner)
+        rec = _tenant_rec(req.tenant)
+        if p is None or rec is None:
+            raise HTTPException(404, "Нет такого партнёра или организации")
+        cur = rec.get("partner")
+        if req.attach:
+            if rec.get("team"):
+                raise HTTPException(400, "Команда клиентом партнёра не бывает")
+            if cur is not None and int(cur) == partner:
+                return {"ok": True, "same": True}
+            if cur is not None and not req.move:
+                raise HTTPException(409, "Эта организация — клиент другого партнёра. Перенести?")
+            if cur is not None:
+                _partner_leave(rec, "moved")
+            rec["partner"], rec["partnerVia"], rec["partnerAt"] = partner, "admin", _partner_now()
+        else:
+            if cur is None or int(cur) != partner:
+                raise HTTPException(409, "Эта организация не клиент этого партнёра")
+            _partner_leave(rec, "detached")
+        save_state(STATE)
+    _tenants_changed()
+    _audit("partner.client", partner=partner, tenant_target=req.tenant, attach=req.attach, move=req.move)
+    return {"ok": True}
+
+
+class PartnerPayoutReq(BaseModel):
+    amount: Optional[float] = None
+    paid: Optional[bool] = None
+    note: Optional[str] = None
+    at: Optional[str] = None
+
+
+def _payout_amount(v) -> float:
+    amt = partners_mod.dec(v)
+    if amt <= 0 or amt > 1000000:
+        raise HTTPException(400, "Сумма выплаты — больше нуля")
+    return partners_mod.money(amt)
+
+
+@app.post("/api/admin/partners/{partner}/payouts")
+def admin_partner_payout_add(partner: int, req: PartnerPayoutReq, request: Request):
+    """Выплата партнёру — запись руками: сумма в долларах, выплачено или
+    только к выплате. Деньги переводит администратор, система их не шлёт."""
+    _partner_super(request)
+    me = _current_user(request)
+    amount = _payout_amount(req.amount)
+    at = req.at if _DAY_RE.match(req.at or "") else _biz_day()
+    with _SAVE_LOCK:
+        p = _partner_by_id(partner)
+        if p is None:
+            raise HTTPException(404, "Нет такого партнёра")
+        pays = p.setdefault("payouts", [])
+        x = {"id": max((int(y.get("id") or 0) for y in pays), default=0) + 1,
+             "amount": amount, "paid": bool(req.paid), "at": at,
+             "note": (req.note or "").strip()[:200], "by": me.get("id"),
+             "created": _partner_now()}
+        pays.append(x)
+        save_state(STATE)
+    _audit("partner.payout", partner=partner, payout=x["id"], amount=x["amount"], paid=x["paid"])
+    return {"ok": True, "payout": x}
+
+
+@app.post("/api/admin/partners/{partner}/payouts/{payout}")
+def admin_partner_payout_update(partner: int, payout: int, req: PartnerPayoutReq, request: Request):
+    _partner_super(request)
+    amount = _payout_amount(req.amount) if req.amount is not None else None
+    with _SAVE_LOCK:
+        p = _partner_by_id(partner)
+        x = next((y for y in ((p or {}).get("payouts") or []) if int(y.get("id") or 0) == payout), None)
+        if x is None:
+            raise HTTPException(404, "Нет такой выплаты")
+        if amount is not None:
+            x["amount"] = amount
+        if req.note is not None:
+            x["note"] = req.note.strip()[:200]
+        if req.at is not None and _DAY_RE.match(req.at):
+            x["at"] = req.at
+        if req.paid is not None:
+            x["paid"] = bool(req.paid)
+        save_state(STATE)
+    _audit("partner.payout", partner=partner, payout=payout, amount=x.get("amount"), paid=x.get("paid"))
+    return {"ok": True, "payout": x}
+
+
+@app.delete("/api/admin/partners/{partner}/payouts/{payout}")
+def admin_partner_payout_delete(partner: int, payout: int, request: Request):
+    _partner_super(request)
+    with _SAVE_LOCK:
+        p = _partner_by_id(partner)
+        pays = (p or {}).get("payouts") or []
+        x = next((y for y in pays if int(y.get("id") or 0) == payout), None)
+        if x is None:
+            raise HTTPException(404, "Нет такой выплаты")
+        pays.remove(x)
+        save_state(STATE)
+    _audit("partner.payout.delete", partner=partner, payout=payout, amount=x.get("amount"))
+    return {"ok": True}
 
 
 @app.get("/api/admin/support")

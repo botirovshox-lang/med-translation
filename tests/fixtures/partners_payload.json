@@ -1,0 +1,271 @@
+{
+ "ok": true,
+ "partners": [
+  {
+   "id": 2,
+   "code": "PARTNER2",
+   "name": "Блог Б",
+   "contact": "",
+   "note": "",
+   "percent": 5.0,
+   "target": "app",
+   "lang": "",
+   "active": true,
+   "createdAt": "2026-10-19",
+   "link": "https://simpletranslate.me/r/PARTNER2",
+   "percentLog": [
+    {
+     "from": "2026-10-19 12:00:00",
+     "percent": 5.0,
+     "by": 2
+    }
+   ],
+   "clicks": 0,
+   "signups": 0,
+   "verified": 0,
+   "paying": 1,
+   "clientsTotal": 1,
+   "period": {
+    "orders": 1,
+    "usd": 10.0,
+    "commission": 0.5
+   },
+   "life": {
+    "orders": 1,
+    "usd": 10.0,
+    "commission": 0.5
+   },
+   "paidOut": 0.0,
+   "planned": 0.0,
+   "owed": 0.5,
+   "clients": [
+    {
+     "tenant": "org-2",
+     "name": "Клиент 2",
+     "at": "2026-10-19 12:00:00",
+     "via": "admin",
+     "active": true,
+     "verified": false,
+     "gone": false,
+     "why": "",
+     "until": "",
+     "key": "org-2#0",
+     "orders": 1,
+     "usd": 10.0,
+     "commission": 0.5
+    }
+   ],
+   "orders": [
+    {
+     "id": 5007,
+     "client": "org-2#0",
+     "tenant": "org-2",
+     "name": "Клиент 2",
+     "day": "2099-01-01",
+     "usd": 10.0,
+     "pages": 10,
+     "minutes": 0,
+     "amount": "1000",
+     "currency": "UZS",
+     "percent": 5.0,
+     "commission": 0.5,
+     "inPeriod": true
+    }
+   ],
+   "payouts": []
+  },
+  {
+   "id": 1,
+   "code": "PARTNER1",
+   "name": "Сайт Ивана",
+   "contact": "",
+   "note": "",
+   "percent": 20.0,
+   "target": "landing",
+   "lang": "uz",
+   "active": false,
+   "createdAt": "2026-10-19",
+   "link": "https://simpletranslate.me/r/PARTNER1",
+   "percentLog": [
+    {
+     "from": "2026-01-01",
+     "percent": 10.0
+    },
+    {
+     "from": "2026-06-01",
+     "percent": 20.0
+    }
+   ],
+   "clicks": 1,
+   "signups": 0,
+   "verified": 0,
+   "paying": 2,
+   "clientsTotal": 3,
+   "period": {
+    "orders": 3,
+    "usd": 170.0,
+    "commission": 24.0
+   },
+   "life": {
+    "orders": 3,
+    "usd": 170.0,
+    "commission": 24.0
+   },
+   "paidOut": 0.0,
+   "planned": 17.5,
+   "owed": 24.0,
+   "clients": [
+    {
+     "tenant": "org-4",
+     "name": "Клиент 4",
+     "at": "2026-10-19 12:00:00",
+     "via": "admin",
+     "active": false,
+     "verified": true,
+     "gone": true,
+     "why": "detached",
+     "until": "2026-10-19 12:00:00",
+     "key": "org-4#0",
+     "orders": 0,
+     "usd": 0.0,
+     "commission": 0.0
+    },
+    {
+     "tenant": "org-2",
+     "name": "Клиент 2",
+     "at": "2026-01-01",
+     "via": "link",
+     "active": false,
+     "verified": true,
+     "gone": true,
+     "why": "moved",
+     "until": "2026-10-19 12:00:00",
+     "key": "org-2#1",
+     "orders": 1,
+     "usd": 20.0,
+     "commission": 4.0
+    },
+    {
+     "tenant": "org-1",
+     "name": "Клиент 1",
+     "at": "2026-01-01",
+     "via": "link",
+     "active": false,
+     "verified": true,
+     "gone": true,
+     "why": "deleted",
+     "until": "2026-10-19 12:00:00",
+     "key": "org-1#2",
+     "orders": 2,
+     "usd": 150.0,
+     "commission": 20.0
+    }
+   ],
+   "orders": [
+    {
+     "id": 5006,
+     "client": "org-2#1",
+     "tenant": "org-2",
+     "name": "Клиент 2",
+     "day": "2026-08-01",
+     "usd": 20.0,
+     "pages": 10,
+     "minutes": 0,
+     "amount": "1000",
+     "currency": "UZS",
+     "percent": 20.0,
+     "commission": 4.0,
+     "inPeriod": true
+    },
+    {
+     "id": 5002,
+     "client": "org-1#2",
+     "tenant": "org-1",
+     "name": "Клиент 1",
+     "day": "2026-07-01",
+     "usd": 50.0,
+     "pages": 10,
+     "minutes": 0,
+     "amount": "1000",
+     "currency": "UZS",
+     "percent": 20.0,
+     "commission": 10.0,
+     "inPeriod": true
+    },
+    {
+     "id": 5001,
+     "client": "org-1#2",
+     "tenant": "org-1",
+     "name": "Клиент 1",
+     "day": "2026-03-10",
+     "usd": 100.0,
+     "pages": 10,
+     "minutes": 0,
+     "amount": "1000",
+     "currency": "UZS",
+     "percent": 10.0,
+     "commission": 10.0,
+     "inPeriod": true
+    }
+   ],
+   "payouts": [
+    {
+     "id": 2,
+     "amount": 5.0,
+     "paid": false,
+     "at": "2026-10-19",
+     "note": "",
+     "by": 2,
+     "created": "2026-10-19 12:00:00"
+    },
+    {
+     "id": 1,
+     "amount": 12.5,
+     "paid": false,
+     "at": "2026-10-19",
+     "note": "за март",
+     "by": 2,
+     "created": "2026-10-19 12:00:00"
+    }
+   ]
+  }
+ ],
+ "from": "",
+ "to": "",
+ "clicksFrom": "2026-07-21",
+ "clicksDays": 14,
+ "window": 90,
+ "today": "2026-10-19",
+ "tenants": [
+  {
+   "id": "acme",
+   "name": "ACME",
+   "partner": null
+  },
+  {
+   "id": "sys",
+   "name": "SYS",
+   "partner": null
+  },
+  {
+   "id": "org-2",
+   "name": "Клиент 2",
+   "partner": 2
+  },
+  {
+   "id": "org-3",
+   "name": "Клиент 3",
+   "partner": null
+  },
+  {
+   "id": "org-5",
+   "name": "Клиент 5",
+   "partner": null
+  },
+  {
+   "id": "org-4",
+   "name": "Клиент 4",
+   "partner": null
+  }
+ ]
+}

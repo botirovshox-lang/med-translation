@@ -609,5 +609,39 @@ check(!!notSuper && !notSuper.includes("Пополнить"), "не суперп
   }
 }
 
+
+/* Вкладка «Партнёры» — рисуется НАСТОЯЩИМ ответом `/api/admin/partners`
+   (образец пишет tests/test_partners.py): заглушка своей формы прятала бы
+   поломки формы. Хуки TabAdmin — 0..2, дальше AdminPartners (d, range,
+   nonce, open, nw) и раскрытая карточка партнёра. */
+{
+  const PP = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "partners_payload.json"), "utf8"));
+  const pr = (open) => {
+    hooks.length = 0; hookIdx = 0; effects.length = 0;
+    hooks[0] = OV; hooks[2] = "partners"; hooks[3] = PP;
+    if (open) hooks[6] = open;
+    try { return texts(TabAdmin({ store: superStore, toast })).join(" "); }
+    catch (e) { check(false, "«Партнёры» — " + e.constructor.name + ": " + e.message); return null; }
+  };
+  const list = pr(null);
+  check(list !== null && list.includes("Сайт Ивана"), "«Партнёры»: партнёр в таблице");
+  check(list !== null && list.includes("Завести и получить ссылку"), "«Партнёры»: форма заведения на месте");
+  check(list !== null && list.includes("К выплате") && list.includes("$24.00"), "«Партнёры»: долг партнёру в таблице");
+  const p = PP.partners.find(x => x.name === "Сайт Ивана");
+  const card = pr(p.id);
+  check(card !== null && card.includes(p.link), "«Партнёры»: ссылка партнёра в карточке");
+  check(card !== null && card.includes("Скопировать отчёт для партнёра"), "«Партнёры»: кнопка отчёта");
+  check(card !== null && card.includes("Выплаты партнёру") && card.includes("Оплаты клиентов"), "«Партнёры»: оплаты и выплаты");
+  const rep = partnerReportText(p, PP);
+  check(rep.includes("Начислено всего: $24.00"), "«Партнёры»: отчёт считает начисленное: " + rep.split("\n")[7]);
+  check(!p.clients.some(c => rep.includes(c.name)), "«Партнёры»: имён клиентов в отчёте партнёру нет");
+  hooks.length = 0; hookIdx = 0; effects.length = 0;
+  hooks[0] = OV; hooks[2] = "partners";
+  hooks[3] = { ok: true, partners: [], tenants: [], window: 90, today: "2026-10-19", clicksFrom: "2026-07-21" };
+  let empty = null;
+  try { empty = texts(TabAdmin({ store: superStore, toast })).join(" "); } catch (e) { empty = null; }
+  check(empty !== null && empty.includes("Партнёров пока нет."), "«Партнёры»: пустой список — ответ, а не пустой экран");
+}
+
 console.log(fail.length ? "\nПРОВАЛЕНО: " + fail.length : "\nВсё сошлось");
 process.exit(fail.length ? 1 : 0);

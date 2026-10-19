@@ -417,19 +417,31 @@ function authRememberBrand(b) {
    из адресной строки там не место. Сервер проверяет его ещё раз — это
    удобство, а не рубеж. */
 const AUTH_REF_LS = "mct-ref";
+const AUTH_REF_AT_LS = "mct-ref-at";
 const AUTH_REF_RE = /^[A-Z2-9]{4,16}$/;
+/* Окно засчитывания перехода — 90 дней, как у cookie ссылки партнёра
+   (`PARTNER_WINDOW_DAYS` на сервере): засчитывается ПОСЛЕДНИЙ переход до
+   регистрации, новый `?ref=` перекрывает прежний. Метка без даты (записана
+   до появления окна) считается свежей. */
+const AUTH_REF_DAYS = 90;
 function authRefCode() {
   let got = "";
   try {
     const m = /[?&]ref=([^&#]+)/.exec(window.location.search || "");
     if (m) got = decodeURIComponent(m[1]).toUpperCase().replace(/-/g, "");
-    if (got && AUTH_REF_RE.test(got)) localStorage.setItem(AUTH_REF_LS, got);
-    else got = localStorage.getItem(AUTH_REF_LS) || "";
+    if (got && AUTH_REF_RE.test(got)) {
+      localStorage.setItem(AUTH_REF_LS, got);
+      localStorage.setItem(AUTH_REF_AT_LS, String(Date.now()));
+    } else {
+      got = localStorage.getItem(AUTH_REF_LS) || "";
+      const at = Number(localStorage.getItem(AUTH_REF_AT_LS) || 0);
+      if (got && at && Date.now() - at > AUTH_REF_DAYS * 864e5) { authRefUsed(); got = ""; }
+    }
   } catch (e) { /* приватное окно — код просто не запомнится */ }
   return AUTH_REF_RE.test(got) ? got : "";
 }
 function authRefUsed() {
-  try { localStorage.removeItem(AUTH_REF_LS); } catch (e) { /* приватное окно */ }
+  try { localStorage.removeItem(AUTH_REF_LS); localStorage.removeItem(AUTH_REF_AT_LS); } catch (e) { /* приватное окно */ }
 }
 
 /* Намерение с ЛЕНДИНГА: человек нажал там «Перевести» и пришёл сюда

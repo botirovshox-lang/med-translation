@@ -316,7 +316,7 @@ try:
     one, total, pick = main.guest_mod.pdf_pick_page(buf.getvalue(), "seed-a")
     from pypdf import PdfReader
     check(total == 4 and pick == 2 and len(PdfReader(io.BytesIO(one)).pages) == 1,
-          "из четырёх взята третья — от 200 слов и с вёрсткой, а не обложка (pick=%s)" % pick)
+          "из четырёх взята третья — от 200 слов и с вёрсткой, а не обложка и не сплошной текст (pick=%s)" % pick)
     picks = {main.guest_mod.pdf_pick_page(buf.getvalue(), "seed-a")[2] for _ in range(3)}
     check(picks == {pick}, "тот же файл — та же страница")
     # Две равные страницы: какую — решает зерно, и для одного зерна всегда одну.

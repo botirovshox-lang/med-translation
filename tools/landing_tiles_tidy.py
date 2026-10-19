@@ -61,12 +61,15 @@ old = sorted({pid for p in rounds.values() for pid in p.values()} - keep)
 print("действующие:", sorted(keep))
 print("к удалению:", old)
 
+# Заголовки — из СПИСКА проектов, а не открытием каждого: открытие файла
+# прежних правил разбора само ставит пересборку и разбор картинок
+# (`_auto_reseg_kick`), и удаление упиралось бы в эти прогоны (409).
+titles = {p_["id"]: p_.get("title") or "" for p_ in req("GET", "/api/projects")[1]}
 for pid in old:
-    code, pr = req("GET", "/api/projects/%d" % pid)
-    if code == 404:
+    if pid not in titles:
         print("  %d: уже нет" % pid)
         continue
-    title = pr.get("title") or ""
+    title = titles[pid]
     if not title.startswith(TITLE):
         print("  %d: заголовок «%s» — НЕ трогаю" % (pid, title))
         continue

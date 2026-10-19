@@ -6237,6 +6237,10 @@ def _apply_doc(key: str, doc) -> None:
 
 def _active_job_for(pid: int) -> Optional[int]:
     """Идущий или ждущий прогон по проекту — в зеркале и в базе."""
+    # Зеркало при внешнем воркере обновляется только опросом списка задач:
+    # без этого прогон, который воркер давно завершил, держал проект под 409
+    # (удаление, правки), пока кто-нибудь не откроет экран с задачами.
+    _refresh_jobs_from_db()
     for j in _JOBS.values():
         if j.get("project") == pid and j.get("status") in ("queued", "running"):
             return j["id"]

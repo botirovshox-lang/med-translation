@@ -15554,7 +15554,8 @@ def _trial_cut(text: str, budget_words: int) -> str:
 
 
 def _trial_excerpt_plan(tid: str, file_pages: float, units: list, lang: str, card: dict,
-                        per: Optional[list], start: Optional[bool] = None) -> Optional[dict]:
+                        per: Optional[list], start: Optional[bool] = None,
+                        seed: str = "") -> Optional[dict]:
     """Фрагмент для пробной организации или None (обычная дорога — списать
     весь файл, 402 при нехватке). Зовётся ПОД `_SAVE_LOCK`, там же, где
     `_pages_debit` проверяет лимит: две загрузки подряд иначе обе решили бы
@@ -15564,10 +15565,12 @@ def _trial_excerpt_plan(tid: str, file_pages: float, units: list, lang: str, car
     rec = _tenant_rec(tid)
     if not rec or not rec.get("trial") or not units or per is None:
         return None
-    # Гость (инвариант 43) получает НАЧАЛО файла, а не случайный кусок:
-    # тот же файл — та же страница, сколько бы раз его ни приносили.
+    # Гость (инвариант 43): место выбирает ЗЕРНО от отпечатка файла (`seed`) —
+    # для человека случайное, для файла постоянное: тот же файл — та же
+    # страница, сколько бы раз его ни приносили. У страницы PDF, уже
+    # выбранной так же (`guestCut`), — с её начала (`start`).
     if start is None:
-        start = bool(rec.get("guest"))
+        start = False
     caps = _tenant_caps(tid)
     if not caps["pagesLimited"]:
         return None
@@ -15578,7 +15581,7 @@ def _trial_excerpt_plan(tid: str, file_pages: float, units: list, lang: str, car
     if file_pages <= remaining or remaining < 0.05:
         return None
     budget = remaining - TRIAL_EXCERPT_EPS
-    rng = random.SystemRandom()
+    rng = random.Random(seed) if seed else random.SystemRandom()
     fits = [i for i, (t, _) in enumerate(units) if per[i] <= budget and t.strip()]
     eligible = [i for i in fits if len(units[i][0].split()) >= TRIAL_EXCERPT_MIN_WORDS] or fits
     cut = None
@@ -15677,7 +15680,8 @@ async def upload_project(
     if len(content) > textcount.MAX_BYTES:
         _ev("cap.bytes413", tid)
         raise HTTPException(413, too_big)
-    # Гость (инвариант 43): у PDF переводится первая страница с текстом —
+    # Гость (инвариант 43): у PDF переводится ОДНА страница — с текстом
+    # и вёрсткой, место выбрано зерном от отпечатка файла (`pdf_pick_page`);
     # файл режется ДО разбора. Это и бесплатная страница «тот же файл — та же
     # страница», и защита единственного воркера: разбор 378 страниц от
     # анонимного человека стоил бы полминуты всем. Целый файл лежит рядом
@@ -15688,7 +15692,8 @@ async def upload_project(
             raise HTTPException(402, GUEST_FILES_402)
         if (file.filename or "").lower().endswith(".pdf") and guest_mod is not None:
             try:
-                cut, total, pick = await run_in_threadpool(guest_mod.pdf_first_page, content)
+                cut, total, pick = await run_in_threadpool(guest_mod.pdf_pick_page, content,
+                                                           hashlib.sha1(content).hexdigest())
             except Exception:
                 raise HTTPException(415, "PDF не читается — проверьте, что файл не повреждён и без пароля")
             if total > 1:
@@ -15771,7 +15776,9 @@ async def upload_project(
         _refuse_duplicate_upload(sha, src, tgt)
         # Пробный фрагмент — тоже под локом и тоже до списания. Скан и
         # картинки его не получают: текстовых строк у них нет (см. выше).
-        excerpt = _trial_excerpt_plan(tid, pages, units, src, card, trial_per)
+        excerpt = _trial_excerpt_plan(tid, pages, units, src, card, trial_per,
+                                      start=bool(guest_cut) or None,
+                                      seed=sha if _guest_tenant(tid) else "")
         if excerpt:
             units = units[excerpt["from"]:excerpt["to"] + 1]
             if excerpt.get("cut"):

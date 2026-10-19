@@ -128,13 +128,15 @@ check(main.guest_mod.allowed("POST", "/api/projects/7/jobs")
       and not main.guest_mod.allowed("POST", "/api/projects/7/trial/rest"),
       "выгрузка и «остальное» — не в белом списке")
 
-print("=== 3. Бесплатная страница — начало файла ===")
+print("=== 3. Бесплатная страница — место по отпечатку файла ===")
 book = docx_of(40)
 r = up(g1, book)
 p = r.json()
 ex = p.get("trialExcerpt") or {}
-check(r.status_code == 200 and ex.get("from") == 0 and ex.get("pages", 9) <= 1.0,
-      "фрагмент гостя начинается с первой строки и не больше страницы (%s)" % ex.get("from"))
+check(r.status_code == 200 and ex.get("from") is not None and ex.get("pages", 9) <= 1.0,
+      "фрагмент гостя — подряд идущие строки не больше страницы (с %s)" % ex.get("from"))
+check(main._trial_excerpt_plan(gu["tenant"], 1, [], "RU", {}, []) is None,
+      "пустой файл фрагмента не получает")
 pid1 = p["id"]
 r = up(g1, docx_of(30, tag="другой"), "other.docx")
 check(r.status_code == 402, "вторая бесплатная страница тем же гостем — 402")
@@ -270,7 +272,7 @@ url = main.partners_mod.target_url({"target": "guest", "lang": "uz"}, "https://a
 check(url.startswith("https://app.example/?") and "try=1" in url and "ref=CODE" in url and "lang=uz" in url,
       "ссылка партнёра «гость» — на экран бесплатного перевода (%s)" % url)
 
-print("=== 11. PDF гостя — первая страница с текстом ===")
+print("=== 11. PDF гостя — страница с текстом и вёрсткой, место по зерну ===")
 try:
     from reportlab.pdfgen import canvas
     buf = io.BytesIO()
@@ -287,17 +289,47 @@ try:
                 y -= 16
             y -= 10
 
+    def column(x, tag, n, y=760):
+        for k in range(n):
+            cv.drawString(x, y, "%s %d short line of a column with words." % (tag, k))
+            y -= 14
+
+    from reportlab.lib.utils import ImageReader
+    from PIL import Image as _PIL
+    _ib = io.BytesIO()
+    _PIL.effect_noise((120, 90), 60).convert("RGB").save(_ib, "PNG")
     cv.drawString(72, 700, "Title page")
     cv.showPage()
-    page("Middle", 6)
+    page("Plain", 12)                          # 250 слов сплошного текста
+    cv.showPage()
+    column(72, "Left", 22)                     # колонки, картинка, заголовок
+    column(330, "Right", 22)
+    cv.setFont("Helvetica-Bold", 18)
+    cv.drawString(72, 790, "Heading of the page")
+    cv.setFont("Helvetica", 9)
+    cv.drawString(72, 420, "Figure caption.")
+    cv.drawImage(ImageReader(io.BytesIO(_ib.getvalue())), 72, 440, 120, 90)
     cv.showPage()
     page("Last", 2)
     cv.showPage()
     cv.save()
-    one, total, pick = main.guest_mod.pdf_first_page(buf.getvalue())
+    one, total, pick = main.guest_mod.pdf_pick_page(buf.getvalue(), "seed-a")
     from pypdf import PdfReader
-    check(total == 3 and pick == 1 and len(PdfReader(io.BytesIO(one)).pages) == 1,
-          "из трёх страниц взята вторая — первая с текстом (pick=%s)" % pick)
+    check(total == 4 and pick == 2 and len(PdfReader(io.BytesIO(one)).pages) == 1,
+          "из четырёх взята третья — от 200 слов и с вёрсткой, а не обложка (pick=%s)" % pick)
+    picks = {main.guest_mod.pdf_pick_page(buf.getvalue(), "seed-a")[2] for _ in range(3)}
+    check(picks == {pick}, "тот же файл — та же страница")
+    # Две равные страницы: какую — решает зерно, и для одного зерна всегда одну.
+    b2 = io.BytesIO()
+    cv = canvas.Canvas(b2)
+    for tg in ("A", "B", "C", "D"):
+        page(tg, 12)
+        cv.showPage()
+    cv.save()
+    seen = {main.guest_mod.pdf_pick_page(b2.getvalue(), "s%d" % i)[2] for i in range(12)}
+    check(len(seen) > 1 and main.guest_mod.pdf_pick_page(b2.getvalue(), "s1")[2]
+          == main.guest_mod.pdf_pick_page(b2.getvalue(), "s1")[2],
+          "равные страницы — разные для разных файлов, одна для одного (%s)" % sorted(seen))
     print("=== 12. Весь документ после регистрации: страница гостя не теряет перевод ===")
     main._GUEST_SWEPT[0] = time.time()
     for t in main._tenants():
@@ -309,8 +341,8 @@ try:
     r = c.post("/api/projects/upload", headers=H(g9), files={"file": ("doc.pdf", buf.getvalue(), "application/pdf")},
                data={"src": "EN", "tgt": "RU"})
     pj = r.json()
-    check(r.status_code == 200 and pj.get("guestCut", {}).get("pdfPages") == 3 and pj["guestCut"]["page"] == 2,
-          "PDF гостя разобран одной страницей (2 из 3)")
+    check(r.status_code == 200 and pj.get("guestCut", {}).get("pdfPages") == 4 and pj["guestCut"]["page"] == 3,
+          "PDF гостя разобран одной страницей (3 из 4) — %s" % pj.get("guestCut"))
     pidg = pj["id"]
     proj = next(p_ for p_ in main.STATE["projects"] if p_["id"] == pidg)
     for s_ in proj["segments"]:

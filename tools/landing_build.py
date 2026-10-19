@@ -42,7 +42,7 @@ LANG_DIRS = {"ru": "", "uz": "uz/", "en": "en/"}
 SITE = "https://click.simpletranslate.me"
 APP = "https://simpletranslate.me"
 BRAND = "SimpleTranslate"
-UPDATED = "2026-10-18"            # ISO; меняется вместе с правкой текста
+UPDATED = "2026-10-19"            # ISO; меняется вместе с правкой текста
 PUBLISHED = "2026-09-17"
 EMAIL = "hello@simpletranslate.me"
 

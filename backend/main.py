@@ -908,7 +908,8 @@ def _delete_project_record(pid: int) -> None:
     # имя файла — номер проекта, а проекта больше нет.
     if gone is not None and gone.get("media"):
         shutil.rmtree(str(MEDIA_DIR / str(int(pid))), ignore_errors=True)
-    for path in list(_source_paths(pid)) + list(SOURCE_DIR.glob("%d.orig.*" % pid)):
+    for path in (list(_source_paths(pid)) + list(SOURCE_DIR.glob("%d.orig.*" % pid))
+                 + list(SOURCE_DIR.glob("%d.full.*" % pid))):
         try:
             path.unlink(missing_ok=True)
         except OSError as e:
@@ -4772,7 +4773,10 @@ def _user_public(u: dict) -> dict:
             # Отсутствие поля — «ещё не видел», и это правильное чтение:
             # у всех, кто завёлся до тура, знакомства действительно не было.
             "tourDone": bool(u.get("tourDone")),
-            "tester": bool(u.get("tester"))}
+            "tester": bool(u.get("tester")),
+            # Гостевой режим (инвариант 43): гость без почты и пароля; ставший
+            # клиентом по коду — без пароля, пока сам его не задаст.
+            "guest": bool(u.get("guest")), "noPassword": bool(u.get("noPassword"))}
 
 
 def _users() -> list:
@@ -5156,7 +5160,11 @@ PUBLIC_API_PATHS = {"/api/auth/login", "/api/auth/logout", "/api/health",
                     # ошибка — та, что случилась ДО входа. В STATE не пишет
                     # ничего, коды — из закрытых наборов, потолки по сети
                     # (`client_beacon`).
-                    "/api/client/beacon"}
+                    "/api/client/beacon",
+                    # Гостевой режим (инвариант 43): первая страница без
+                    # учётной записи. Защита — согласие, капча, потолки
+                    # по сети и на сутки (`guest_start`).
+                    "/api/guest/info", "/api/guest/start", "/api/guest/resume"}
 
 # Служебный токен бота. Бот — ОТДЕЛЬНЫЙ процесс и ходит к нам как обычный
 # клиент, поэтому ему нужен вход. Пароль суперпользователя ему давать нельзя:
@@ -5195,7 +5203,10 @@ def _new_session(user: dict) -> str:
                             # и `comment`. Держим в сессии, чтобы не ходить
                             # в базу пользователей на каждый вызов.
                             "uiLang": user.get("uiLang") or DEFAULT_UI_LANG,
-                            "super": bool(user.get("super"))}
+                            "super": bool(user.get("super")),
+                            # Гость (гостевой режим): двери ему — белым списком
+                            # (`guest_mod.allowed` в `require_token`).
+                            "guest": bool(user.get("guest"))}
     return token
 
 
@@ -5441,6 +5452,10 @@ async def require_token(request: Request, call_next):
             if trec is not None and not trec.get("active", True):
                 return JSONResponse({"ok": False, "error": "Команда отключена администратором сервиса"},
                                     status_code=403)
+        # Гость (гостевой режим, инвариант 43): открыт БЕЛЫЙ список дверей.
+        # Новая дверь закрыта для гостя сама — забыть закрыть нельзя.
+        if sess.get("guest") and not (guest_mod and guest_mod.allowed(request.method, path)):
+            return JSONResponse({"ok": False, "error": GUEST_403, "code": "guest"}, status_code=403)
         if _owner_only(request.method, path) and sess.get("role") != "owner":
             return JSONResponse({"ok": False, "error": _ROLE_DENIED["owner"]}, status_code=403)
         if _editor_only(request.method, path) and not _role_at_least(sess.get("role"), "editor"):
@@ -5516,9 +5531,16 @@ app.add_middleware(
 # CSP_POLICY=off в окружении снимает заголовок без выката — на случай,
 # если что-то на экране перестанет грузиться. Что чужих хостов нет ни в CSP,
 # ни в index.html — сторожит tests/test_hardening.py.
+# Капча гостевого режима (инвариант 43, Cloudflare Turnstile) — ЕДИНСТВЕННЫЙ
+# чужой хост, и только когда заданы ОБА ключа: без них его нет ни в CSP, ни на
+# странице (скрипт капчи грузит экран гостя по требованию).
+_CSP_CAPTCHA = (" https://challenges.cloudflare.com"
+                if os.environ.get("TURNSTILE_SITE_KEY", "").strip()
+                and os.environ.get("TURNSTILE_SECRET", "").strip() else "")
 CSP_POLICY = os.environ.get("CSP_POLICY", "").strip() or (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; "
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'" + _CSP_CAPTCHA + "; "
+    + ("frame-src 'self'" + _CSP_CAPTCHA + "; " if _CSP_CAPTCHA else "") +
     "style-src 'self' 'unsafe-inline'; "
     "font-src 'self' data:; "
     "img-src 'self' data: blob:; "
@@ -5682,6 +5704,8 @@ referral_mod = _safe_import("referral")
 # Партнёры: внешние сайты, приводящие клиентов, и их комиссия деньгами
 # (выплата руками). Законы — в шапке модуля.
 partners_mod = _safe_import("partners")
+# Гостевой режим: первая страница без регистрации (инвариант 43).
+guest_mod = _safe_import("guest")
 # Наглядная инструкция `/tutorial`: рисунки экранов, три языка, без STATE.
 tutorial_mod = _safe_import("tutorial")
 # PDF собирается сторонним конвертером из готового «как в оригинале».
@@ -6492,6 +6516,40 @@ def signup_info():
                       "ready": bool(legal_mod and legal_mod.complete())}}
 
 
+def _attach_origin(tenant: dict, request: Request, response: Response,
+                   ref: str, ref_at: float, today: str) -> None:
+    """Метка происхождения новой организации: партнёр (cookie ссылки `/r/КОД`)
+    или приглашение (код в теле). Общая у регистрации и у гостя, ставшего
+    клиентом (`guest_verify`): две копии правил разошлись бы первой правкой."""
+    _ck_partner, _ck_at = _partner_cookie(request)
+    _use_body = bool(referral_mod and referral_mod.norm_code(ref))
+    _partner = _partner_by_code(ref) if _use_body else None
+    if _ck_partner is not None and (not _use_body or _ck_at > float(ref_at or 0) / 1000.0):
+        _partner, _use_body = _ck_partner, False
+    if _ck_at or request.cookies.get(partners_mod.COOKIE if partners_mod else "mct_ref"):
+        # Метка сделала своё дело: на общем компьютере следующий человек
+        # не должен унаследовать чужое происхождение.
+        response.delete_cookie(partners_mod.COOKIE if partners_mod else "mct_ref", path="/")
+    if _partner is not None:
+        # Клиент партнёра закрепляется НАВСЕГДА (`partners.py`, закон 2).
+        tenant["partner"] = int(_partner["id"])
+        tenant["partnerAt"] = today
+        tenant["partnerVia"] = "link"
+    elif referral_mod and _use_body:
+        code = referral_mod.norm_code(ref)
+        if code:
+            tenant["refBy"] = code
+            tenant["refAt"] = today
+            # Высшая точка заводится ВМЕСТЕ С МЕТКОЙ, а не при первой выплате.
+            # У новой организации это ноль либо стартовый лимит окружения —
+            # то есть всё, что выдадут дальше, будет честным приростом.
+            # Отложи мы seed до выплаты, и любое пополнение, сделанное
+            # раньше (например, до подтверждения почты), само оказалось бы
+            # «базой» и пропало бы из счёта: человек подтвердил почту,
+            # а процент пошёл бы только со следующей оплаты.
+            tenant["refPaid"] = float(TENANT_MAX_PAGES or 0)
+
+
 @app.post("/api/auth/register")
 def register(req: RegisterRequest, request: Request, response: Response):
     """Своя организация одним шагом: почта, пароль, название. Человек
@@ -6555,33 +6613,7 @@ def register(req: RegisterRequest, request: Request, response: Response):
     # своим временем). Засчитывается ПОСЛЕДНИЙ (`partners.py`, закон 2): ссылка
     # партнёра, ведущая на лендинг, localStorage приложения не трогает, и без
     # сравнения старый код в теле перекрывал бы свежий переход партнёра.
-    _ck_partner, _ck_at = _partner_cookie(request)
-    _use_body = bool(referral_mod and referral_mod.norm_code(req.ref))
-    _partner = _partner_by_code(req.ref) if _use_body else None
-    if _ck_partner is not None and (not _use_body or _ck_at > float(req.refAt or 0) / 1000.0):
-        _partner, _use_body = _ck_partner, False
-    if _ck_at or request.cookies.get(partners_mod.COOKIE if partners_mod else "mct_ref"):
-        # Метка сделала своё дело: на общем компьютере следующий человек
-        # не должен унаследовать чужое происхождение.
-        response.delete_cookie(partners_mod.COOKIE if partners_mod else "mct_ref", path="/")
-    if _partner is not None:
-        # Клиент партнёра закрепляется НАВСЕГДА (`partners.py`, закон 2).
-        tenant["partner"] = int(_partner["id"])
-        tenant["partnerAt"] = today
-        tenant["partnerVia"] = "link"
-    elif referral_mod and _use_body:
-        code = referral_mod.norm_code(req.ref)
-        if code:
-            tenant["refBy"] = code
-            tenant["refAt"] = today
-            # Высшая точка заводится ВМЕСТЕ С МЕТКОЙ, а не при первой выплате.
-            # У новой организации это ноль либо стартовый лимит окружения —
-            # то есть всё, что выдадут дальше, будет честным приростом.
-            # Отложи мы seed до выплаты, и любое пополнение, сделанное
-            # раньше (например, до подтверждения почты), само оказалось бы
-            # «базой» и пропало бы из счёта: человек подтвердил почту,
-            # а процент пошёл бы только со следующей оплаты.
-            tenant["refPaid"] = float(TENANT_MAX_PAGES or 0)
+    _attach_origin(tenant, request, response, req.ref, req.refAt, today)
     if SIGNUP_TRIAL_USD >= 0:
         # Ноль — тоже решение: платное закрыто до тех пор, пока лимит
         # не поставит администратор. Открытый кран к ключу дороже неудобства.
@@ -6593,7 +6625,7 @@ def register(req: RegisterRequest, request: Request, response: Response):
     # След `uiLangSet` обязателен: без него `_migrate_ui_lang` на ближайшем
     # старте вернул бы запись к DEFAULT_UI_LANG.
     lang = _asked_lang(req.uiLang)
-    user = {"id": max((x["id"] for x in _users()), default=0) + 1, "tenant": tid,
+    user = {"id": _next_user_id(), "tenant": tid,
             "login": email, "email": email, "emailVerified": False, "registeredAt": time.time(),
             # Эта регистрация заменила чужую неподтверждённую: код подтверждения
             # впустит только с ЕЁ паролем (`verify_email`).
@@ -6776,6 +6808,7 @@ def reset_password(req: CodeRequest, request: Request):
             for k in ("partner", "partnerAt", "partnerVia"):
                 trec.pop(k, None)
     user["hash"], user["salt"] = _hash_password(req.password)
+    user.pop("noPassword", None)
     user.pop("replacedOther", None)     # пароль теперь задал хозяин ящика
     user["emailVerified"] = True        # код пришёл на эту почту — она рабочая
     with _AUTH_LOCK:                    # прежние сессии закрываем
@@ -7179,9 +7212,12 @@ def profile_update(req: ProfilePatch, request: Request):
         u["tourDone"] = bool(req.tourDone)
     if req.password is not None:
         _check_user_fields(None, req.password, None)
-        if not _verify_password(u, req.currentPassword or ""):
+        # Клиент из гостевого режима пароля ещё не задавал (`noPassword`):
+        # почту он доказал кодом, и спрашивать «нынешний» не у чего.
+        if not u.get("noPassword") and not _verify_password(u, req.currentPassword or ""):
             raise HTTPException(403, "Нынешний пароль указан неверно")
         u["hash"], u["salt"] = _hash_password(req.password)
+        u.pop("noPassword", None)
         token = _token_from_request(request)
         _drop_user_sessions(u["id"])            # чужие сессии закрываются
         if token:                               # свою оставляем — иначе выкинет себя же
@@ -7957,6 +7993,8 @@ def admin_access(request: Request):
     # превратил бы экран в обход STATE столько раз, сколько строк.
     tinfo = {}
     for t in _tenants():
+        if t.get("guest"):
+            continue                    # гость (инвариант 43): не человек сервиса, живёт сутки
         tid = t["id"]
         tinfo[tid] = {"id": tid, "name": t.get("name") or tid,
                       "active": t.get("active", True),
@@ -7966,6 +8004,8 @@ def admin_access(request: Request):
                       "spend": _spend_status(tid)}
     out = []
     for u in _users():
+        if u.get("guest"):
+            continue
         pub = _user_public(u)
         # Команды человека — тем же `_teams_of`, каким их видит он сам
         # в «Профиле»: два расчёта «где он состоит» разошлись бы, и админка
@@ -8220,6 +8260,8 @@ def admin_overview(request: Request):
     users, projects = _users(), STATE["projects"]
     tenants = []
     for t in _tenants():
+        if t.get("guest"):
+            continue                    # гости — числом в `guests` ниже, не строками
         tid = t["id"]
         tp = [p for p in projects if _tenant_of(p) == tid]
         # Прайс агентства суперпользователю не показываем: лимит расхода —
@@ -9223,6 +9265,13 @@ BLOCK_KIND = {
     # Пробный клиент принёс файл больше подарка — перевели фрагмент.
     # Отказа нет, но спрос тот же: человек хотел весь документ.
     "cap.trialExcerpt": "money",
+    # Гостевой режим (инвариант 43): бесплатная страница без регистрации
+    # упёрлась в потолок на сутки (весь сервис / одна сеть) — спрос выше
+    # потолка, поднимается он деньгами (GUEST_MAX_PER_DAY, GUEST_PER_NET_DAY).
+    "cap.guestDay429": "money",
+    "cap.guestNet429": "money",
+    # Гостевые прогоны стоят в очереди дольше потолка — мало исполнителя.
+    "cap.guestBusy429": "fix",
     "cap.projects402": "money",
     "cap.spend402": "money",
     "cap.format415": "money",       # ровно список «какой импорт писать следующим»
@@ -10022,6 +10071,9 @@ METRICS_BLOCK_TEXT = {
     "cap.minutes402": "кончились минуты видео",
     "cap.fn402": "упёрлись в правило функции (выключена или лимит за месяц)",
     "cap.trialExcerpt": "пробному клиенту перевели фрагмент, а принёс он документ больше",
+    "cap.guestDay429": "бесплатный перевод без регистрации упёрся в потолок на сутки по сервису",
+    "cap.guestNet429": "бесплатный перевод без регистрации упёрся в потолок на сутки с одной сети",
+    "cap.guestBusy429": "гостю отказали: в очереди уже много бесплатных переводов",
     "cap.projects402": "упёрлись в потолок числа проектов",
     "cap.spend402": "исчерпан месячный лимит расхода",
     "cap.format415": "принесли формат, которого мы не читаем",
@@ -10252,7 +10304,8 @@ def admin_tenants(request: Request):
     return {"ok": True, "capDefaults": _cap_defaults(),
             "tenants": [dict(_tenant_admin_view(t),
                              spend=_spend_status(t["id"]), caps=_tenant_caps(t["id"]),
-                             usage=_tenant_usage(t["id"])) for t in _tenants()]}
+                             usage=_tenant_usage(t["id"])) for t in _tenants()
+                            if not t.get("guest")]}
 
 
 class TenantCreate(BaseModel):
@@ -15501,7 +15554,7 @@ def _trial_cut(text: str, budget_words: int) -> str:
 
 
 def _trial_excerpt_plan(tid: str, file_pages: float, units: list, lang: str, card: dict,
-                        per: Optional[list]) -> Optional[dict]:
+                        per: Optional[list], start: Optional[bool] = None) -> Optional[dict]:
     """Фрагмент для пробной организации или None (обычная дорога — списать
     весь файл, 402 при нехватке). Зовётся ПОД `_SAVE_LOCK`, там же, где
     `_pages_debit` проверяет лимит: две загрузки подряд иначе обе решили бы
@@ -15511,6 +15564,10 @@ def _trial_excerpt_plan(tid: str, file_pages: float, units: list, lang: str, car
     rec = _tenant_rec(tid)
     if not rec or not rec.get("trial") or not units or per is None:
         return None
+    # Гость (инвариант 43) получает НАЧАЛО файла, а не случайный кусок:
+    # тот же файл — та же страница, сколько бы раз его ни приносили.
+    if start is None:
+        start = bool(rec.get("guest"))
     caps = _tenant_caps(tid)
     if not caps["pagesLimited"]:
         return None
@@ -15526,13 +15583,13 @@ def _trial_excerpt_plan(tid: str, file_pages: float, units: list, lang: str, car
     eligible = [i for i in fits if len(units[i][0].split()) >= TRIAL_EXCERPT_MIN_WORDS] or fits
     cut = None
     if eligible:
-        start = rng.choice(eligible)
-        lo = hi = start
-        total = per[start]
+        first = eligible[0] if start else rng.choice(eligible)
+        lo = hi = first
+        total = per[first]
         while hi + 1 < len(units) and total + per[hi + 1] <= budget:
             hi += 1
             total += per[hi]
-        while lo - 1 >= 0 and total + per[lo - 1] <= budget:
+        while not start and lo - 1 >= 0 and total + per[lo - 1] <= budget:
             lo -= 1
             total += per[lo]
         texts = [units[i][0] for i in range(lo, hi + 1)]
@@ -15542,7 +15599,7 @@ def _trial_excerpt_plan(tid: str, file_pages: float, units: list, lang: str, car
         big = [i for i, (t, _) in enumerate(units) if len(t.split()) >= TRIAL_EXCERPT_MIN_WORDS]
         if not big:
             return None
-        lo = hi = rng.choice(big)
+        lo = hi = big[0] if start else rng.choice(big)
         words = units[lo][0].split()
         need = max(1, int(len(words) * budget / max(per[lo], 1e-9)))
         cut = _trial_cut(units[lo][0], need)
@@ -15620,6 +15677,23 @@ async def upload_project(
     if len(content) > textcount.MAX_BYTES:
         _ev("cap.bytes413", tid)
         raise HTTPException(413, too_big)
+    # Гость (инвариант 43): у PDF переводится первая страница с текстом —
+    # файл режется ДО разбора. Это и бесплатная страница «тот же файл — та же
+    # страница», и защита единственного воркера: разбор 378 страниц от
+    # анонимного человека стоил бы полминуты всем. Целый файл лежит рядом
+    # (`{pid}.full.pdf`) — «перевести весь файл» после регистрации.
+    guest_cut = None
+    if _guest_session():
+        if len(_tenant_projects()) >= GUEST_FILES_MAX:
+            raise HTTPException(402, GUEST_FILES_402)
+        if (file.filename or "").lower().endswith(".pdf") and guest_mod is not None:
+            try:
+                cut, total, pick = await run_in_threadpool(guest_mod.pdf_first_page, content)
+            except Exception:
+                raise HTTPException(415, "PDF не читается — проверьте, что файл не повреждён и без пароля")
+            if total > 1:
+                guest_cut = {"pdfPages": total, "page": pick + 1, "full": content}
+                content = cut
     # Разбор — в threadpool: обработчик async, и распаковка 32-мегабайтного
     # пакета в event loop держала бы ЕДИНСТВЕННЫЙ воркер для всех. Разбор
     # ОДИН: страницы считаются по тем же абзацам, что идут в сегменты.
@@ -15677,6 +15751,8 @@ async def upload_project(
         "parseRules": parsed.get("parseRules"),
         "segments": _new_segments(deduped),
     }
+    if guest_cut:
+        new_project["guestCut"] = {"pdfPages": guest_cut["pdfPages"], "page": guest_cut["page"]}
     if target_folder is not None:
         new_project["folder"] = target_folder["id"]
     if parsed.get("note"):
@@ -15724,6 +15800,8 @@ async def upload_project(
                            layout=parsed.get("layout"))
         if parsed["converted"]:
             _store_original(new_id, file.filename or "", content)
+        if guest_cut and not _guest_disk_full(len(guest_cut["full"])):
+            _store_full(new_id, file.filename or "", guest_cut["full"])
         # Вернём ли файл в том же виде: у .docx и форматов с обратной записью
         # — да; odt/rtf и прочие — Word-документом (`writeback: false`).
         new_project["writeback"] = bool(parsed.get("writeback", True))
@@ -15889,6 +15967,28 @@ def _store_original(pid: int, filename: str, content: bytes) -> None:
         os.replace(str(tmp), str(p))
     except Exception as e:
         print("[backend] оригинал проекта %s не сохранён: %s" % (pid, e), file=sys.stderr)
+
+
+def _store_full(pid: int, filename: str, content: bytes) -> None:
+    """Целый файл гостя, у которого переведена одна страница PDF (инвариант 43):
+    из него «перевести весь файл» после регистрации. Рядом с исходником,
+    уходит с проектом (`_delete_project_record`)."""
+    try:
+        SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+        ext = (Path(filename or "").suffix or ".pdf").lower()
+        if not re.fullmatch(r"\.[a-z0-9]{1,8}", ext):
+            ext = ".pdf"
+        p = SOURCE_DIR / ("%d.full%s" % (pid, ext))
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_bytes(content)
+        os.replace(str(tmp), str(p))
+    except Exception as e:
+        print("[backend] целый файл гостя %s не сохранён: %s" % (pid, e), file=sys.stderr)
+
+
+def _full_existing(pid: int) -> Optional[Path]:
+    got = sorted(SOURCE_DIR.glob("%d.full.*" % pid))
+    return got[0] if got else None
 
 
 def _text_segments(project: dict) -> list:
@@ -16820,12 +16920,17 @@ async def trial_rest(pid: int):
     не хватает — 402 тем же текстом, что у загрузки. Откат — дверь замены
     файла, и он возвращает отметку фрагмента (она в снимке)."""
     project = get_project(pid)
-    if not project.get("trialExcerpt"):
+    full = _full_existing(pid) if project.get("guestCut") else None
+    if not project.get("trialExcerpt") and full is None:
         raise HTTPException(400, "Файл переведён не фрагментом — дописывать нечего")
+    if _guest_session():
+        raise HTTPException(403, GUEST_403)
     _guard_project_write(pid)
     if _active_job_for(pid) or _job_busy(pid, "images"):
         raise HTTPException(409, "По файлу идёт или ждёт прогон — дождитесь его конца")
-    src = _resegment_source(project)
+    # Гость перевёл одну страницу PDF (`guestCut`): остальное — из ЦЕЛОГО
+    # файла, а не из хранимой страницы.
+    src = (project.get("fileName") or full.name, full.read_bytes()) if full is not None else _resegment_source(project)
     if src is None:
         raise HTTPException(409, "У файла нет сохранённого исходника — загрузите файл заново")
     filename, content = src
@@ -16842,6 +16947,10 @@ def _trial_rest_apply(pid: int, parsed: dict, content: bytes, filename: str) -> 
     with _SAVE_LOCK:
         project = get_project(pid)
         project.pop("trialExcerpt", None)     # страховка: `_reimport_apply` снимает сам
+        if project.pop("guestCut", None) is not None:
+            full = _full_existing(pid)
+            if full is not None:
+                full.unlink(missing_ok=True)
         _PROJECTS_VER[0] += 1
         save_state(STATE)
     return done
@@ -19254,7 +19363,7 @@ def _job_images(job: dict) -> None:
         left = sum(len(_pending(r)) for r in recs if r and r.get("blocks") is not None
                    and not r.get("unreadable"))
         if job["params"].get("auto"):
-            left = min(left, max(0, AUTO_READ_MAX_BLOCKS - int(job["counters"].get("autoAsked") or 0)))
+            left = min(left, max(0, _auto_read_cap(job) - int(job["counters"].get("autoAsked") or 0)))
         return left
     job["counters"]["read"] = 0
     job["counters"]["toRead"] = 0 if dry else _read_left(
@@ -19470,7 +19579,7 @@ def _job_images(job: dict) -> None:
                     # читает кнопка на «Скачать», где названа цена. Прочитанное
                     # помнится по отпечатку и второй раз не спрашивается.
                     # Здесь место РЕЗЕРВИРУЕТСЯ; не отвеченное возвращается ниже.
-                    room = AUTO_READ_MAX_BLOCKS - int(job["counters"].get("autoAsked") or 0)
+                    room = _auto_read_cap(job) - int(job["counters"].get("autoAsked") or 0)
                     todo = todo[:max(0, room)]
                     job["counters"]["autoAsked"] = int(job["counters"].get("autoAsked") or 0) + len(todo)
                 for start in range(0, len(todo), IMAGE_READ_MAX_BLOCKS):
@@ -31120,6 +31229,8 @@ def _guide_auto_step(job: dict, final: bool) -> None:
     project = _project_by_id(job["project"])
     if project is None or int(project.get("guideFails") or 0) >= GUIDE_AUTO_FAILS:
         return
+    if (_tenant_rec(_tenant_of(project)) or {}).get("guest"):
+        return      # гость (инвариант 43): правила книги по одной странице — деньги впустую
     g = _guide(project)
     weak = False
     if g is not None:
@@ -39794,6 +39905,14 @@ def create_job(pid: int, req: JobRequest):
         raise HTTPException(409, AUTO_RESEG_BUSY_409)
     if req.kind == "images":
         _trial_guard(project, TRIAL_IMAGES_409)
+    if _guest_session():
+        # Гость (инвариант 43): только перевод своей страницы. Чтение картинок
+        # ставит сервер сам, проверки и прочее — после регистрации.
+        if req.kind != "translate":
+            raise HTTPException(403, GUEST_KIND_403)
+        if _guest_jobs_active() >= GUEST_QUEUE_MAX:
+            _ev("cap.guestBusy429", _tenant_of(project))
+            raise HTTPException(429, GUEST_BUSY_429)
     if req.kind not in JOB_KINDS or req.kind in _MEDIA_KINDS:
         # Видео-задачи ставят свои двери: там проверки диска, звука и денег,
         # которых у общей постановки нет.
@@ -40196,6 +40315,14 @@ def media_upload_start(req: MediaUploadInit):
     if req.size > MEDIA_MAX_BYTES:
         _ev("cap.media413", tid)
         raise HTTPException(413, "Файл больше %.1f ГБ — разрежьте видео на части" % (MEDIA_MAX_BYTES / _GB))
+    if _guest_session():
+        if req.size > GUEST_MEDIA_MB * 1024 * 1024:
+            raise HTTPException(413, GUEST_MEDIA_413 % int(GUEST_MEDIA_MB))
+        if req.project is not None or len(_tenant_projects()) >= GUEST_FILES_MAX:
+            raise HTTPException(402, GUEST_FILES_402)
+        if _guest_disk_full(req.size):
+            _ev("cap.guestBusy429", tid)
+            raise HTTPException(429, GUEST_DISK_429)
     if req.project is not None:
         target = get_project(req.project)
         if not target.get("media"):
@@ -40387,6 +40514,24 @@ def media_upload_finish(token: str, req: Optional[MediaFinish] = None):
     _fn_gate("minutes")
     _fn_gate("speech")
     want_frames = bool(req.frameText and info.get("video"))
+    if _guest_session():
+        # Гость (инвариант 43): распознаётся начало ролика — `GUEST_MEDIA_SEC`
+        # от начала обрезки; надписи в кадре — после регистрации.
+        want_frames = False
+        t0, t1 = 0.0, dur
+        if isinstance(req.trim, dict):
+            try:
+                t0 = max(0.0, float(req.trim.get("start") or 0.0))
+                if req.trim.get("end") is not None:
+                    t1 = float(req.trim.get("end"))
+            except (TypeError, ValueError):
+                t0, t1 = 0.0, dur
+        t0 = min(t0, max(0.0, dur - 1.0))
+        req.trim = {"start": t0, "end": min(dur, t1, t0 + GUEST_MEDIA_SEC)}
+        # Распознавание — тоже прогон в очереди единственного исполнителя.
+        if _guest_jobs_active() >= GUEST_QUEUE_MAX:
+            _ev("cap.guestBusy429", tid)
+            raise HTTPException(429, GUEST_BUSY_429)
     if want_frames:
         _fn_gate("ocr")
     trim = _media_trim_clean(req.trim, dur)
@@ -42793,7 +42938,7 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
     if project.get("trialExcerpt"):
         return None                     # пробный фрагмент: остаток файла даром не читаем
     trec = _tenant_rec(_tenant_of(project)) or {}
-    if kind in ("pdf", "docx") and trec.get("trial"):
+    if kind in ("pdf", "docx") and trec.get("trial") and not trec.get("guest"):
         # Пробная организация: её пробный лимит — на ПЕРЕВОД первой страницы,
         # логотипы и подписи схем его съели бы раньше, чем она нажмёт «Перевести».
         return None
@@ -42821,7 +42966,9 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
     try:
         job = _job_enqueue(project["id"], "images", [],
                            {"dry_run": False, "ocr_model": None, "est_cost": 0, "auto": True,
-                            "pages": pages})
+                            "pages": pages,
+                            # Гость: потолок вызовов чтения своей (меньшей) величины.
+                            **({"maxBlocks": GUEST_READ_BLOCKS} if trec.get("guest") else {})})
     except Exception as e:
         print("[backend] авточтение картинок проекта %s не поставлено: %s" % (project.get("id"), e),
               file=sys.stderr)
@@ -42834,6 +42981,14 @@ def _auto_read_images(project: dict, kind: str, image_pages: int = 0) -> Optiona
 
 
 AUTO_READ_MAX_BLOCKS = int(os.environ.get("AUTO_READ_MAX_BLOCKS", "400"))
+
+
+def _auto_read_cap(job: dict) -> int:
+    """Потолок вызовов авточтения задачи: свой у гостя (`maxBlocks`), иначе общий."""
+    try:
+        return int((job.get("params") or {}).get("maxBlocks") or AUTO_READ_MAX_BLOCKS)
+    except (TypeError, ValueError):
+        return AUTO_READ_MAX_BLOCKS
 
 
 def _docx_has_pictures(pid: int) -> bool:
@@ -44330,6 +44485,545 @@ def admin_support_mode(req: SupportModeIn, request: Request):
             t.pop("escalated", None)
     save_state(STATE)
     return {"ok": True, "thread": support_mod.public(t)}
+
+
+# ─── Гостевой режим: первая страница без регистрации (инвариант 43) ──
+# Решение владельца сервиса 19.10.2026: бесплатный перевод — БЕЗ учётной
+# записи, регистрация — только чтобы СКАЧАТЬ файл. Законы — шапка
+# `backend/guest.py`; здесь — записи, двери и потолки.
+#
+# Гость — настоящая организация (`tenant["guest"]`) и настоящий пользователь
+# (`user["guest"]`, без пароля и почты): перевод идёт ТОЙ ЖЕ дорогой, что
+# у клиента. Двери — белым списком (`guest_mod.allowed` в `require_token`).
+# Почта и код (`/api/guest/claim` → `/api/guest/verify`) превращают гостя
+# в обычного клиента НА МЕСТЕ: организация, файл и перевод остаются.
+#
+# Что держит деньги, и почему «прогнать свой файл сто раз» ничего не даёт:
+#   * бесплатная страница — НАЧАЛО файла (`_trial_excerpt_plan(start=True)`,
+#     у PDF — первая страница с текстом), то есть тот же файл даёт ту же
+#     страницу при любом числе заходов;
+#   * одна страница на гостя (`pagesCredit`), гость — один на браузер
+#     (ключ возобновления), новые — потолком на сеть за сутки
+#     (`GUEST_PER_NET_DAY`) и на весь сервис (`GUEST_MAX_PER_DAY`);
+#   * капча Cloudflare Turnstile (бесплатная), когда задан ключ;
+#   * лимит расхода гостя (`GUEST_LIMIT_USD`) режет и чтение скана, и перевод;
+#   * в очереди одновременно не больше `GUEST_QUEUE_MAX` гостевых прогонов —
+#     волна гостей не останавливает платных клиентов (исполнитель один).
+# Неподтверждённый гость живёт `GUEST_TTL_H` часов (`_guest_sweep`) — вместе
+# с файлом: это документы человека, и держать их дольше обещанного нельзя.
+GUEST_ENABLED = os.environ.get("GUEST_MODE", "1").strip().lower() not in ("0", "false", "no", "off")
+GUEST_FREE_PAGES = max(0.0, float(os.environ.get("GUEST_FREE_PAGES", "1") or 0))
+# Подарок за регистрацию из гостевого режима (решение владельца: +1 страница).
+GUEST_SIGNUP_PAGES = max(0.0, float(os.environ.get("GUEST_SIGNUP_PAGES", "1") or 0))
+GUEST_LIMIT_USD = max(0.0, float(os.environ.get("GUEST_LIMIT_USD", "0.25") or 0))
+GUEST_TTL_H = max(1.0, float(os.environ.get("GUEST_TTL_H", "24") or 24))
+# На сеть — с запасом: за CGNAT мобильного оператора тысячи людей делят один
+# адрес, и три гостя в сутки отрезали бы целый город. Настоящий рубеж от
+# скрипта — капча (ключи TURNSTILE_* обязательны на боевом).
+GUEST_PER_NET_DAY = int(os.environ.get("GUEST_PER_NET_DAY", "10") or 10)
+GUEST_MAX_PER_DAY = int(os.environ.get("GUEST_MAX_PER_DAY", "200") or 200)
+GUEST_QUEUE_MAX = int(os.environ.get("GUEST_QUEUE_MAX", "4") or 4)
+GUEST_MEDIA_SEC = max(10.0, float(os.environ.get("GUEST_MEDIA_SEC", "60") or 60))
+GUEST_MEDIA_MB = max(1.0, float(os.environ.get("GUEST_MEDIA_MB", "500") or 500))
+GUEST_READ_BLOCKS = int(os.environ.get("GUEST_READ_BLOCKS", "120") or 120)
+GUEST_FILES_MAX = int(os.environ.get("GUEST_FILES_MAX", "3") or 3)
+# Диск ВСЕХ гостей разом: видео в загрузке и в проектах, целые PDF. Общий
+# потолок видео (`MEDIA_DISK_MAX_GB`) — для платных клиентов, и гости
+# с разных сетей не должны закрывать им загрузку.
+GUEST_DISK_GB = max(0.1, float(os.environ.get("GUEST_DISK_GB", "3") or 3))
+GUEST_DISK_429 = "Сейчас много бесплатных видео — повторите позже или зарегистрируйтесь"
+# Капча. Бесплатный Cloudflare Turnstile; без пары ключей капчи нет, и это
+# названо в ответе `/api/guest/info` (`turnstile: ""`).
+TURNSTILE_SITE_KEY = os.environ.get("TURNSTILE_SITE_KEY", "").strip()
+TURNSTILE_SECRET = os.environ.get("TURNSTILE_SECRET", "").strip()
+
+# Тексты отказов — ключи `TRS()` (uz/en.server.json): переводит браузер.
+GUEST_403 = "Чтобы продолжить, зарегистрируйтесь — это минута: почта и код из письма"
+GUEST_OFF_403 = "Бесплатный перевод без регистрации сейчас выключен — зарегистрируйтесь"
+GUEST_CONSENT_400 = "Без согласия с офертой и политикой обработки данных перевести нельзя"
+GUEST_CAPTCHA_400 = "Подтвердите, что вы не робот"
+GUEST_DAY_429 = ("Бесплатные переводы без регистрации на сегодня закончились — "
+                 "зарегистрируйтесь, и первая страница будет бесплатной")
+GUEST_NET_429 = ("С этой сети сегодня уже переводили бесплатно — "
+                 "зарегистрируйтесь, и первая страница будет бесплатной")
+GUEST_BUSY_429 = "Сейчас много бесплатных переводов — повторите через минуту"
+GUEST_GONE_401 = "Бесплатный перевод больше не хранится — начните заново"
+GUEST_FILES_402 = "Бесплатная страница уже использована — зарегистрируйтесь, и получите ещё одну"
+GUEST_MEDIA_413 = "Видео больше %d МБ — для бесплатного перевода выберите файл поменьше"
+GUEST_KIND_403 = GUEST_403
+GUEST_NOT_400 = "Вы уже зарегистрированы"
+GUEST_CLAIM_400 = "Сначала укажите почту"
+
+
+def _guest_session() -> bool:
+    return bool((CURRENT_SESSION.get() or {}).get("guest"))
+
+
+def _guest_tenant(tid: Optional[str] = None) -> bool:
+    return bool((_tenant_rec(tid or _current_tenant()) or {}).get("guest"))
+
+
+def _guest_exp(rec: dict) -> float:
+    return float((rec.get("guestFrom") or {}).get("at") or 0) + GUEST_TTL_H * 3600
+
+
+def _guest_key_hash(key: str) -> str:
+    return hashlib.sha256(("medcat-guest:" + (key or "")).encode("utf-8")).hexdigest()
+
+
+def _next_user_id() -> int:
+    """Номер нового пользователя — МОНОТОННЫЙ. Гости заводятся и снимаются
+    сотнями, а при `max + 1` номер снятого гостя достался бы следующему
+    человеку вместе с его строками журнала расхода (`usage_daily.uid`)."""
+    n = max([int(u.get("id") or 0) for u in _users()] + [int(STATE.get("userSeq") or 0)]) + 1
+    STATE["userSeq"] = n
+    return n
+
+
+def _guest_today(net: str) -> tuple:
+    """(гостей за сутки на весь сервис, из этой сети). Считается по ЗАПИСЯМ
+    организаций (`guestFrom`), а не счётчиком в памяти: выкат его обнулял бы."""
+    now = time.time()
+    total = mine = 0
+    for t in _tenants():
+        g = t.get("guestFrom")
+        if not isinstance(g, dict) or now - float(g.get("at") or 0) >= 86400:
+            continue
+        total += 1
+        if g.get("net") == net:
+            mine += 1
+    return total, mine
+
+
+def _guest_jobs_active() -> int:
+    """Гостевых прогонов в очереди и в работе сейчас (на весь сервис)."""
+    guests = {t["id"] for t in _tenants() if t.get("guest")}
+    if not guests:
+        return 0
+    return sum(1 for j in _JOBS.values()
+               if j.get("status") in ("queued", "running") and _tenant_of(j) in guests)
+
+
+def _guest_disk_bytes() -> int:
+    """Байты, которые сейчас держат гости: видео в загрузке и в проектах,
+    целые PDF (`{pid}.full.*`). Обход маленький: гостей — сотни, не больше."""
+    guests = {t["id"] for t in _tenants() if t.get("guest")}
+    if not guests:
+        return 0
+    total = 0
+    if MEDIA_UPLOAD_DIR.exists():
+        for meta in MEDIA_UPLOAD_DIR.glob("*.json"):
+            try:
+                rec = json.loads(meta.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if rec.get("tenant") in guests:
+                total += int(rec.get("size") or 0)
+    for p in STATE.get("projects") or []:
+        if _tenant_of(p) not in guests:
+            continue
+        paths = list(SOURCE_DIR.glob("%d.full.*" % p["id"]))
+        if p.get("media"):
+            paths += list(_media_dir(p["id"]).glob("source.*"))
+        for path in paths:
+            try:
+                total += path.stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _guest_disk_full(more: int = 0) -> bool:
+    return _guest_disk_bytes() + int(more) > GUEST_DISK_GB * 1024 ** 3
+
+
+def _guest_drop(rec: dict) -> bool:
+    """Снять неподтверждённого гостя целиком: файлы, людей, сессии, знание.
+    Идущий прогон — подождать следующего обхода."""
+    tid = rec["id"]
+    pids = [p["id"] for p in STATE.get("projects") or [] if _tenant_of(p) == tid]
+    if any(_active_job_for(pid) for pid in pids):
+        return False
+    for pid in pids:
+        _delete_project_record(pid)
+    if MEDIA_UPLOAD_DIR.exists():
+        for meta in list(MEDIA_UPLOAD_DIR.glob("*.json")):
+            try:
+                if json.loads(meta.read_text(encoding="utf-8")).get("tenant") == tid:
+                    _media_upload_drop(meta.stem)
+            except (OSError, ValueError):
+                continue
+    for u in [u for u in _users() if u.get("tenant") == tid]:
+        _drop_user_sessions(u["id"])
+        _users().remove(u)
+    for coll in ("glossary", "tm", "termQueue", "autoBatches", "exportHistory", "domains", "quotes"):
+        rows = STATE.get(coll)
+        if isinstance(rows, list):
+            STATE[coll] = [r for r in rows if _tenant_of(r) != tid]
+    STATE["folders"] = [f for f in STATE.get("folders") or [] if _tenant_of(f) != tid]
+    if rec in _tenants():
+        _tenants().remove(rec)
+    return True
+
+
+_GUEST_SWEPT = [0.0]
+
+
+def _guest_sweep(force: bool = False) -> int:
+    """Снять гостей, чей срок вышел (`GUEST_TTL_H`). Зовётся из приёма гостя
+    и при старте API — не чаще раза в 10 минут. Только API: документы
+    `tenants` и `users` воркер не пишет."""
+    if IS_WORKER:
+        return 0
+    now = time.time()
+    if not force and now - _GUEST_SWEPT[0] < 600:
+        return 0
+    _GUEST_SWEPT[0] = now
+    dropped = 0
+    with _SAVE_LOCK:
+        for rec in [t for t in _tenants() if t.get("guest") and _guest_exp(t) <= now]:
+            try:
+                if _guest_drop(rec):
+                    dropped += 1
+            except Exception as e:
+                print("[guest] гость %s не снят: %s" % (rec.get("id"), e), file=sys.stderr)
+        if dropped:
+            save_state(STATE)
+    if dropped:
+        _tenants_changed()
+        print("[guest] снято просроченных гостей: %d" % dropped, file=sys.stderr)
+    return dropped
+
+
+@app.get("/api/guest/info")
+def guest_info():
+    """Что показать на экране гостя: включён ли режим, капча, сколько дарим,
+    потолки файла и список языков. Публично: экран рисуется до гостя."""
+    return {"ok": True, "enabled": bool(GUEST_ENABLED and guest_mod is not None),
+            "turnstile": TURNSTILE_SITE_KEY if (TURNSTILE_SECRET and TURNSTILE_SITE_KEY) else "",
+            "freePages": GUEST_FREE_PAGES, "signupPages": GUEST_SIGNUP_PAGES,
+            "mediaSec": GUEST_MEDIA_SEC, "mediaMb": GUEST_MEDIA_MB,
+            "maxMb": round(textcount.MAX_BYTES / 1024 / 1024),
+            "ttlH": GUEST_TTL_H, "brand": APP_BRAND,
+            "mail": bool(mailer_mod and mailer_mod.configured()),
+            "legal": {"version": (legal_mod.VERSION if legal_mod else ""),
+                      "terms": "/terms", "privacy": "/privacy"},
+            "languages": [{"code": l["code"], "native": l.get("native") or l["code"],
+                           "ru": l.get("ru") or "", "en": l.get("en") or "",
+                           "asr": _asr_supported(l["code"])} for l in LANGUAGES]}
+
+
+@app.on_event("startup")
+def _guest_sweep_on_start():
+    """Просроченные гости снимаются и после рестарта: обход по таймеру
+    живёт в приёме нового гостя, а гостей может не быть сутки."""
+    try:
+        _guest_sweep(force=True)
+    except Exception as e:
+        print("[guest] обход при старте не прошёл: %s" % e, file=sys.stderr)
+
+
+class GuestStart(BaseModel):
+    accept: bool = False        # согласие с офертой и политикой (текст уходит за границу)
+    captcha: str = ""           # ответ Cloudflare Turnstile
+    uiLang: str = ""
+    ref: str = ""               # метка приглашения/партнёра — до регистрации только хранится
+    refAt: float = 0
+    srcPage: str = ""
+
+
+@app.post("/api/guest/start")
+def guest_start(req: GuestStart, request: Request):
+    """Завести гостя: организацию с одной бесплатной страницей и человека без
+    почты и пароля. Отдаёт токен сессии и КЛЮЧ возобновления — сессия живёт
+    в памяти процесса и выкат её гасит, а результат обещан на сутки."""
+    if not (GUEST_ENABLED and guest_mod is not None):
+        raise HTTPException(403, GUEST_OFF_403)
+    if not req.accept:
+        raise HTTPException(400, GUEST_CONSENT_400)
+    net = _rate_ip(request)
+    raw_ip = _client_ip(request)
+    _guest_sweep()
+    total, mine = _guest_today(net)
+    if total >= GUEST_MAX_PER_DAY:
+        _ev("cap.guestDay429", DEFAULT_TENANT)
+        raise HTTPException(429, GUEST_DAY_429)
+    if mine >= GUEST_PER_NET_DAY:
+        _ev("cap.guestNet429", DEFAULT_TENANT)
+        raise HTTPException(429, GUEST_NET_429)
+    # Капча — после бесплатных проверок: ответ Cloudflare стоит сетевого
+    # запроса, а отказ по потолку его не требует. «Не ответил» (None) —
+    # не отказ: потолки выше стоят всегда.
+    if (TURNSTILE_SITE_KEY and TURNSTILE_SECRET
+            and guest_mod.turnstile_ok(TURNSTILE_SECRET, req.captcha, raw_ip) is False):
+        raise HTTPException(400, GUEST_CAPTCHA_400)
+    _ensure_users()
+    key = secrets.token_urlsafe(24)
+    now = time.time()
+    today = datetime.now().strftime("%Y-%m-%d")
+    lang = _asked_lang(req.uiLang)
+    _src = (req.srcPage or "").strip().lower()
+    with _SAVE_LOCK:
+        tid = "g" + secrets.token_hex(5)
+        while _tenant_rec(tid) is not None:
+            tid = "g" + secrets.token_hex(5)
+        _tenants().append({
+            "id": tid, "name": "Гость", "created": today, "active": True,
+            "guest": True, "limitUsd": GUEST_LIMIT_USD,
+            # След прихода: сеть — для потолка на сутки, метки — для партнёра
+            # и приглашения при регистрации (`guest_verify`).
+            "guestFrom": {"at": now, "net": net, "ref": (req.ref or "")[:32],
+                          "refAt": float(req.refAt or 0),
+                          "src": _src if (_src in LAND_PAGES or _src == "landing") else ""}})
+        user = {"id": _next_user_id(), "tenant": tid, "login": "guest-" + tid,
+                "guest": True, "guestKey": _guest_key_hash(key),
+                "emailVerified": False, "role": "owner", "name": "Гость",
+                "active": True, "uiLang": lang or DEFAULT_UI_LANG, "created": today,
+                # Согласие — до первого байта текста у поставщика модели.
+                "acceptedTerms": {"version": (legal_mod.VERSION if legal_mod else ""),
+                                  "providers": (legal_mod._model_provider() if legal_mod else ""),
+                                  "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                  "ip": raw_ip, "net": net, "via": "guest"}}
+        if lang:
+            user["uiLangSet"] = True
+        _users().append(user)
+        save_state(STATE)
+    if GUEST_FREE_PAGES:
+        _pages_topup(tid, GUEST_FREE_PAGES, "signup")
+    with _SAVE_LOCK:
+        rec = _tenant_rec(tid)
+        if rec is not None:
+            rec["trial"] = True          # файл больше подарка — фрагмент, а не 402
+        save_state(STATE)
+    _tenants_changed()
+    token = _new_session(user)
+    with _AUTH_LOCK:
+        _SESSIONS[token]["exp"] = now + GUEST_TTL_H * 3600
+    _ev("funnel.guestStart", tid)
+    return {"ok": True, "token": token, "key": key, "expiresIn": int(GUEST_TTL_H * 3600),
+            "me": _user_public(user)}
+
+
+class GuestResume(BaseModel):
+    key: str
+
+
+@app.post("/api/guest/resume")
+def guest_resume(req: GuestResume, request: Request):
+    """Вернуться к своему бесплатному переводу после выката, закрытой вкладки
+    или на следующий день — по ключу из браузера, а не по ссылке из письма
+    (почты у гостя нет, а ссылка была бы вторым входом)."""
+    net = _rate_ip(request)
+    if _login_blocked(net):
+        raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут.")
+    h = _guest_key_hash(req.key or "")
+    user = next((u for u in _users() if u.get("guest")
+                 and hmac.compare_digest(u.get("guestKey") or "", h)), None)
+    rec = _tenant_rec(user["tenant"]) if user else None
+    if not user or not rec or not rec.get("guest") or _guest_exp(rec) <= time.time():
+        _note_login_fail(net)
+        raise HTTPException(401, GUEST_GONE_401)
+    token = _new_session(user)
+    with _AUTH_LOCK:
+        _SESSIONS[token]["exp"] = _guest_exp(rec)
+    return {"ok": True, "token": token, "expiresIn": int(_guest_exp(rec) - time.time()),
+            "me": _user_public(user)}
+
+
+def _guest_email_free(email: str, net: str) -> None:
+    """Почта свободна для нового клиента — те же правила и тот же отказ,
+    что у `/api/auth/register` (с потолком проб: отказ отвечает на вопрос
+    «есть ли у вас такой клиент»). Неподтверждённая чужая запись, чей код
+    истёк, снимается (`_drop_unverified_squatter`)."""
+    old = _user_by_email(email)
+    if old is not None and not old.get("emailVerified") and _drop_unverified_squatter(old):
+        old = None
+    if old is None:
+        same = _user_by_email_key(email)
+        if same is not None and same.get("emailVerified"):
+            old = same
+    if old is not None or _user_by_login(email):
+        now = time.time()
+        probes = [x for x in _SIGNUP_PROBES.get(net, []) if now - x < 3600]
+        probes.append(now)
+        _SIGNUP_PROBES[net] = probes
+        if len(probes) > SIGNUP_PROBE_MAX_PER_HOUR:
+            raise HTTPException(429, "Слишком много регистраций с этого адреса. Повторите через час.")
+        raise HTTPException(409, "Такая почта уже зарегистрирована — войдите или "
+                                 "восстановите пароль")
+
+
+class GuestClaim(BaseModel):
+    email: str
+    uiLang: str = ""
+
+
+@app.post("/api/guest/claim")
+def guest_claim(req: GuestClaim, request: Request):
+    """Гость хочет скачать файл: почта → код в письме. Почта на запись
+    НЕ пишется до кода — иначе гость, назвавший чужой адрес, занимал бы его
+    и запирал регистрацию хозяину ящика."""
+    u = _current_user(request)
+    if not u.get("guest"):
+        raise HTTPException(400, GUEST_NOT_400)
+    net = _rate_ip(request)
+    if _code_req_blocked(net):
+        raise HTTPException(429, "Слишком много запросов. Повторите через час.")
+    email = _check_email(req.email)
+    _guest_email_free(email, net)
+    u["claim"] = {"email": email, "at": time.time()}
+    lang = _asked_lang(req.uiLang)
+    if lang:
+        u["uiLang"], u["uiLangSet"] = lang, True
+    code = _issue_code(u, "verify")
+    save_state(STATE)
+    sent = bool(mailer_mod and mailer_mod.configured())
+    _mail_code_async(dict(u, email=email), "verify", code, lang)
+    _ev("funnel.guestClaim", u.get("tenant"))
+    return {"ok": True, "email": email, "mailSent": sent,
+            "note": ("Код отправлен на почту." if sent else
+                     "Почта на сервере не настроена — код записан в журнал сервиса, "
+                     "запросите его у администратора.")}
+
+
+class GuestCode(BaseModel):
+    code: str
+    ref: str = ""
+    refAt: float = 0
+
+
+@app.post("/api/guest/verify")
+def guest_verify(req: GuestCode, request: Request, response: Response):
+    """Код из письма — гость становится клиентом НА МЕСТЕ: та же организация,
+    тот же файл и перевод, та же сессия. Почта доказана кодом, поэтому
+    пароль не спрашиваем (`noPassword`): задать его можно сразу на экране
+    результата, а вернуться без него — через «Забыли пароль?»."""
+    u = _current_user(request)
+    if not u.get("guest"):
+        if u.get("emailVerified"):
+            return {"ok": True, "me": _user_public(u)}     # повтор после успеха
+        raise HTTPException(400, GUEST_NOT_400)
+    claim = u.get("claim") or {}
+    if not claim.get("email"):
+        raise HTTPException(400, GUEST_CLAIM_400)
+    net = _rate_ip(request)
+    if _login_blocked(net):
+        raise HTTPException(429, "Слишком много попыток. Повторите через 15 минут.")
+    _check_code(u, req.code, "verify", net)
+    email = claim["email"]
+    tid = u["tenant"]
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _SAVE_LOCK:
+        # Почту могли занять, пока шло письмо: те же правила, что у регистрации.
+        _guest_email_free(email, net)
+        key = _email_key(email)
+        others = [x for x in _users() if x is not u and x.get("email")
+                  and _email_key(x["email"]) == key]
+        if any(x.get("emailVerified") for x in others):
+            raise HTTPException(409, "Такая почта уже зарегистрирована — войдите или "
+                                     "восстановите пароль")
+        for x in others:
+            _drop_unverified_squatter(x, fresh_ok=True)
+        for k in ("guest", "guestKey", "claim"):
+            u.pop(k, None)
+        u.update({"email": email, "login": email, "emailVerified": True,
+                  "registeredAt": time.time(), "noPassword": True,
+                  "name": email.split("@")[0]})
+        rec = _tenant_rec(tid)
+        if rec is not None:
+            g = rec.get("guestFrom") or {}
+            rec.pop("guest", None)
+            rec["signup"] = True
+            rec["from"] = "guest"
+            if g.get("src"):
+                rec["fromPage"] = g["src"]         # страница лендинга, откуда пришёл гость
+            rec["name"] = email.split("@")[0]
+            rec["limitUsd"] = max(float(rec.get("limitUsd") or 0), SIGNUP_TRIAL_USD)
+            _attach_origin(rec, request, response, req.ref or g.get("ref") or "",
+                           req.refAt or g.get("refAt") or 0, today)
+            if rec.get("refBy"):
+                # Гостевая страница — подарок сервиса, а не оплата клиента:
+                # высшая точка приглашения начинается ПОСЛЕ неё (инвариант 36).
+                rec["refPaid"] = float(rec.get("pagesCredit") or TENANT_MAX_PAGES or 0)
+        save_state(STATE)
+    if GUEST_SIGNUP_PAGES:
+        _pages_topup(tid, GUEST_SIGNUP_PAGES, "signup")
+        with _SAVE_LOCK:
+            rec = _tenant_rec(tid)
+            if rec is not None and rec.get("refBy"):
+                rec["refPaid"] = float(rec.get("refPaid") or 0) + GUEST_SIGNUP_PAGES
+            save_state(STATE)
+    token = _token_from_request(request)
+    with _AUTH_LOCK:
+        s = _SESSIONS.get(token)
+        if s is not None:
+            s["guest"] = False
+            s["exp"] = time.time() + SESSION_TTL
+    tok = CURRENT_SESSION.set(_SESSIONS.get(token) or {"tenant": tid, "user": u["id"], "role": "owner"})
+    try:
+        _audit("signup", email=email, tenant_new=tid, via="guest")
+    finally:
+        CURRENT_SESSION.reset(tok)
+    _ev("funnel.signup", tid)
+    _ev("funnel.signupFrom:guest", tid)
+    _ev("funnel.verified", tid)
+    _ev("funnel.guestConverted", tid)
+    _tenant_first("signup", tid)
+    _tenant_first("verified", tid)
+    paid = _referral_on_verified(u)
+    save_state(STATE)
+    _tenants_changed()
+    if paid:
+        _tenants_changed()
+    return {"ok": True, "me": _user_public(u)}
+
+
+@app.get("/api/projects/{pid}/rest-quote")
+async def rest_quote(pid: int):
+    """Сколько страниц в ЦЕЛОМ документе и сколько их докупить, чтобы
+    перевести остальное (бесплатная страница гостя и пробный фрагмент).
+    Модель не зовётся. Целый PDF гостя разбирается один раз и запоминается
+    (`guestCut.fullPages`); у скана разбора нет — страница скана считается
+    страницей перевода (оценка, и она так и названа: `estimate`)."""
+    project = get_project(pid)
+    cut = project.get("guestCut") or {}
+    full = _full_existing(pid) if cut else None
+    ex = project.get("trialExcerpt") or {}
+    if full is None and not ex:
+        return {"ok": True, "filePages": float(project.get("pages") or 0), "add": 0.0,
+                "left": None, "need": 0, "estimate": False}
+    estimate = False
+    if full is not None:
+        fp = cut.get("fullPages")
+        if fp is None:
+            if project.get("importKind") in ("scan", "image"):
+                fp, estimate = float(cut.get("pdfPages") or 1), True
+            else:
+                try:
+                    parsed = await run_in_threadpool(_parse_upload, project.get("fileName") or full.name,
+                                                     full.read_bytes())
+                except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
+                    raise _format_error(e, project.get("fileName") or full.name)
+                paras = [t for t, _ in parsed["texts"]]
+                fp = await run_in_threadpool(_import_volume, paras, project.get("src") or "RU",
+                                             _pricing_of(), _tenant_of(project))
+                if parsed.get("kind") == "scan":
+                    fp, estimate = max(float(fp or 0), float(cut.get("pdfPages") or 1)), True
+            with _SAVE_LOCK:
+                p = get_project(pid)
+                if p.get("guestCut") is not None:
+                    p["guestCut"]["fullPages"] = round(float(fp), 2)
+                    p["guestCut"]["estimate"] = estimate
+                save_state(STATE)
+        else:
+            estimate = bool(cut.get("estimate"))
+    else:
+        fp = float(ex.get("filePages") or 0)
+    add = max(0.0, float(fp) - float(project.get("pages") or 0))
+    left = _tenant_usage(_tenant_of(project)).get("left")
+    need = int(math.ceil(max(0.0, add - float(left or 0)) - 1e-9)) if left is not None else 0
+    return {"ok": True, "filePages": round(float(fp), 2), "add": round(add, 2),
+            "left": left, "need": need, "estimate": estimate}
 
 
 # ─── Админка: наборы тестировщиков ──────────────────────────────────

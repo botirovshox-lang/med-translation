@@ -480,5 +480,20 @@
   "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "We can't recognise speech in this language yet. Choose the language spoken in the video, or upload ready subtitles (.srt) — we'll translate them",
   "символ из оригинала не перенесён буква в букву: ": "a symbol from the source was not copied letter for letter: ",
   "символов оригинала не перенесено больше ": "more source symbols not copied ",
-  "символов оригинала не перенесено больше": "more source symbols not copied"
+  "символов оригинала не перенесено больше": "more source symbols not copied",
+  "Чтобы продолжить, зарегистрируйтесь — это минута: почта и код из письма": "To continue, sign up — it takes a minute: your email and the code from the message",
+  "Бесплатный перевод без регистрации сейчас выключен — зарегистрируйтесь": "Free translation without sign-up is turned off right now — please sign up",
+  "Без согласия с офертой и политикой обработки данных перевести нельзя": "We can't translate without your consent to the terms and the data processing policy",
+  "Подтвердите, что вы не робот": "Please confirm you are not a robot",
+  "Бесплатные переводы без регистрации на сегодня закончились — зарегистрируйтесь, и первая страница будет бесплатной": "Free translations without sign-up are used up for today — sign up and the first page is free",
+  "С этой сети сегодня уже переводили бесплатно — зарегистрируйтесь, и первая страница будет бесплатной": "This network has already used free translations today — sign up and the first page is free",
+  "Сейчас много бесплатных переводов — повторите через минуту": "Many free translations right now — try again in a minute",
+  "Бесплатный перевод больше не хранится — начните заново": "The free translation is no longer stored — start again",
+  "Бесплатная страница уже использована — зарегистрируйтесь, и получите ещё одну": "The free page is already used — sign up and get one more",
+  "Видео больше ": "The video is larger than ",
+  " МБ — для бесплатного перевода выберите файл поменьше": " MB — choose a smaller file for a free translation",
+  "Вы уже зарегистрированы": "You are already signed up",
+  "Сначала укажите почту": "Enter your email first",
+  "Сейчас много бесплатных видео — повторите позже или зарегистрируйтесь": "Many free videos right now — try again later or sign up",
+  "PDF не читается — проверьте, что файл не повреждён и без пароля": "The PDF can't be read — check that the file is not damaged and has no password"
 }

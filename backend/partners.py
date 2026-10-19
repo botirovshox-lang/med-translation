@@ -41,7 +41,9 @@ from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 KEY = "partners"                       # верхний ключ STATE (в /api/seed белый список)
 WINDOW_DAYS = max(1, int(os.environ.get("PARTNER_WINDOW_DAYS", "90") or 90))
 COOKIE = "mct_ref"
-TARGETS = ("app", "landing")
+# guest — бесплатный перевод первой страницы БЕЗ регистрации (инвариант 43):
+# человек с чужого сайта сразу переводит свой файл, а регистрируется на выгрузке.
+TARGETS = ("app", "landing", "guest")
 LANGS = ("", "ru", "uz", "en")
 UTM_RE = re.compile(r"^utm_(source|medium|campaign|content|term)$")
 
@@ -89,6 +91,11 @@ def target_url(partner: dict, app_base: str, landing_base: str, code: str, utm: 
     if partner.get("target") == "landing" and landing_base:
         path = "/" + (lang + "/" if lang in ("uz", "en") else "")
         base = landing_base.rstrip("/") + path
+    elif partner.get("target") == "guest":
+        base = (app_base or "").rstrip("/") + "/"
+        q = {"try": "1", "ref": code}
+        if lang:
+            q["lang"] = lang
     else:
         base = (app_base or "").rstrip("/") + "/"
         if lang:

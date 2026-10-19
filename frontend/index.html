@@ -92,7 +92,9 @@
          файлы ниже по списку. */
       var core = ["js/telemetry.js", "vendor/react.production.min.js", "vendor/react-dom.production.min.js", "js/i18n.js"];
       if (lang !== KEY_LANG) core.push("js/i18n_" + lang + ".js");
-      core.push("js/api.js", "js/handoff.js", "js/ui.jsx", "js/app.jsx");
+      /* guest.jsx — до app.jsx: экран бесплатного перевода рисуется без
+         токена, как экран входа (инвариант 43), и вкладок не ждёт. */
+      core.push("js/api.js", "js/handoff.js", "js/ui.jsx", "js/guest.jsx", "js/app.jsx");
 
       /* Остальной словарь — ПЕРВЫМ в этом списке и по той же причине,
          по какой здесь вообще важен порядок: надписи верхнего уровня

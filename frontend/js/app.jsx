@@ -1001,7 +1001,13 @@ class Boundary extends React.Component {
 
 function App() {
   /* Токен в sessionStorage переживает F5, но не закрытие вкладки. */
-  const [authed, setAuthed] = useState(() => !!(window.API && window.API.hasToken()));
+  /* Гость с токеном (перезагрузил страницу) — не «вошедший»: оболочку и её
+     запросы (/api/seed) гостю не рисуем, у него свой экран. */
+  const [authed, setAuthed] = useState(() => !!(window.API && window.API.hasToken())
+    && !(typeof guestWanted === "function" && guestWanted()));
+  /* Бесплатный перевод без регистрации (guest.jsx, инвариант 43): пришёл
+     с лендинга или по ссылке «бесплатно» — экран гостя вместо входа. */
+  const [guestView, setGuestView] = useState(() => typeof guestWanted === "function" && guestWanted());
   const [theme, toggleTheme] = useTheme();
   const store = useStore(authed);
   const toast = useToast();
@@ -1018,6 +1024,13 @@ function App() {
     window.addEventListener("mct-auth-expired", h);
     return () => window.removeEventListener("mct-auth-expired", h);
   }, []);
+
+  if (guestView && typeof GuestApp === "function")
+    return React.createElement(GuestApp, { toast, onExit: () => {
+      const has = !!(window.API && window.API.hasToken());
+      const go = () => { setGuestView(false); setAuthed(has); };
+      if (has) tabsReady().then(go, go); else go();
+    } });
 
   /* Вход ждёт ВКЛАДОК: на экране входа их не грузили (см. tabsReady ниже),
      а первый же кадр после входа рисует уже вкладку. Обычно ждать нечего:

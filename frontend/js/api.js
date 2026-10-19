@@ -333,6 +333,23 @@ function onUnauthorized() {
       setToken("");
     },
     hasToken: () => !!getToken(),
+    /* ── Гостевой режим (инвариант 43) ─────────────────────────────
+       Первая страница без регистрации. Токен гостя — обычный токен сессии;
+       ключ возобновления хранит экран гостя (localStorage), не мы. */
+    guestInfo:     ()                       => call("GET",    "/guest/info"),
+    guestStart: async (body) => {
+      const r = await call("POST", "/guest/start", Object.assign({ uiLang: uiLangNow() }, body || {}));
+      if (r && r.token) setToken(r.token);
+      return r;
+    },
+    guestResume: async (key) => {
+      const r = await call("POST", "/guest/resume", { key });
+      if (r && r.token) setToken(r.token);
+      return r;
+    },
+    guestClaim:    (email)                  => call("POST",   "/guest/claim", { email, uiLang: uiLangNow() }),
+    guestVerify:   (code, ref, refAt)       => call("POST",   "/guest/verify", { code, ref: ref || "", refAt: refAt || 0 }),
+    restQuote:     (pid)                    => call("GET",    `/projects/${pid}/rest-quote`),
     me:            ()                       => call("GET",    "/auth/me").then(r => { setHideCost(r); return r; }),
     /* ── Профиль и команды ──────────────────────────────────────────
        Профиль доступен КАЖДОМУ вошедшему, в отличие от /admin/users:

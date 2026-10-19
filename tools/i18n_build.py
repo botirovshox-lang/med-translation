@@ -26,7 +26,7 @@ OUT_REST = os.path.join("frontend", "js", "i18n_%s.rest.js")
 # frontend/index.html). Всё, что они переводят, обязано приехать вместе
 # с ними; остальное ждёт вкладок.
 BOOT_FILES = [os.path.join("frontend", "js", f)
-              for f in ("ui.jsx", "app.jsx", "api.js")]
+              for f in ("ui.jsx", "guest.jsx", "app.jsx", "api.js")]
 TR_CALL = re.compile(r'\bTR\(\s*"((?:[^"\\]|\\.)*)"')
 
 # Терминология по языкам — держать её единой по всему интерфейсу.

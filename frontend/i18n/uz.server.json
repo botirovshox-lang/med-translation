@@ -480,5 +480,20 @@
   "Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём": "Bu tildagi nutqni hozircha taniy olmaymiz. Videoda qaysi tilda gapirilayotganini tanlang yoki tayyor subtitrlarni (.srt) yuklang — ularni tarjima qilamiz",
   "символ из оригинала не перенесён буква в букву: ": "asl matndagi belgi harfma-harf koʻchirilmagan: ",
   "символов оригинала не перенесено больше ": "koʻchirilmagan asl belgilar koʻpaydi ",
-  "символов оригинала не перенесено больше": "koʻchirilmagan asl belgilar koʻpaydi"
+  "символов оригинала не перенесено больше": "koʻchirilmagan asl belgilar koʻpaydi",
+  "Чтобы продолжить, зарегистрируйтесь — это минута: почта и код из письма": "Davom etish uchun ro'yxatdan o'ting — bir daqiqa: pochta va xatdagi kod",
+  "Бесплатный перевод без регистрации сейчас выключен — зарегистрируйтесь": "Ro'yxatdan o'tmasdan bepul tarjima hozir o'chirilgan — ro'yxatdan o'ting",
+  "Без согласия с офертой и политикой обработки данных перевести нельзя": "Oferta va ma'lumotlarni qayta ishlash siyosatiga roziliksiz tarjima qilib bo'lmaydi",
+  "Подтвердите, что вы не робот": "Robot emasligingizni tasdiqlang",
+  "Бесплатные переводы без регистрации на сегодня закончились — зарегистрируйтесь, и первая страница будет бесплатной": "Bugun ro'yxatdan o'tmasdan bepul tarjimalar tugadi — ro'yxatdan o'ting, birinchi sahifa bepul bo'ladi",
+  "С этой сети сегодня уже переводили бесплатно — зарегистрируйтесь, и первая страница будет бесплатной": "Bu tarmoqdan bugun bepul tarjima qilingan — ro'yxatdan o'ting, birinchi sahifa bepul bo'ladi",
+  "Сейчас много бесплатных переводов — повторите через минуту": "Hozir bepul tarjimalar ko'p — bir daqiqadan keyin qaytaring",
+  "Бесплатный перевод больше не хранится — начните заново": "Bepul tarjima endi saqlanmaydi — qaytadan boshlang",
+  "Бесплатная страница уже использована — зарегистрируйтесь, и получите ещё одну": "Bepul sahifa allaqachon ishlatilgan — ro'yxatdan o'ting va yana bittasini oling",
+  "Видео больше ": "Video ",
+  " МБ — для бесплатного перевода выберите файл поменьше": " MB dan katta — bepul tarjima uchun kichikroq fayl tanlang",
+  "Вы уже зарегистрированы": "Siz allaqachon ro'yxatdan o'tgansiz",
+  "Сначала укажите почту": "Avval pochtangizni kiriting",
+  "Сейчас много бесплатных видео — повторите позже или зарегистрируйтесь": "Hozir bepul videolar ko'p — keyinroq qaytaring yoki ro'yxatdan o'ting",
+  "PDF не читается — проверьте, что файл не повреждён и без пароля": "PDF o'qilmayapti — fayl buzilmaganini va parolsizligini tekshiring"
 }

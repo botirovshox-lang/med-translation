@@ -392,6 +392,7 @@ function AdminPartnerDetail({ p, d, run, toast }) {
         React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("Куда ведёт ссылка")),
         React.createElement(Select, { value: p.target, onChange: e => save({ target: e.target.value }) },
           React.createElement("option", { value: "app" }, TR("Регистрация в сервисе")),
+          React.createElement("option", { value: "guest" }, TR("Бесплатный перевод без регистрации")),
           React.createElement("option", { value: "landing" }, TR("Лендинг сервиса")))),
       React.createElement("label", { className: "col", style: { gap: 4, flex: "1 1 140px" } },
         React.createElement("span", { className: "dim", style: { fontSize: 12 } }, TR("Язык страницы")),
@@ -509,6 +510,7 @@ function AdminPartners({ toast }) {
           onChange: e => setNw(Object.assign({}, nw, { percent: e.target.value })) }),
         React.createElement(Select, { value: nw.target, onChange: e => setNw(Object.assign({}, nw, { target: e.target.value })), "aria-label": TR("Куда ведёт ссылка") },
           React.createElement("option", { value: "app" }, TR("Регистрация в сервисе")),
+          React.createElement("option", { value: "guest" }, TR("Бесплатный перевод без регистрации")),
           React.createElement("option", { value: "landing" }, TR("Лендинг сервиса"))),
         React.createElement(Btn, { variant: "primary", size: "sm", disabled: !nw.name.trim(),
           onClick: () => run(async () => { const r = await window.API.partnerCreate({ name: nw.name, percent: Number(nw.percent || 0), target: nw.target }); setOpen(r.id); }, TR("Партнёр заведён"))
@@ -1395,6 +1397,7 @@ function metSrcName(src) {
   switch (src) {
     case "direct": return TR("напрямую");
     case "landing": return TR("с лендинга");
+    case "guest": return TR("из бесплатного перевода");
     case "start": return TR("лендинг /start/");
     case "index": case "uz": case "en": return TR("форма лендинга ") + src;
     default: return src;
@@ -1818,6 +1821,9 @@ function oppBlockText(code) {
     case "cap.minutes402": return TR("раз кончились минуты видео — пора предлагать пакет минут");
     case "cap.fn402": return TR("раз упёрлись в правило функции (выключена или выбран месячный лимит) — вкладка «Цены»");
     case "cap.trialExcerpt": return TR("раз пробному клиенту перевели фрагмент большого документа — он ждёт весь");
+    case "cap.guestDay429": return TR("раз бесплатный перевод без регистрации упёрся в потолок на сутки — спрос выше потолка");
+    case "cap.guestNet429": return TR("раз с одной сети пришли за бесплатным переводом больше потолка на сутки");
+    case "cap.guestBusy429": return TR("раз гостю отказали: в очереди уже много бесплатных переводов");
     case "cap.projects402": return TR("раз упёрлись в потолок числа проектов");
     case "cap.spend402": return TR("раз исчерпан месячный лимит расхода");
     case "cap.format415": return TR("раз принесли формат, которого мы не читаем — это список, какой импорт писать следующим");

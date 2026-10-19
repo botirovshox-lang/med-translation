@@ -73,10 +73,17 @@ def req(method, path, body=None, raw=None, ctype=None, timeout=600):
         raise RuntimeError("%s %s -> %s %s" % (method, path, e.code, e.read()[:500].decode("utf-8", "replace")))
 
 
-def upload(p, src, tgt, title):
+def upload(p, src, tgt, title, folder=None):
+    """Один документ на несколько языков — файлы ОДНОЙ папки: первый язык
+    заводит папку, остальные кладутся в неё (`folder`). Разложенные по своим
+    папкам, они выглядели кучей одинаковых проектов, а надписи с картинок
+    читались бы каждым файлом заново (`_image_borrow` берёт их у соседа)."""
     bnd = uuid.uuid4().hex
     parts = []
-    for k, v in (("src", src), ("tgt", tgt), ("title", title)):
+    fields = [("src", src), ("tgt", tgt), ("title", title)]
+    if folder is not None:
+        fields.append(("folder", str(folder)))
+    for k, v in fields:
         parts.append(("--%s\r\nContent-Disposition: form-data; name=\"%s\"\r\n\r\n%s\r\n" % (bnd, k, v)).encode())
     parts.append(("--%s\r\nContent-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
                   "Content-Type: application/octet-stream\r\n\r\n" % (bnd, p.name)).encode()
@@ -140,7 +147,8 @@ def main():
         k = "%s:%s" % (kind, t)
         if k in P:
             continue
-        r = upload(IN / fn, s, t, title)
+        home = next((P[x] for x in P if x.split(":")[0] == kind), None)
+        r = upload(IN / fn, s, t, title, folder=home)
         P[k] = r["id"]
         save()
         log("завели", k, r["id"], r.get("imagesSkipped") or "")

@@ -342,6 +342,57 @@ check(checks.rules_for(main._rules_domain({"id": "med-2", "base": "medical"}), "
       "…и таблица правил непустая")
 check(main._rules_domain({"id": "medical"}) == "medical", "встроенная — сама")
 
+print("\n=== 20. Файл переносится в другую папку, знание едет с ним ===")
+X1 = {"id": 901, "tenant": "default", "title": "Док", "src": "RU", "tgt": "EN", "domain": "medical", "segments": []}
+X2 = {"id": 902, "tenant": "default", "title": "Док", "src": "RU", "tgt": "UZ", "domain": "medical", "segments": []}
+X3 = {"id": 903, "tenant": "default", "title": "Другое", "src": "RU", "tgt": "UZ", "domain": "general", "segments": []}
+main.STATE["projects"] += [X1, X2, X3]
+main._PROJECTS_VER[0] += 1
+own = term("плевральный выпот", "pleural effusion", project=902)
+r = c.post("/api/projects/902/move", headers=H(A), json={"folder": 901})
+check(r.status_code == 200 and r.json()["moved"], "перенос 902 → папка 901: %s" % r.text[:120])
+check(X2.get("folder") == 901 and main._fid(902) == 901, "у файла папка 901")
+check(main._gproj(own) == 901, "знание файла приехало в новую папку без перезаписи строки")
+fl = c.get("/api/folders/901", headers=H(A)).json()
+check(sorted(fl["files"]) == [901, 902] and len(fl["pairs"]) == 2, "в папке 901 два файла, две пары")
+check(all(f_["id"] != 902 for f_ in c.get("/api/folders", headers=H(A)).json()["folders"]),
+      "пустой папки 902 в списке нет")
+check(c.post("/api/projects/903/move", headers=H(A), json={"folder": 901}).status_code == 409,
+      "файл другой тематики — 409")
+check(c.post("/api/projects/901/move", headers=H(A), json={"folder": 903}).status_code == 409,
+      "файл, в чью папку входят другие, — 409")
+check(c.post("/api/projects/902/move", headers=H(B), json={"folder": 901}).status_code == 404,
+      "чужой организации — 404")
+main.STATE["projects"] = [p_ for p_ in main.STATE["projects"] if p_["id"] != 990]
+n_folders = len(main.STATE["folders"])
+check(c.post("/api/projects/903/move", headers=H(A), json={"folder": 901}).status_code == 409
+      and len(main.STATE["folders"]) == n_folders, "отказ ничего не заводит в памяти")
+
+# Настоящая папка со списком словарей; файл в ней один, его знание — в её словаре.
+r = c.post("/api/folders", headers=H(A), json={"title": "Свой", "src": "RU", "tgt": "UZ",
+                                              "domain": "medical", "newDict": "Словарь своего"})
+F_OWN, D_OWN = r.json()["id"], r.json()["dicts"][0]
+X4 = {"id": 990, "tenant": "default", "title": "Док", "src": "RU", "tgt": "KK", "domain": "medical",
+      "folder": F_OWN, "segments": []}
+main.STATE["projects"].append(X4)
+main._PROJECTS_VER[0] += 1
+r = c.post("/api/folders", headers=H(A), json={"title": "Цель", "src": "RU", "tgt": "EN",
+                                              "domain": "medical", "newDict": "Словарь цели"})
+F_T = r.json()["id"]
+mine = term("бронх", "bronchus", project=F_OWN, dict=D_OWN)
+clash = term("трахея", "trachea", project=F_OWN, dict=D_OWN)
+term("трахея", "windpipe", project=F_T, dict=D_OWN)
+r = c.post("/api/projects/990/move", headers=H(A), json={"folder": F_T})
+check(r.status_code == 409 and X4.get("folder") == F_OWN, "столкновение с записью цели — 409, файл на месте")
+main.STATE["glossary"].remove(clash)
+r = c.post("/api/projects/990/move", headers=H(A), json={"folder": F_T}).json()
+check(r.get("moved") and r.get("repointed") == 1 and mine["project"] == F_T,
+      "знание опустевшей папки перенаправлено: %s" % r)
+check(D_OWN in main._folder_dict_list(F_T) and main._folder_dict_list(F_T)[0] != D_OWN,
+      "словарь файла подключён к цели в конец (только чтение): %s" % main._folder_dict_list(F_T))
+check(main._folder_by_id(F_OWN) is None, "пустая запись папки снята")
+main.STATE["projects"] = [p_ for p_ in main.STATE["projects"] if p_["id"] < 900]
+
 print()
 print("FAILED: %d" % len(fail) if fail else "ВСЁ ПРОШЛО")
 for f_ in fail:

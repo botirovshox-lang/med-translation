@@ -211,6 +211,62 @@ img_segs2 = [s for s in project["segments"] if (s.get("origin") or {}).get("kind
 check(len(img_segs2) == 1, "повтор не задваивает сегменты")
 check(calls["n"] == was, "повтор не платит за уже прочитанное")
 
+print("\n── тот же оригинал на другой язык: прочитанное берётся у соседа ──")
+# Один документ на пять языков — пять файлов, а надписи на картинках
+# на языке ОРИГИНАЛА. Прежде каждый файл платно читал их заново.
+project["sourceSha"] = "same-original"
+
+
+def twin(pid, tenant=None, src="RU"):
+    p = {"id": pid, "title": "Тест", "src": src, "tgt": "UZ", "domain": "medical",
+         "status": "in_progress", "sourceSha": "same-original",
+         "segments": [dict(s) for s in project["segments"]
+                      if (s.get("origin") or {}).get("kind") != "image"]}
+    if tenant:
+        p["tenant"] = tenant
+    main.STATE["projects"] = [project, p]
+    main._store_source_docx(p, content, "t.docx", pairs, len(paras))
+    return p
+
+
+def run_twin(p):
+    j = dict(new_job(dry_run=False), project=p["id"])
+    main._job_images(j)
+    return j, [s for s in p["segments"] if (s.get("origin") or {}).get("kind") == "image"]
+
+
+was = calls["n"]
+p2 = twin(2)
+j2, segs2 = run_twin(p2)
+check(calls["n"] == was, "сосед с тем же оригиналом не платит за чтение")
+check(len(segs2) == 1 and segs2[0]["source"] == TEXT,
+      "сегмент надписи заведён из прочитанного соседом: %s" % [s["source"] for s in segs2])
+check(j2["counters"].get("borrowed", 0) >= 1, "задача назвала взятое: %s" % j2["counters"].get("borrowed"))
+blocks2 = [b for im in main._load_source_map(2)["images"] for b in (im.get("blocks") or [])]
+check(all(b.get("seg") in (None, segs2[0]["id"]) for b in blocks2),
+      "ссылки на сегменты соседа не перенесены — только свои")
+check(main._load_source_map(1)["images"] and all(
+    b.get("seg") != segs2[0]["id"] or segs2[0]["id"] == img_segs2[0]["id"]
+    for im in main._load_source_map(1)["images"] for b in (im.get("blocks") or [])),
+      "карта соседа не тронута")
+
+was = calls["n"]
+project["tenant"] = "other-org"          # сосед — в чужой организации
+p3 = twin(3)
+run_twin(p3)
+project.pop("tenant", None)
+check(calls["n"] > was, "чужая организация чужое прочитанное не получает")
+
+was = calls["n"]
+p4 = twin(4, src="EN")
+main._openai_read_image = lambda blob, blocks, src_lang, *a, **k: fake_read(blob, blocks, "RU", *a, **k)
+run_twin(p4)
+main._openai_read_image = fake_read
+check(calls["n"] > was, "другой язык оригинала — читается заново")
+
+main.STATE["projects"] = [project]
+project.pop("sourceSha", None)
+
 print("")
 print("── отсеянное видно и возвращается ──")
 # «Отсеяно: 230» — число, которое человеку нечем проверить, а отсев делает

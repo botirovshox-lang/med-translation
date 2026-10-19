@@ -12700,6 +12700,92 @@ def delete_folder(fid: int, force: bool = False):
     return {"ok": True, "filesRemoved": len(files)}
 
 
+class MoveFileRequest(BaseModel):
+    folder: int
+
+
+@app.post("/api/projects/{pid}/move")
+def move_project(pid: int, req: MoveFileRequest):
+    """Положить файл в другой проект (папку). Один документ на несколько
+    языков — это файлы ОДНОЙ папки (пара языков у файла, инвариант 27),
+    а разложенные по своим папкам они выглядят как куча одинаковых проектов.
+
+    Знание файла едет с ним: у файла, который сам себе папка, поле `project`
+    знания — номер файла, и `_gproj` приводит его через `_fid` к новой папке
+    без перезаписи строк. У файла настоящей папки, оставшейся пустой, знание
+    перенаправляется в новую папку, а пустая запись папки снимается. Файл,
+    в чью папку входят другие файлы, не переносится: его номер — номер их
+    папки. Область у папки одна на всех (промпты и приказные термины), и
+    файл другой области в неё не кладётся — 409 словами, а не молча."""
+    project = get_project(pid)
+    _guard_project_write(pid)
+    old = _fid(pid)
+    target_view = get_folder(req.folder)
+    target = target_view["id"]
+    if target == old:
+        return {"ok": True, "moved": False, "folder": old}
+    # Сначала ВСЕ проверки, потом правки: отказ не должен оставлять в памяти
+    # заведённую запись папки или дописанный словарь (их сохранил бы
+    # следующий чужой save_state).
+    if not isinstance(project.get("folder"), int) and len(_folder_files(old)) > 1:
+        raise HTTPException(409, "В папке этого файла лежат другие файлы: перенесите сначала их")
+    if (target_view.get("domain") or LEGACY_DOMAIN) != (project.get("domain") or LEGACY_DOMAIN):
+        raise HTTPException(409, "У проекта другая тематика: файл в него не положить")
+    tenant = _tenant_of(project)
+    alone = len(_folder_files(old)) == 1
+
+    def _mine(e):
+        return _tenant_of(e) == tenant and isinstance(e.get("project"), int) and _gproj(e) == old
+
+    def _theirs(e):
+        return _tenant_of(e) == tenant and isinstance(e.get("project"), int) and _gproj(e) == target
+    # Знание едёт, только если файл в старой папке один: иначе оно знание
+    # остающихся файлов. Едущее не вправе столкнуться с тем же ключом
+    # в новой папке — `_gloss_by_src` увидел бы одну из двух записей молча
+    # (тот же отказ, что у /glossary/promote).
+    moving = {c: [e for e in STATE.get(c) or [] if _mine(e)] for c in ("glossary", "tm", "termQueue")}         if alone else {"glossary": [], "tm": [], "termQueue": []}
+    gkey = lambda e: (e.get("lang") or DEFAULT_GLOSS_LANG, e.get("domain") or DEFAULT_GLOSS_DOMAIN,
+                      _dict_of(e), _norm_key(e.get("src")))
+    tkey = lambda e: (e.get("lang") or DEFAULT_GLOSS_LANG, _norm_key(e.get("src")))
+    have_g = {gkey(e) for e in STATE.get("glossary") or [] if _theirs(e)}
+    have_t = {tkey(e) for e in STATE.get("tm") or [] if _theirs(e)}
+    clash = [e.get("src") for e in moving["glossary"] if gkey(e) in have_g]         + [e.get("src") for e in moving["tm"] if tkey(e) in have_t]
+    if clash:
+        raise HTTPException(409, "В проекте уже есть свои записи про те же термины: %d. "
+                            "Сначала разберите их в «Словарях»" % len(clash))
+    # Словари: файл обязан видеть то, во что писалось его знание. Старая
+    # папка без списка видела ВСЕ словари — тогда берём словари его записей.
+    tf = _materialize_folder(target)
+    added = []
+    if isinstance(tf.get("dicts"), list):
+        old_dl = _folder_dict_list(old)
+        need = ([old_dl[0]] if old_dl else []) + sorted(
+            {_dict_of(e) for e in moving["glossary"]} | {_cand_dict(e) for e in moving["termQueue"]})
+        for d in need:
+            if d not in tf["dicts"] and d not in added:
+                added.append(d)
+        # В конец — только чтение: писать новое будет словарь новой папки.
+        tf["dicts"].extend(added)
+    old_rec = _folder_by_id(old)
+    project["folder"] = target
+    _PROJECTS_VER[0] += 1
+    repointed = 0
+    if old != pid:
+        for rows in moving.values():
+            for e in rows:
+                e["project"] = target
+                repointed += 1
+    if alone and old_rec is not None:
+        _folders()[:] = [f for f in _folders() if f is not old_rec]
+    _invalidate_gloss_index()
+    _audit("project.move", project=pid, fromFolder=old, folder=target,
+           repointed=repointed, dictsAdded=added)
+    save_state(STATE)
+    _folders_changed()
+    return {"ok": True, "moved": True, "folder": target, "from": old,
+            "repointed": repointed, "dictsAdded": added}
+
+
 class DictRequest(BaseModel):
     title: str = ""
     domain: Optional[str] = None
@@ -18908,6 +18994,76 @@ def image_mark_overlay(pid: int, sid: int):
                                   data.get("imagesTotal") or 0)}
 
 
+def _image_borrow(project: dict, known: dict, names: list, raster, vk_now) -> int:
+    """Разбор картинок ДРУГОГО файла организации с тем же оригиналом.
+
+    Один документ на пять языков — пять файлов (пара языков у файла,
+    инвариант 27), а надписи на его картинках написаны на языке ОРИГИНАЛА
+    и от языка перевода не зависят. Без этого каждый файл заново искал
+    строки и платно читал те же надписи зрячей моделью.
+    Своего хранилища нет НАМЕРЕННО: берём из карты живого файла-донора
+    (`sourceSha` и язык оригинала те же); донор удалён — брать нечего,
+    и это законно. Запись картинки сверяется отпечатком (`sha`), страница
+    PDF — отпечатком оригинала и планом страниц (`_page_rec_trusted`).
+    Ссылки блоков на сегменты донора (`seg`) снимаются: сегменты у файла
+    свои, их заведёт этот же разбор. Ответ — сколько записей взято."""
+    sha = project.get("sourceSha")
+    if not sha:
+        return 0
+    tenant = _tenant_of(project)
+    want = [n for n in names
+            if (known.get(n) or {}).get("blocks") is None or (known.get(n) or {}).get("unreadable")]
+    if not want:
+        return 0
+    try:
+        _sync_shared()          # у воркера сосед мог появиться после старта
+    except Exception as e:
+        print("[backend] заимствование: синхронизация не удалась: %s" % e, file=sys.stderr)
+    # Тот же оригинал, тот же язык оригинала, та же тематика (промпт чтения
+    # её знает) и те же правила разбора (отметки «это слой», «это рисунок»
+    # считаны по текстовому слою разбора).
+    donors = [p for p in STATE["projects"]
+              if p.get("id") != project.get("id") and _tenant_of(p) == tenant
+              and p.get("sourceSha") == sha and p.get("sourceDocx")
+              and (p.get("src") or "") == (project.get("src") or "")
+              and (p.get("domain") or "") == (project.get("domain") or "")
+              and p.get("parseRules") == project.get("parseRules")]
+    got = 0
+    for donor in donors:
+        if not want:
+            break
+        try:
+            dmap = _load_source_map(donor["id"]) or {}
+        except Exception as e:
+            print("[backend] карта донора %s не прочиталась: %s" % (donor.get("id"), e), file=sys.stderr)
+            continue
+        recs = {im.get("part"): im for im in (dmap.get("images") or [])}
+        left = []
+        for n in want:
+            rec = recs.get(n)
+            ok = bool(rec) and rec.get("blocks") is not None and not rec.get("unreadable")
+            if ok and str(n).startswith(PDF_PAGE_PART):
+                ok = rec.get("src") == sha and rec.get("vk") == vk_now
+            elif ok:
+                try:
+                    blob = raster[n]
+                except KeyError:
+                    blob = b""
+                ok = bool(blob) and (hashlib.sha1(blob).hexdigest() == rec.get("sha")
+                                     or _same_image(blob, rec.get("sha")))
+            if not ok:
+                left.append(n)
+                continue
+            copy = json.loads(json.dumps(rec, ensure_ascii=False))
+            for b in copy.get("blocks") or []:
+                b.pop("seg", None)
+            copy["borrowedFrom"] = donor["id"]
+            known[n] = copy
+            got += 1
+        want = left
+    return got
+
+
 def _job_images(job: dict) -> None:
     """Разбор картинок проекта: найти строки, собрать в блоки, прочитать
     моделью, завести сегменты.
@@ -18957,6 +19113,9 @@ def _job_images(job: dict) -> None:
     names = sorted(list(raster) + page_names, key=lambda n: (min(anchors.get(n) or [10 ** 9]), n))
     job["total"], job["done"] = len(names), 0
     vk_now = _virt_key(data)
+    borrowed = _image_borrow(project, known, names, raster, vk_now)
+    if borrowed:
+        job["counters"]["borrowed"] = borrowed
     # ПЕРЕСВЕРКА со слоем — отдельным быстрым проходом ДО чтения: строки
     # ищутся по пикселям (секунды на страницу), и человек сразу видит, сколько
     # новых строк найдено и будет прочитано, а не «0 из 0» на полчаса.
@@ -19062,7 +19221,7 @@ def _job_images(job: dict) -> None:
     # остановка не должна стоить уже сделанной работы. А state.json на боевом
     # проекте это 5 МБ, и переписывать его на каждую из 158 картинок, когда
     # сегментов не прибавилось, — три четверти гигабайта записи впустую.
-    out, map_dirty, segs_dirty = [], False, False
+    out, map_dirty, segs_dirty = [], bool(borrowed), False
     # За каким сегментом встала последняя вставка у этого якоря. Без этого две
     # картинки между одними абзацами обе цепляются за один и тот же сегмент,
     # и вторая встаёт ПЕРЕД первой.

@@ -165,8 +165,12 @@ def _layout_score(st: dict) -> int:
     return s
 
 
-def pdf_pick_page(content: bytes, seed: str = "") -> Tuple[bytes, int, int]:
-    """PDF → (PDF из одной страницы, всего страниц, номер выбранной с нуля).
+def pdf_pick_page(content: bytes, seed: str = "", count: int = 1) -> Tuple[bytes, int, int]:
+    """PDF → (PDF из `count` страниц подряд, всего страниц, номер первой с нуля).
+
+    `count` — сколько страниц дарим гостю (`GUEST_FREE_PAGES`, с 21.10.2026 — 5):
+    берётся выбранная страница и следующие за ней; у конца файла окно
+    сдвигается назад, чтобы страниц было столько, сколько обещано.
 
     1) среди страниц, где не меньше `PDF_MIN_WORDS` слов и есть хоть
        немного вёрстки, — зерном; нет таких — зерном среди всех текстовых;
@@ -213,8 +217,11 @@ def pdf_pick_page(content: bytes, seed: str = "") -> Tuple[bytes, int, int]:
         med = sizes[len(sizes) // 2] if sizes else 0
         heavy = [s["i"] for s in pool if s["imgBytes"] >= med and s["imgBytes"] > 0]
         pick = rng.choice(heavy or [s["i"] for s in pool])
+    count = max(1, min(int(count or 1), total))
+    pick = max(0, min(pick, total - count))
     writer = PdfWriter()
-    writer.add_page(reader.pages[pick])
+    for i in range(pick, pick + count):
+        writer.add_page(reader.pages[i])
     out = io.BytesIO()
     writer.write(out)
     return out.getvalue(), total, pick

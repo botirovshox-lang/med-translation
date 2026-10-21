@@ -15680,7 +15680,8 @@ async def upload_project(
     if len(content) > textcount.MAX_BYTES:
         _ev("cap.bytes413", tid)
         raise HTTPException(413, too_big)
-    # Гость (инвариант 43): у PDF переводится ОДНА страница — с текстом
+    # Гость (инвариант 43): у PDF переводятся `GUEST_FREE_PAGES` страниц подряд
+    # (до 21.10.2026 — ОДНА) — начиная со страницы с текстом
     # и вёрсткой, место выбрано зерном от отпечатка файла (`pdf_pick_page`);
     # файл режется ДО разбора. Это и бесплатная страница «тот же файл — та же
     # страница», и защита единственного воркера: разбор 378 страниц от
@@ -15692,12 +15693,15 @@ async def upload_project(
             raise HTTPException(402, GUEST_FILES_402)
         if (file.filename or "").lower().endswith(".pdf") and guest_mod is not None:
             try:
+                n_pages = max(1, int(GUEST_FREE_PAGES or 1))
                 cut, total, pick = await run_in_threadpool(guest_mod.pdf_pick_page, content,
-                                                           hashlib.sha1(content).hexdigest())
+                                                           hashlib.sha1(content).hexdigest(), n_pages)
             except Exception:
                 raise HTTPException(415, "PDF не читается — проверьте, что файл не повреждён и без пароля")
-            if total > 1:
-                guest_cut = {"pdfPages": total, "page": pick + 1, "full": content}
+            if total > n_pages:
+                # `pages` — сколько страниц подряд вырезано (с `page`), экран
+                # называет «страницы 3–7 из 40».
+                guest_cut = {"pdfPages": total, "page": pick + 1, "pages": min(n_pages, total), "full": content}
                 content = cut
     # Разбор — в threadpool: обработчик async, и распаковка 32-мегабайтного
     # пакета в event loop держала бы ЕДИНСТВЕННЫЙ воркер для всех. Разбор
@@ -15757,7 +15761,8 @@ async def upload_project(
         "segments": _new_segments(deduped),
     }
     if guest_cut:
-        new_project["guestCut"] = {"pdfPages": guest_cut["pdfPages"], "page": guest_cut["page"]}
+        new_project["guestCut"] = {"pdfPages": guest_cut["pdfPages"], "page": guest_cut["page"],
+                                   "pages": guest_cut.get("pages", 1)}
     if target_folder is not None:
         new_project["folder"] = target_folder["id"]
     if parsed.get("note"):
@@ -44519,7 +44524,7 @@ def admin_support_mode(req: SupportModeIn, request: Request):
 # Неподтверждённый гость живёт `GUEST_TTL_H` часов (`_guest_sweep`) — вместе
 # с файлом: это документы человека, и держать их дольше обещанного нельзя.
 GUEST_ENABLED = os.environ.get("GUEST_MODE", "1").strip().lower() not in ("0", "false", "no", "off")
-GUEST_FREE_PAGES = max(0.0, float(os.environ.get("GUEST_FREE_PAGES", "1") or 0))
+GUEST_FREE_PAGES = max(0.0, float(os.environ.get("GUEST_FREE_PAGES", "1") or 0))   # на боевом 5 (21.10.2026)
 # Подарок за регистрацию из гостевого режима (решение владельца: +1 страница).
 GUEST_SIGNUP_PAGES = max(0.0, float(os.environ.get("GUEST_SIGNUP_PAGES", "1") or 0))
 GUEST_LIMIT_USD = max(0.0, float(os.environ.get("GUEST_LIMIT_USD", "0.25") or 0))

@@ -59,5 +59,9 @@
   "Бесплатный лимит на этот файл закончился — зарегистрируйтесь, чтобы продолжить.": "Bu fayl uchun bepul limit tugadi — davom etish uchun ro'yxatdan o'ting.",
   "Перевод прервался — попробуйте ещё раз позже.": "Tarjima to'xtab qoldi — keyinroq yana urinib ko'ring.",
   "Выберите язык оригинала": "Asl nusxa tilini tanlang",
-  " — весь текст в скачанном файле и в приложении.": " — butun matn yuklab olingan faylda va ilovada."
+  " — весь текст в скачанном файле и в приложении.": " — butun matn yuklab olingan faylda va ilovada.",
+  "Переведены страницы ": "Tarjima qilingan sahifalar: ",
+  "Переведён бесплатный фрагмент документа из ": "Hujjatning bepul qismi tarjima qilindi, jami ",
+  "Переведём бесплатно до ": "Bepul tarjima qilamiz — ",
+  " страниц": " sahifagacha"
 }

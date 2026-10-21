@@ -140,7 +140,13 @@ function guestPhaseText(ph) {
 
 function guestPartNote(p, info) {
   if (!p) return "";
+  /* Подарок — несколько страниц (GUEST_FREE_PAGES, с 21.10.2026 — 5): «страницы 3–7 из 40». */
+  const n = (p.guestCut && p.guestCut.pages) || 1;
+  if (p.guestCut && n > 1)
+    return TR("Переведены страницы ") + p.guestCut.page + "–" + (p.guestCut.page + n - 1) + TR(" из ") + p.guestCut.pdfPages + ".";
   if (p.guestCut) return TR("Переведена страница ") + p.guestCut.page + TR(" из ") + p.guestCut.pdfPages + ".";
+  if (p.trialExcerpt && info && info.freePages > 1)
+    return TR("Переведён бесплатный фрагмент документа из ") + (Math.round((p.trialExcerpt.filePages || 0) * 10) / 10) + TR(" стр.");
   if (p.trialExcerpt) return TR("Переведена первая страница из ") + (Math.round((p.trialExcerpt.filePages || 0) * 10) / 10) + ".";
   if (p.media && p.media.trim) return TR("Переведена первая минута видео.");
   return TR("Переведён весь файл.");
@@ -461,7 +467,9 @@ function GuestApp({ toast, onExit }) {
     const media = file && GUEST_MEDIA_RE.test(file.name || "");
     return React.createElement("div", { className: "auth-wrap" },
       React.createElement("div", { className: "auth-card guest-card" }, head,
-        React.createElement("h1", null, TR("Переведём первую страницу бесплатно")),
+        React.createElement("h1", null, info && info.freePages > 1
+          ? TR("Переведём бесплатно до ") + Math.round(info.freePages) + TR(" страниц")
+          : TR("Переведём первую страницу бесплатно")),
         React.createElement("p", { className: "auth-sub" },
           TR("Без регистрации. Документ, скан, фото или видео — регистрация понадобится только чтобы скачать.")),
         React.createElement("label", { className: "guest-drop" + (file ? " has" : "") },

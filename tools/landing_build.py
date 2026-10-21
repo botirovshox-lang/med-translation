@@ -44,7 +44,7 @@ LANG_DIRS = {"ru": "", "uz": "uz/", "en": "en/"}
 SITE = "https://simpletranslate.me"
 APP = "https://simpletranslate.me"
 BRAND = "SimpleTranslate"
-UPDATED = "2026-10-19"            # ISO; меняется вместе с правкой текста
+UPDATED = "2026-10-21"            # ISO; меняется вместе с правкой текста
 PUBLISHED = "2026-09-17"
 EMAIL = "hello@simpletranslate.me"
 
@@ -67,10 +67,10 @@ GOOGLE_VERIFICATION = ""
 # публичный по устройству протокола: он доказывает только то, что пинг
 # шлёт хозяин сайта, и для этого должен лежать на сайте открыто.
 INDEXNOW_KEY = "5f0c9b7e2a4d4e8f9c1b6a3d7e2f4c80"
-# Бесплатный объём формы («первая страница — бесплатно»). Обещание
+# Бесплатный объём формы («5 страниц бесплатно», с 21.10.2026). Обещание
 # держит СЕРВЕР: SIGNUP_FREE_PAGES и SIGNUP_TRIAL_USD > 0 в /etc/medcat/env.
 # Выкатывать страницу с этим текстом без них — обещать то, чего нет.
-FREE_PAGES = 1
+FREE_PAGES = 5
 # Язык оригинала в форме по умолчанию — язык страницы: его человек знает
 # (инвариант 32), и чаще всего переводит именно с него. Языка ПЕРЕВОДА
 # по умолчанию нет намеренно (см. форму в body.html).
@@ -107,14 +107,14 @@ META = {
     "ru": {
         "title": "Перевод документов онлайн: Word, PDF | SimpleTranslate",
         "desc": "Переведите Word, PDF, Excel и PowerPoint онлайн с сохранением форматирования. "
-                "Первая страница бесплатно, дальше от $0.5. Обратный перевод и сверка чисел.",
+                "Первые 5 страниц бесплатно, дальше от $0.5. Обратный перевод и сверка чисел.",
         "keywords": "перевод документов онлайн, перевести документ, перевод pdf, перевод word, "
                     "перевод с сохранением форматирования, перевод excel, перевод презентации, "
                     "перевод научной статьи, перевод медицинских документов, перевод на узбекский",
         "locale": "ru_RU",
         "ogTitle": "Перевод документов онлайн в один клик — SimpleTranslate",
         "ogDesc": "Word, PDF, Excel и PowerPoint в том же оформлении: обратный перевод, "
-                  "сверка чисел и глоссарий. Первая страница бесплатно.",
+                  "сверка чисел и глоссарий. Первые 5 страниц бесплатно.",
         "ogAlt": "SimpleTranslate: перевод документов онлайн в один клик, "
                  "от $0.5 за страницу",
         "ldDesc": "Перевод документов языковой моделью с проверкой каждой строки: обратный перевод, "
@@ -127,14 +127,14 @@ META = {
     "uz": {
         "title": "Hujjatlarni onlayn tarjima qilish | SimpleTranslate",
         "desc": "Word, PDF, Excel va PowerPoint fayllarini formatini saqlagan holda onlayn tarjima "
-                "qiling. Birinchi bet bepul, keyin $0.5 dan. Sonlar va lugʻat tekshiruvi.",
+                "qiling. Birinchi 5 bet bepul, keyin $0.5 dan. Sonlar va lugʻat tekshiruvi.",
         "keywords": "hujjat tarjimasi, hujjatlarni tarjima qilish, onlayn tarjima, pdf tarjima, "
                     "word faylni tarjima qilish, rus tilidan oʻzbek tiliga tarjima, "
                     "ingliz tiliga tarjima, ilmiy maqola tarjimasi",
         "locale": "uz_UZ",
         "ogTitle": "Hujjatlarni onlayn tarjima qilish bir bosishda — SimpleTranslate",
         "ogDesc": "Word, PDF, Excel va PowerPoint oʻsha koʻrinishda: teskari tarjima, "
-                  "sonlarni solishtirish va lugʻat. Birinchi bet bepul.",
+                  "sonlarni solishtirish va lugʻat. Birinchi 5 bet bepul.",
         "ogAlt": "SimpleTranslate: hujjatlarni bir bosishda onlayn tarjima qilish, "
                  "bet uchun $0.5 dan",
         "ldDesc": "Hujjatlarni til modeli bilan tarjima qilish va har bir satrni tekshirish: "
@@ -147,14 +147,14 @@ META = {
     "en": {
         "title": "Document Translation Online, Same Layout | SimpleTranslate",
         "desc": "Translate Word, PDF, Excel and PowerPoint files online and keep the formatting. "
-                "First page free, then from $0.5. Number checks and a glossary on every line.",
+                "First 5 pages free, then from $0.5. Number checks and a glossary on every line.",
         "keywords": "document translation online, translate pdf keep formatting, translate word document, "
                     "translate docx, translate excel file, russian to uzbek translation, "
                     "scientific paper translation",
         "locale": "en_US",
         "ogTitle": "One-click document translation — SimpleTranslate",
         "ogDesc": "Word, PDF, Excel and PowerPoint in the same layout: back-translation, "
-                  "number checks and a glossary. The first page is free.",
+                  "number checks and a glossary. The first 5 pages are free.",
         "ogAlt": "SimpleTranslate: one-click document translation online, "
                  "from $0.5 per page",
         "ldDesc": "Document translation by a language model with every line checked: back-translation, "

@@ -673,7 +673,9 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
           React.createElement("span", null,
             waiting ? TR("Ваш файл ждёт: ") + waiting + TR(". После входа сразу откроем его перевод.")
                     : TR("После входа сразу откроем перевод вашего документа."),
-            info.freePages > 0 && mode === "register"
+            info.freePages > 1 && mode === "register"
+              ? " " + TR("Первые ") + Math.round(info.freePages) + TR(" страниц — бесплатно: если документ больше, объём посчитаем бесплатно и переведём фрагмент на этот объём.")
+            : info.freePages > 0 && mode === "register"
               ? " " + TR("Первая страница — бесплатно: если документ больше, объём посчитаем бесплатно и переведём один случайный фрагмент в страницу.") : "")),
       React.createElement("div", { className: "col", style: { gap: 4 } }, rows),
       /* Почта на сервере не настроена — говорим об этом ДО того, как человек

@@ -59,5 +59,9 @@
   "Бесплатный лимит на этот файл закончился — зарегистрируйтесь, чтобы продолжить.": "The free limit for this file is used up — sign up to continue.",
   "Перевод прервался — попробуйте ещё раз позже.": "The translation was interrupted — try again later.",
   "Выберите язык оригинала": "Choose the source language",
-  " — весь текст в скачанном файле и в приложении.": " — the full text is in the downloaded file and in the app."
+  " — весь текст в скачанном файле и в приложении.": " — the full text is in the downloaded file and in the app.",
+  "Переведены страницы ": "Translated pages ",
+  "Переведён бесплатный фрагмент документа из ": "A free part of the document is translated, out of ",
+  "Переведём бесплатно до ": "We'll translate up to ",
+  " страниц": " pages for free"
 }

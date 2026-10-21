@@ -413,7 +413,7 @@
   "После входа сразу откроем перевод вашего документа.": "Kirganingizdan so'ng hujjatingiz tarjimasini darhol ochamiz.",
   "Файл с сайта: выберите язык перевода, если он не подставился, — проект заведётся сам.": "Saytdan kelgan fayl: tarjima tili qo'yilmagan bo'lsa, uni tanlang — loyiha o'zi yaratiladi.",
   "Выберите файл ещё раз: браузер не дал передать его с сайта. Языки уже подставлены.": "Faylni qayta tanlang: brauzer uni saytdan o'tkazishga ruxsat bermadi. Tillar allaqachon qo'yilgan.",
-  "Первая страница — бесплатно: если документ больше, объём посчитаем бесплатно и переведём один случайный фрагмент в страницу.": "Birinchi bet — bepul: hujjat kattaroq bo'lsa, hajmini bepul hisoblaymiz va bir betlik tasodifiy bo'lakni tarjima qilamiz.",
+  "Первая страница — бесплатно: если документ больше, объём посчитаем бесплатно и переведём один случайный фрагмент в страницу.": "Birinchi bet — bepul: hujjat kattaroq boʻlsa, hajmini bepul hisoblaymiz va bir betlik tasodifiy bo'lakni tarjima qilamiz.",
   "Остальной документ добавлен": "Hujjatning qolgan qismi qo'shildi",
   "Новые строки ждут перевода.": "Yangi satrlar tarjimani kutmoqda.",
   "Остальное не добавлено": "Qolgan qism qo'shilmadi",
@@ -444,5 +444,7 @@
   "Готовлю страницы…": "Sahifalarni tayyorlayapman…",
   "Файл ждёт оплаты": "Fayl toʻlovni kutmoqda",
   "Страниц не хватает. Пополните баланс — файл добавится и переведётся сам.": "Sahifalar yetmayapti. Balansni toʻldiring — fayl oʻzi qoʻshiladi va tarjima qilinadi.",
-  "Страниц не хватает. Пополните баланс и нажмите «Добавить в проект» ещё раз.": "Sahifalar yetmayapti. Balansni toʻldiring va «Loyihaga qo'shish»ni yana bosing."
+  "Страниц не хватает. Пополните баланс и нажмите «Добавить в проект» ещё раз.": "Sahifalar yetmayapti. Balansni toʻldiring va «Loyihaga qo'shish»ni yana bosing.",
+  "Первые ": "Birinchi ",
+  " страниц — бесплатно: если документ больше, объём посчитаем бесплатно и переведём фрагмент на этот объём.": " sahifa — bepul: hujjat kattaroq boʻlsa, hajmini bepul hisoblaymiz va shu hajmdagi qismini tarjima qilamiz."
 }

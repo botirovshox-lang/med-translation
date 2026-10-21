@@ -319,6 +319,14 @@ try:
           "из четырёх взята третья — от 200 слов и с вёрсткой, а не обложка и не сплошной текст (pick=%s)" % pick)
     picks = {main.guest_mod.pdf_pick_page(buf.getvalue(), "seed-a")[2] for _ in range(3)}
     check(picks == {pick}, "тот же файл — та же страница")
+    # Подарок в несколько страниц (GUEST_FREE_PAGES = 5 на боевом): страницы
+    # подряд с выбранной, у конца файла окно сдвигается назад.
+    few, total3, start3 = main.guest_mod.pdf_pick_page(buf.getvalue(), "seed-a", 3)
+    check(len(PdfReader(io.BytesIO(few)).pages) == 3 and start3 == 1 and total3 == 4,
+          "три страницы подряд, окно не выходит за конец файла (start=%s)" % start3)
+    allp, _, start5 = main.guest_mod.pdf_pick_page(buf.getvalue(), "seed-a", 5)
+    check(len(PdfReader(io.BytesIO(allp)).pages) == 4 and start5 == 0,
+          "подарок больше файла — весь файл")
     # Две равные страницы: какую — решает зерно, и для одного зерна всегда одну.
     b2 = io.BytesIO()
     cv = canvas.Canvas(b2)

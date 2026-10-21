@@ -444,5 +444,7 @@
   "Готовлю страницы…": "Preparing pages…",
   "Файл ждёт оплаты": "The file is waiting for payment",
   "Страниц не хватает. Пополните баланс — файл добавится и переведётся сам.": "Not enough pages. Top up your balance — the file will be added and translated on its own.",
-  "Страниц не хватает. Пополните баланс и нажмите «Добавить в проект» ещё раз.": "Not enough pages. Top up your balance and press “Add to the project” again."
+  "Страниц не хватает. Пополните баланс и нажмите «Добавить в проект» ещё раз.": "Not enough pages. Top up your balance and press “Add to the project” again.",
+  "Первые ": "The first ",
+  " страниц — бесплатно: если документ больше, объём посчитаем бесплатно и переведём фрагмент на этот объём.": " pages are free: if the document is longer, we'll count its size for free and translate a part of that size."
 }

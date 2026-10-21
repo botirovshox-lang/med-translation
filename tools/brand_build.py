@@ -481,7 +481,7 @@ footer{display:flex;justify-content:space-between;font-size:7.5pt;color:var(--in
     # email signature: plain table HTML, logo by absolute URL (served by the landing)
     sig_html = f"""<table cellpadding="0" cellspacing="0" style="font-family:Arial,sans-serif;color:{C['ink']};font-size:13px;line-height:1.45">
 <tr><td style="padding:0 0 8px"><b style="font-size:14px">Имя Фамилия</b><br><span style="color:{C['ink2']}">должность</span></td></tr>
-<tr><td style="padding:8px 0 0;border-top:1px solid {C['line']}"><a href="https://simpletranslate.me/"><img src="https://simpletranslate.me/logo-email.png" width="180" height="{round(180 * wh(lh)[1] / wh(lh)[0])}" alt="SimpleTranslate" style="display:block;border:0"></a></td></tr>
+<tr><td style="padding:8px 0 0;border-top:1px solid {C['line']}"><a href="https://simpletranslate.me/"><img src="https://simpletranslate.me/img/logo-email.png" width="180" height="{round(180 * wh(lh)[1] / wh(lh)[0])}" alt="SimpleTranslate" style="display:block;border:0"></a></td></tr>
 <tr><td style="padding:6px 0 0;color:{C['ink2']}">Перевод документов на любой язык · <a href="https://simpletranslate.me/" style="color:{C['blue_ink']};text-decoration:none">simpletranslate.me</a></td></tr>
 </table>
 """
@@ -567,7 +567,7 @@ APPLY = {
     "web/apple-touch-icon.png": ["landing/apple-touch-icon.png"],
     "logo/mark-1024.png": ["landing/logo.png"],
     "web/og-1200x630.png": ["landing/og.png"],
-    "web/logo-email.png": ["landing/logo-email.png"],
+    "web/logo-email.png": ["landing/img/logo-email.png"],
 }
 
 

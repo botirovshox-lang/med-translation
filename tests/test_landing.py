@@ -314,6 +314,22 @@ for f in media.glob("tile-*.webp"):
           f"главная: {f.name} — копия картинки карусели, плитка обязана брать её (data-img)")
 
 
+# ── Бренд: знак на сайте и в приложении — тот же, что в паке (tools/brand_build.py)
+sys.path.insert(0, str(ROOT / "tools"))
+import brand_build as bb  # noqa: E402
+pack = ROOT / "brand" / "pack"
+check((pack / "web" / "favicon.svg").read_bytes() == (ROOT / "landing" / "favicon.svg").read_bytes(),
+      "landing/favicon.svg не совпадает с brand/pack — пересоберите: python tools/brand_build.py --apply")
+app = (ROOT / "frontend" / "js" / "app.jsx").read_text(encoding="utf-8")
+check(bb.LEG1_B in app and bb.LEG2_B in app,
+      "BrandMark в app.jsx разошёлся с геометрией знака в tools/brand_build.py (key(bold=True))")
+check('"aria-hidden": "true"' in app.split("function BrandMark", 1)[-1][:400], "BrandMark: знак декоративный, aria-hidden")
+for page_ in ("index.html", "uz/index.html", "en/index.html"):
+    h = (ROOT / "landing" / page_).read_text(encoding="utf-8")
+    check(h.count('aria-label="SimpleTranslate"') >= 2, f"{page_}: у ссылки логотипа нет доступного имени")
+    check(h.count('id="st-wm"') == 1 and '#st-wm' in h, f"{page_}: контур надписи на странице должен быть один (<use>)")
+    check("#2EE6D0" not in h and "rgba(46,230,208" not in h, f"{page_}: неоновая бирюза вернулась")
+
 if FAILS:
     for f in FAILS:
         print("FAIL:", f)

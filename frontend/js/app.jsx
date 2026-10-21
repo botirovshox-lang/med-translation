@@ -469,6 +469,21 @@ function authLandingIntentUsed() {
   try { sessionStorage.removeItem(AUTH_INTENT_SS); } catch (e) { /* приватное окно */ }
 }
 
+/* Знак бренда — клавиша 文/A, упрощённый рисунок для 16–31 px (толще штрихи).
+   Источник геометрии — tools/brand_build.py (key(bold=True)); правишь там —
+   перенеси сюда. Цвета зашиты: знак не перекрашивается под тему. */
+function BrandMark({ size = 18 }) {
+  const h = React.createElement;
+  return h("svg", { width: size, height: size, viewBox: "0 0 64 64", "aria-hidden": "true", focusable: "false" },
+    h("rect", { width: 64, height: 64, rx: 14, fill: "#0A5CF0" }),
+    h("rect", { x: 6, y: 10, width: 52, height: 48, rx: 12, fill: "#0640A8" }),
+    h("rect", { x: 6, y: 6, width: 52, height: 45, rx: 12, fill: "#FFFFFF" }),
+    h("path", { d: "M21 10.5 V12.5 M13 17.5 H29 M16 20 Q20.5 29 29 32 M26 20 Q21.5 29 13 32", fill: "none",
+      stroke: "#0B1324", strokeWidth: 5, strokeLinecap: "round", strokeLinejoin: "round" }),
+    h("path", { d: "M34 46 L42.5 24 L51 46 M37.2 38.6 H47.8", fill: "none",
+      stroke: "#0A5CF0", strokeWidth: 5.6, strokeLinecap: "round", strokeLinejoin: "round" }));
+}
+
 /* Язык интерфейса на экране ВХОДА. Нужен потому, что до входа язык берётся
    из кэша браузера либо из умолчания сервиса (узбекский): человеку, который
    видит незнакомый экран, нечем его переключить — вкладка «Профиль» лежит
@@ -663,7 +678,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
       /* Марка с названием — строка .auth-brand макета, а не одинокий значок:
          название сервиса на экране входа берётся с сервера (APP_BRAND). */
       React.createElement("div", { className: "auth-brand" },
-        React.createElement("span", { className: "auth-logo" }, React.createElement(Icon, { name: "globe", size: 11 })),
+        React.createElement("span", { className: "auth-logo" }, React.createElement(BrandMark, { size: 22 })),
         info.brand || "CAT Translator"),
       React.createElement("h1", null, title),
       React.createElement("p", { className: "auth-sub" }, sub),
@@ -868,7 +883,7 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
   const left = limited ? Math.max(0, caps.maxPages - used) : null;
   return React.createElement("aside", { className: "side" },
     React.createElement("div", { className: "side-brand" },
-      React.createElement("span", { className: "side-mark" }, React.createElement(Icon, { name: "globe", size: 15 })),
+      React.createElement("span", { className: "side-mark" }, React.createElement(BrandMark, { size: 20 })),
       store.brand || "CAT Translator"),
     React.createElement(TeamChip, { store }),
     TAB_GROUPS.map(([g, title]) => {

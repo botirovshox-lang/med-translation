@@ -437,7 +437,7 @@ def page(kind: str) -> str:
   footer {{ margin-top:48px; padding-top:18px; border-top:1px solid var(--rule);
             color:var(--dim); font-size:13px; }}
 </style></head><body><div class="wrap">
-<div class="nav"><a href="/">← В сервис</a><a href="/terms">Оферта</a>
+<div class="nav"><a href="/app">← В сервис</a><a href="/terms">Оферта</a>
 <a href="/privacy">Политика обработки персональных данных</a></div>
 {warn}{body()}
 <footer>Редакция от {VERSION}. Вопросы по документам — на адрес, указанный в реквизитах.</footer>

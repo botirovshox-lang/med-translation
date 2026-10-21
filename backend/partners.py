@@ -92,12 +92,13 @@ def target_url(partner: dict, app_base: str, landing_base: str, code: str, utm: 
         path = "/" + (lang + "/" if lang in ("uz", "en") else "")
         base = landing_base.rstrip("/") + path
     elif partner.get("target") == "guest":
-        base = (app_base or "").rstrip("/") + "/"
+        # Корень сайта — лендинг (21.10.2026): гостю — экран приложения.
+        base = (app_base or "").rstrip("/") + "/app"
         q = {"try": "1", "ref": code}
         if lang:
             q["lang"] = lang
     else:
-        base = (app_base or "").rstrip("/") + "/"
+        base = (app_base or "").rstrip("/") + "/register"
         if lang:
             q["lang"] = lang
     for k, v in (utm or {}).items():

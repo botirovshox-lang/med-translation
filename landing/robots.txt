@@ -1,33 +1,73 @@
-# click.simpletranslate.me — собирается tools/landing_build.py (INDEXABLE).
+# simpletranslate.me — собирается tools/landing_build.py (INDEXABLE).
 User-agent: *
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
 User-agent: Yandex
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 Clean-param: utm_source&utm_medium&utm_campaign&utm_content&utm_term&yclid&gclid&ref /
 
 User-agent: GPTBot
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
 User-agent: OAI-SearchBot
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
 User-agent: ChatGPT-User
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
 User-agent: ClaudeBot
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
 User-agent: Claude-SearchBot
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
 User-agent: PerplexityBot
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
 User-agent: Google-Extended
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
 User-agent: Applebot-Extended
 Allow: /
+Disallow: /api/
+Disallow: /handoff
+Disallow: /media-dl/
+Disallow: /t/a/
 
-Sitemap: https://click.simpletranslate.me/sitemap.xml
+Sitemap: https://simpletranslate.me/sitemap.xml

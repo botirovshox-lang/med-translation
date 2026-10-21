@@ -67,8 +67,21 @@
   с низким приоритетом (`nice`/`ionice`, `-threads 1`, таймауты, прерывание
   на выкате), нарезка звука по паузам, реплики из ответа распознавания,
   укладка озвучки в тайминг, сборка копией видеопотока. Инвариант 38.
-- **`landing/`** — лендинг `click.simpletranslate.me`: статика без бэкенда,
-  nginx-конфиг `deploy/nginx-click.conf` (отдельный файл в `sites-enabled/click`).
+- **`landing/`** — лендинг, с 21.10.2026 — КОРЕНЬ `simpletranslate.me`
+  (прежде `click.simpletranslate.me`, теперь он отвечает 301 на тот же путь,
+  `deploy/nginx-click.conf`). Статика без бэкенда: корень, `/uz/`, `/en/`,
+  `/media/`, `/img/` и файлы сборщика отдаёт nginx (`deploy/nginx.conf`,
+  заголовки и CSP лендинга — `deploy/nginx-landing-headers.conf` →
+  `/etc/nginx/snippets/simpletranslate-landing.conf`, включён в КАЖДЫЙ
+  location лендинга: add_header внутри location отменяет верхние), всё
+  остальное — приложение. **Приложение — `/app`, вход — `/login`,
+  регистрация — `/register`** (одна и та же страница, `app_page` в main.py;
+  адрес в строке за экраном ведёт `appPath` в app.jsx без хуков). Вошедший
+  (токен `mct-token` в sessionStorage этой вкладки) уводится с лендинга
+  в `/app` инлайн-скриптом в начале `<head>` — ДО Метрики: на одном адресе
+  её скрипт иначе выполнялся бы рядом с токеном. noindex (X-Robots-Tag)
+  стоит только у location приложения, а robots.txt (из сборщика) двери
+  приложения НЕ закрывает — иначе поисковик не увидел бы noindex.
   Источник правды — ОДНА страница `landing/src/home.html` (бывшая /start/,
   главная с 18.10.2026; `/start/` отвечает 301 на `/`), собирает
   `tools/landing_build.py` в `index.html`, `uz/index.html`, `en/index.html`,
@@ -3433,7 +3446,7 @@ Spleeter или файл UVR MDX-Net), `MEDIA_SEP_THREADS` (1), `MEDIA_SEP_CHUNK
 **Форма на лендинге** (инвариант 35): `SIGNUP_FREE_PAGES` (пробные страницы
 новой организации, 0 — выключено; вместе с ним нужен `SIGNUP_TRIAL_USD > 0`,
 иначе переводить их нечем), `LANDING_ORIGINS` (кто вправе встроить `/handoff`,
-по умолчанию `https://click.simpletranslate.me`). Лендинг обещает «первая
+по умолчанию `https://simpletranslate.me` — лендинг и приложение на одном адресе). Лендинг обещает «первая
 страница бесплатно» — выкатывать его без этих двух чисел нельзя.
 **Субтитры в кадре** (инвариант 38) ключей не требуют; шрифты лежат
 в репозитории, ffmpeg нужен с libass (в apt-сборке есть). Необязательные:

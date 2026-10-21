@@ -4645,7 +4645,7 @@ SIGNUP_MAX_PER_HOUR = int(os.environ.get("SIGNUP_MAX_PER_HOUR", "5") or 5)
 SIGNUP_FREE_PAGES = max(0.0, float(os.environ.get("SIGNUP_FREE_PAGES", "0") or 0))
 # Кто вправе встроить `/handoff` и передать ему файл: лендинг. Через запятую.
 LANDING_ORIGINS = [o.strip().rstrip("/") for o in
-                   os.environ.get("LANDING_ORIGINS", "https://click.simpletranslate.me").split(",")
+                   os.environ.get("LANDING_ORIGINS", "https://simpletranslate.me").split(",")
                    if o.strip().startswith("https://") or o.strip().startswith("http://localhost")]
 CODE_TTL = int(os.environ.get("AUTH_CODE_TTL_MIN", "30")) * 60
 CODE_MAX_TRIES = 5
@@ -45226,6 +45226,16 @@ if FRONTEND_DIR.exists():
 
     @app.get("/", response_class=HTMLResponse)
     def index():
+        return HTMLResponse(_index_html(), headers={"Cache-Control": "no-cache"})
+
+    # С 21.10.2026 корень сайта — лендинг (его отдаёт nginx статикой), а
+    # приложение — эти три адреса. Страница одна и та же: что показать —
+    # вход, регистрацию или рабочую вкладку — решает браузер по токену
+    # и адресу (app.jsx). `/` выше остаётся приложением для запуска без nginx.
+    @app.get("/app", response_class=HTMLResponse)
+    @app.get("/login", response_class=HTMLResponse)
+    @app.get("/register", response_class=HTMLResponse)
+    def app_page():
         return HTMLResponse(_index_html(), headers={"Cache-Control": "no-cache"})
 
     # Вход в админку — по нестандартному адресу, а не /admin. Адрес — из

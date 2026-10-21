@@ -294,7 +294,8 @@
   try {
     var fq = new URLSearchParams(location.search || "").get("from");
     if (fq) { entry = /^(index|uz|en|start)$/.test(fq) ? fq : "other"; arrived = true; }
-    else if (/^https:\/\/click\.simpletranslate\.me/.test(document.referrer || "")) { entry = "landing"; arrived = true; }
+    /* Лендинг — корень simpletranslate.me (с 21.10.2026) и прежний click.simpletranslate.me. */
+    else if (/^https:\/\/(click\.)?simpletranslate\.me\/((uz|en)\/)?([?#]|$)/.test(document.referrer || "")) { entry = "landing"; arrived = true; }
     /* Перезагрузка (смена языка, F5) с тем же `?from=` — не новый приход. */
     if (arrived && sessionStorage.getItem("mct-entry-sent")) arrived = false;
     if (entry) sessionStorage.setItem("mct-entry", entry);

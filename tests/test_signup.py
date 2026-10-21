@@ -294,11 +294,11 @@ print()
 print("=== 10. /handoff: единственная страница, которую можно встроить, — лендингу ===")
 r = c.get("/handoff")
 csp = r.headers.get("content-security-policy") or ""
-check(r.status_code == 200 and "frame-ancestors https://click.simpletranslate.me" in csp,
+check(r.status_code == 200 and "frame-ancestors https://simpletranslate.me" in csp,
       "встраивать разрешено только лендингу")
 check("x-frame-options" not in {k.lower() for k in r.headers.keys()},
       "X-Frame-Options DENY не перекрывает разрешение лендингу")
-check('["https://click.simpletranslate.me"]' in r.text and "__ORIGINS__" not in r.text,
+check('["https://simpletranslate.me"]' in r.text and "__ORIGINS__" not in r.text,
       "страница отвечает тому же источнику, что назван в frame-ancestors")
 check(c.get("/terms").headers.get("x-frame-options") == "DENY",
       "остальные страницы по-прежнему не встраиваются")

@@ -40,4 +40,4 @@
 - Диссертация на 150 страниц по тарифу «Старт»: $75
 - Книга на 300 страниц по тарифу «Старт»: $150
 
-Сервис: https://simpletranslate.me · Лендинг: https://click.simpletranslate.me/ · Контакт: hello@simpletranslate.me
+Сервис: https://simpletranslate.me · Лендинг: https://simpletranslate.me/ · Контакт: hello@simpletranslate.me

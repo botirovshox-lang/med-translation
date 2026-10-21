@@ -39,7 +39,9 @@ KEY_LANG = "ru"
 # остальные — в своей папке. Менять корень нельзя: это canonical.
 LANG_DIRS = {"ru": "", "uz": "uz/", "en": "en/"}
 
-SITE = "https://click.simpletranslate.me"
+# С 21.10.2026 лендинг — корень simpletranslate.me, приложение — /app, вход —
+# /login и /register (click.simpletranslate.me отвечает 301 сюда же).
+SITE = "https://simpletranslate.me"
 APP = "https://simpletranslate.me"
 BRAND = "SimpleTranslate"
 UPDATED = "2026-10-19"            # ISO; меняется вместе с правкой текста
@@ -413,14 +415,14 @@ __HEADMETA__
 <meta property="og:url" content="__CANON__">
 <meta property="og:title" content="__OGTITLE__">
 <meta property="og:description" content="__OGDESC__">
-<meta property="og:image" content="https://click.simpletranslate.me/og.png">
+<meta property="og:image" content="__SITE__/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="__OGALT__">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="__OGTITLE__">
 <meta name="twitter:description" content="__OGDESC__">
-<meta name="twitter:image" content="https://click.simpletranslate.me/og.png">
+<meta name="twitter:image" content="__SITE__/og.png">
 <script type="application/ld+json">
 __JSONLD__
 </script>"""
@@ -435,7 +437,7 @@ def build_index(lang=KEY_LANG):
                 .replace("__METRIKA__", metrika()))
     m = META[lang]
     head = (HEAD_SEO.replace("__TITLE__", m["title"]).replace("__DESC__", m["desc"])
-            .replace("__CANON__", SITE + "/" + LANG_DIRS[lang])
+            .replace("__CANON__", SITE + "/" + LANG_DIRS[lang]).replace("__SITE__", SITE)
             .replace("__HREFLANG__", hreflang_links(lang))
             .replace("__HEADMETA__", head_meta(lang))
             .replace("__OGLOCALE__", m["locale"]).replace("__OGTITLE__", m["ogTitle"])
@@ -602,12 +604,19 @@ def build_robots():
         return ("# Закрыт от индексации и обхода (INDEXABLE = False в tools/landing_build.py).\n"
                 "User-agent: *\nDisallow: /\n\n"
                 "Content-Signal: search=no, ai-retrieval=no, ai-train=no\n")
-    lines = ["# click.simpletranslate.me — собирается tools/landing_build.py (INDEXABLE).",
-             "User-agent: *", "Allow: /", "",
-             "User-agent: Yandex", "Allow: /",
+    # Приложение живёт на том же адресе (с 21.10.2026). Его страницы (/app,
+    # /login, /register) НЕ закрыты здесь намеренно: закрытую в robots.txt
+    # страницу поисковик не скачивает и заголовка noindex (его ставит nginx
+    # приложению) не видит, а ссылки «Войти» с лендинга попадают в индекс
+    # голым адресом — «заблокировано в robots.txt». Закрыты только служебные
+    # двери. Запреты — в КАЖДОЙ группе: робот читает только свою.
+    deny = ["Disallow: " + p for p in ("/api/", "/handoff", "/media-dl/", "/t/a/")]
+    lines = ["# simpletranslate.me — собирается tools/landing_build.py (INDEXABLE).",
+             "User-agent: *", "Allow: /"] + deny + ["",
+             "User-agent: Yandex", "Allow: /"] + deny + [
              "Clean-param: utm_source&utm_medium&utm_campaign&utm_content&utm_term&yclid&gclid&ref /", ""]
     for bot in AI_BOTS:
-        lines += ["User-agent: " + bot, "Allow: /", ""]
+        lines += ["User-agent: " + bot, "Allow: /"] + deny + [""]
     lines += ["Sitemap: %s/sitemap.xml" % SITE, ""]
     return "\n".join(lines)
 

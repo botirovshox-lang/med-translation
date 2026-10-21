@@ -269,7 +269,7 @@ check(r.status_code == 200 and not any(u.get("guest") for u in j["users"])
 
 print("=== 10. Партнёр ведёт в гостевой режим ===")
 url = main.partners_mod.target_url({"target": "guest", "lang": "uz"}, "https://app.example", "", "CODE", {})
-check(url.startswith("https://app.example/?") and "try=1" in url and "ref=CODE" in url and "lang=uz" in url,
+check(url.startswith("https://app.example/app?") and "try=1" in url and "ref=CODE" in url and "lang=uz" in url,
       "ссылка партнёра «гость» — на экран бесплатного перевода (%s)" % url)
 
 print("=== 11. PDF гостя — страница с текстом и вёрсткой, место по зерну ===")

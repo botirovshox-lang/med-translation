@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Лендинг click.simpletranslate.me: собранное совпадает с исходниками, а SEO-разметка честна.
+"""Лендинг simpletranslate.me (корень сайта с 21.10.2026; прежде click.simpletranslate.me): собранное совпадает с исходниками, а SEO-разметка честна.
 
 Что сторожится и почему именно это:
 
@@ -74,7 +74,7 @@ check(30 <= len(title) <= 60, f"title {len(title)} знаков, надо 30–6
 check(120 <= len(desc) <= 160, f"description {len(desc)} знаков, надо 120–160")
 check(not desc.startswith(title), "description начинается с title слово в слово")
 check(html.count("<h1") == 1, "H1 не ровно один")
-check('<link rel="canonical" href="https://click.simpletranslate.me/">' in html, "canonical не самоссылающийся")
+check('<link rel="canonical" href="https://simpletranslate.me/">' in html, "canonical не самоссылающийся")
 if lb.INDEXABLE:
     check('<meta name="robots" content="index, follow' in html, "robots meta не index, follow при INDEXABLE")
 else:
@@ -153,7 +153,9 @@ ids = set(re.findall(r' id="([^"]+)"', html))
 for a in set(re.findall(r'href="#([^"]+)"', html)):
     check(a in ids, f"якорь #{a} без цели")
 check("Образцы" in page_text, "отзывы-примеры не помечены как образцы")
-check("click.simpletranslate.me" in (ROOT / "deploy" / "nginx-click.conf").read_text(encoding="utf-8"), "nginx-конфиг поддомена не про click")
+click_conf = (ROOT / "deploy" / "nginx-click.conf").read_text(encoding="utf-8")
+check("click.simpletranslate.me" in click_conf and "return 301 https://simpletranslate.me$request_uri" in click_conf,
+      "прежний адрес click не переводит на simpletranslate.me постоянным переходом")
 
 
 # ─── 9. Языки: страница на каждом, и ни одной русской строки в переводе ───
@@ -226,7 +228,7 @@ for code in lb.langs():
     if not form:
         continue
     f = form.group(0)
-    check(f'action="{lb.APP}/"' in f and 'method="get"' in f, f"{code}: форма не ведёт в приложение")
+    check(f'action="{lb.APP}/app"' in f and 'method="get"' in f, f"{code}: форма не ведёт в приложение")
     check('name="start" value="translate"' in f, f"{code}: форма не несёт start=translate")
     check(f'name="lang" value="{code}"' in f, f"{code}: форма не передаёт язык страницы")
     check(h.index('id="tr"') < h.index('id="what"'), f"{code}: форма не на первом экране")
@@ -252,11 +254,24 @@ check(nf == lb.build_404(), "404.html отстал от сборки")
 check('content="noindex' in nf, "404 не закрыта от индексации")
 for code in lb.langs():
     check(f'lang="{code}"' in nf and f'href="{lb.SITE}/{lb.LANG_DIRS[code]}"' in nf, f"404 без блока «{code}»")
-conf = (ROOT / "deploy" / "nginx-click.conf").read_text(encoding="utf-8")
-check("error_page 404 /404.html" in conf, "nginx не отдаёт свою 404")
-check("frame-src" in conf and lb.APP in conf, "CSP лендинга не пускает фрейм приложения")
-check("form-action 'self' " + lb.APP in conf, "CSP лендинга не пускает форму в приложение")
+# Лендинг и приложение на одном адресе: корень отдаёт nginx статикой,
+# заголовки лендинга — одним файлом, включённым в КАЖДЫЙ его location.
+app_conf = (ROOT / "deploy" / "nginx.conf").read_text(encoding="utf-8")
+conf = (ROOT / "deploy" / "nginx-landing-headers.conf").read_text(encoding="utf-8")
+check("root /opt/med-translation/landing;" in app_conf and "location = / { try_files /index.html" in app_conf,
+      "корень сайта не отдаёт лендинг")
+check(app_conf.count("include snippets/simpletranslate-landing.conf;") >= 6, "у места лендинга нет его заголовков")
+loc_root = app_conf[app_conf.index("    location / {"):]
+check('X-Robots-Tag "noindex' in loc_root.split("}")[0], "приложение не закрыто от индексации")
+check('add_header X-Robots-Tag' not in app_conf[:app_conf.index("    location")], "noindex на всём сервере закрыл бы лендинг")
+check("frame-src 'self'" in conf, "CSP лендинга не пускает фрейм приложения")
+check("form-action 'self'" in conf, "CSP лендинга не пускает форму в приложение")
 check("https://mc.yandex.ru" in conf, "CSP лендинга не пускает Метрику")
+for code in lb.langs():
+    h = (ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")).read_text(encoding="utf-8")
+    m = h.find("mc.yandex.ru/metrika/tag.js")
+    check(h.find('sessionStorage.getItem("mct-token")') != -1 and (m == -1 or h.find('sessionStorage.getItem("mct-token")') < m),
+          f"{code}: вошедшего не уводит в приложение ДО Метрики")
 for code in lb.langs():
     h = (ROOT / "landing" / (lb.LANG_DIRS[code] + "index.html")).read_text(encoding="utf-8")
     check(("mc.yandex.ru/metrika/tag.js" in h) == bool(lb.METRIKA_ID),

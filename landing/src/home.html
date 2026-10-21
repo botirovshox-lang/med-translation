@@ -2,6 +2,10 @@
 <html lang="__LANG__" class="nojs">
 <head>
 <meta charset="utf-8">
+<script>/* Вошедший человек (токен приложения в этой вкладке) — сразу в приложение:
+   лендинг и приложение на одном адресе. Стоит ДО Метрики: её скрипт не должен
+   успеть выполниться на одной странице с токеном. */
+try { if (sessionStorage.getItem("mct-token")) location.replace("/app" + location.search + location.hash); } catch (e) {}</script>
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 __HEADSEO__
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -647,7 +651,7 @@ __METRIKA__
 
 <header class="top" id="top">
   <div class="wrap">
-    <a class="brand" href="https://click.simpletranslate.me/"><svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0A5CF0"/><rect x="16" y="19" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="30" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="41" width="32" height="5" rx="2.5" fill="#2EE6D0"/></svg><span>SimpleTranslate</span></a>
+    <a class="brand" href="https://simpletranslate.me/"><svg width="34" height="34" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0A5CF0"/><rect x="16" y="19" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="30" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="41" width="32" height="5" rx="2.5" fill="#2EE6D0"/></svg><span>SimpleTranslate</span></a>
     <div class="sp"></div>
     <nav class="secnav" aria-label="Разделы" data-ta="aria-label:navAria"><a href="#pricing" data-t="navPrice">Цены</a><a href="#faq" data-t="navFaq">Вопросы</a><a href="#contact" data-t="navContact">Контакты</a></nav>
     <div class="langs" role="group" aria-label="Язык страницы" data-ta="aria-label:pageLang">
@@ -655,7 +659,7 @@ __METRIKA__
       <a href="/uz/" hreflang="uz" data-lang="uz" lang="uz">O‘zbekcha</a>
       <a href="/en/" hreflang="en" data-lang="en" lang="en">English</a>
     </div>
-    <a class="btn-ghost" id="login" href="https://simpletranslate.me/" data-t="login">Войти</a>
+    <a class="btn-ghost" id="login" href="https://simpletranslate.me/login" data-t="login">Войти</a>
   </div>
 </header>
 
@@ -669,7 +673,7 @@ __METRIKA__
       </div>
       <div class="h-form">
 
-        <form class="tr rv" style="--d:.15s" id="tr" action="https://simpletranslate.me/" method="get" novalidate>
+        <form class="tr rv" style="--d:.15s" id="tr" action="https://simpletranslate.me/app" method="get" novalidate>
           <input type="hidden" name="start" value="translate"><input type="hidden" name="lang" value="__LANG__">
           <p class="step"><b>01</b><span data-t="step1">Ваш файл</span></p>
           <label class="drop" id="tr-drop" for="tr-file">
@@ -972,7 +976,7 @@ __METRIKA__
             <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI02">Оплата только за объём, без подписки</span></li>
             <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI03">Один пользователь</span></li>
           </ul>
-          <a class="btn-ghost" data-cta="price-start" href="https://simpletranslate.me/" target="_blank" rel="noopener" data-t="prB0">Начать со «Старта»</a>
+          <a class="btn-ghost" data-cta="price-start" href="https://simpletranslate.me/register" target="_blank" rel="noopener" data-t="prB0">Начать со «Старта»</a>
         </article>
         <article class="tier rv hot" style="--d:0.08s">
           <span class="tag" data-t="prHot">Рекомендуем</span>
@@ -986,7 +990,7 @@ __METRIKA__
             <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI13">Команда до 5 человек с ролями</span></li>
             <li><svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 8.5l3.2 3L13 4.5"/></svg><span data-t="prI14">Приоритетная очередь</span></li>
           </ul>
-          <a class="go" data-cta="price-pro" href="https://simpletranslate.me/" target="_blank" rel="noopener" data-t="prB1">Выбрать «Профи»</a>
+          <a class="go" data-cta="price-pro" href="https://simpletranslate.me/register" target="_blank" rel="noopener" data-t="prB1">Выбрать «Профи»</a>
         </article>
         <article class="tier rv" style="--d:0.16s">
           <h3 data-t="prN2">Издательство</h3>
@@ -1062,12 +1066,12 @@ __METRIKA__
 
 <footer>
   <div class="wrap">
-    <a class="brand" href="https://click.simpletranslate.me/"><svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0A5CF0"/><rect x="16" y="19" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="30" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="41" width="32" height="5" rx="2.5" fill="#2EE6D0"/></svg><span>SimpleTranslate</span></a>
+    <a class="brand" href="https://simpletranslate.me/"><svg width="28" height="28" viewBox="0 0 64 64" aria-hidden="true"><rect width="64" height="64" rx="16" fill="#0A5CF0"/><rect x="16" y="19" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="30" width="32" height="5" rx="2.5" fill="#fff"/><rect x="16" y="41" width="32" height="5" rx="2.5" fill="#2EE6D0"/></svg><span>SimpleTranslate</span></a>
     <div class="sp"></div>
-    <a href="https://click.simpletranslate.me/" data-t="about">О сервисе</a>
+    <a href="https://simpletranslate.me/" data-t="about">О сервисе</a>
     <a href="https://simpletranslate.me/terms" data-t="terms">Оферта</a>
     <a href="https://simpletranslate.me/privacy" data-t="privacy">Персональные данные</a>
-    <a href="https://simpletranslate.me/" id="login2" data-t="login">Войти</a>
+    <a href="https://simpletranslate.me/login" id="login2" data-t="login">Войти</a>
     <span class="upd"><span data-t="updated">Последнее обновление:</span> <time datetime="__DATE_ISO__">__DATE_LOC__</time></span>
   </div>
 </footer>
@@ -1324,7 +1328,7 @@ __METRIKA__
       var base = b.getAttribute("href").split("?")[0];
       b.setAttribute("href", base + (q.toString() ? "?" + q.toString() : ""));
     });
-    var loginUrl = APP + "/?lang=" + lang;
+    var loginUrl = APP + "/login?lang=" + lang;
     $("login").href = loginUrl; $("login2").href = loginUrl;
     fillOptions(tgtSel, t("other"), POPULAR[lang]);
     fillOptions(srcSel, "", POPULAR[lang].concat([PAGE_SRC[lang]]));
@@ -1448,7 +1452,7 @@ __METRIKA__
     /* Всё, что пришло в адресе (метка приглашения, utm), едет дальше. */
     var q = withRef(new URLSearchParams(location.search));
     q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang); q.set("from", lang === "ru" ? "index" : lang);
-    var url = APP + "/?" + q.toString();
+    var url = APP + "/app?" + q.toString();
     ymGoal("tr_submit");
     if (!picked || picked.size > HANDOFF_MAX) { location.href = url; return; }
     goBtn.disabled = true; say("eBusy");
@@ -2053,7 +2057,7 @@ __METRIKA__
   function tlServiceUrl(src, tgt) {
     var q = withRef(new URLSearchParams(location.search));
     q.set("start", "translate"); q.set("src", src); q.set("tgt", tgt); q.set("lang", lang); q.set("from", lang === "ru" ? "index" : lang);
-    return APP + "/?" + q.toString();
+    return APP + "/app?" + q.toString();
   }
   var tiles = [].slice.call(document.querySelectorAll("[data-tile]")).map(function (el, n) {
     var st = el.querySelector(".ts");

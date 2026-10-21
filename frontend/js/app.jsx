@@ -522,12 +522,27 @@ function AuthLangPick() {
     }, langs.map(l => React.createElement("option", { key: l.code, value: l.code, lang: l.code }, l.native))));
 }
 
+/* Адрес в строке следует за экраном (с 21.10.2026 корень сайта — лендинг):
+   вход — /login, регистрация — /register, работа — /app. Метки адреса
+   (?ref=, ?pay=, ?start=) не трогаются — их читают позже. Вход в админку
+   (ADMIN_ENTRY) живёт по своему адресу и не переписывается. Без хука: тесты
+   рендера считают хуки по порядку, а замена адреса на тот же — пустое дело. */
+function appPathName() {
+  try { return (window.location && window.location.pathname) || ""; } catch (e) { return ""; }
+}
+function appPath(path) {
+  try {
+    if (window.ADMIN_ENTRY || !window.location || !window.history || window.location.pathname === path) return;
+    window.history.replaceState(window.history.state, "", path + window.location.search + window.location.hash);
+  } catch (e) { /* адрес не главное */ }
+}
+
 function AuthScreen({ onLogin, theme, onToggleTheme }) {
   /* Четыре состояния одной двери: вход, регистрация, код из письма,
      восстановление пароля. Регистрация показывается, только если сервер
      говорит, что она открыта (/auth/signup-info) — выключенная кнопка,
      ведущая в 403, хуже отсутствующей. */
-  const [mode, setMode] = useState("login");   // login | register | verify | forgot | reset
+  const [mode, setMode] = useState(() => (appPathName() === "/register" ? "register" : "login"));   // login | register | verify | forgot | reset
   const [info, setInfo] = useState({ signup: false, mail: false, brand: authCachedBrand() || "CAT Translator" });
   const [f, setF] = useState({ login: "", password: "", email: "", org: "", name: "", code: "" });
   const [accepted, setAccepted] = useState(false);
@@ -546,6 +561,8 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
       if (r) {
         setInfo(r); authRememberBrand(r.brand);
         if (intent && r.signup) setMode(m => (m === "login" ? "register" : m));
+        /* Пришёл на /register, а регистрация закрыта — дверь входа, а не пустая форма. */
+        if (!r.signup) setMode(m => (m === "register" ? "login" : m));
       }
     });
     if (intent && window.MCT_HANDOFF)
@@ -554,6 +571,7 @@ function AuthScreen({ onLogin, theme, onToggleTheme }) {
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const bad = (m) => { setErr(m); setShake(true); setTimeout(() => setShake(false), 400); };
   const go = (m) => { setMode(m); setErr(""); setNote(""); };
+  if (mode === "login" || mode === "register") appPath("/" + mode);
   const msg = (e) => (e && e.message) ? e.message : TR("Сервер недоступен");
   /* Какой экран двери открыт (`ui.auth.*`): форму регистрации открыли N раз,
      а зарегистрировались M — главный вопрос к двери. Без хука: тесты
@@ -1049,6 +1067,7 @@ function App() {
     profile: TabProfile, learn: TabLearn,
   };
   const Active = tabMap[store.tab] || TabEditor;
+  appPath("/app");
 
   /* Перезагрузка после выхода: иначе документы клиента остаются в памяти вкладки. */
   const logout = () => {
@@ -1056,7 +1075,7 @@ function App() {
        следующему на этом компьютере их не поднимать. */
     if (window.MCT_HANDOFF) window.MCT_HANDOFF.drop();
     try { sessionStorage.removeItem("mct-autorun"); sessionStorage.removeItem("mct-paid-at"); } catch (e) {}
-    const done = () => window.location.reload();
+    const done = () => window.location.assign("/login");
     if (window.API) window.API.logout().then(done, done); else done();
   };
   return React.createElement("div", { className: "shell" },

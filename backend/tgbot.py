@@ -230,7 +230,7 @@ def issue_access(st: dict, chat_id, rec: dict) -> None:
     L = links(lang, chat_id)
     if rec.get("login"):
         tg.send(chat_id, t(lang, "again"))
-        tg.send(chat_id, t(lang, "creds", site=tg.SITE, login=rec["login"],
+        tg.send(chat_id, t(lang, "creds", site=tg.link("/login"), login=rec["login"],
                            password=rec.get("password") or "—"))
         tg.send(chat_id, t(lang, "links", **L), menu_kb(lang))
         return
@@ -263,7 +263,7 @@ def issue_access(st: dict, chat_id, rec: dict) -> None:
     rec["issuedAt"] = datetime.now().isoformat(timespec="seconds")
     rec["asks"] = 0
     tg.send(chat_id, t(lang, "intro"))
-    tg.send(chat_id, t(lang, "creds", site=tg.SITE, login=rec["login"], password=rec["password"]))
+    tg.send(chat_id, t(lang, "creds", site=tg.link("/login"), login=rec["login"], password=rec["password"]))
     # Документы называются В САМОМ сообщении о выдаче доступа. Отметку
     # `acceptedTerms` сервис ставит по факту выдачи, и без этой строки она
     # была бы пустой формой: человек «согласился» с тем, чего не видел.

@@ -3,7 +3,8 @@
  * Зачем браузер: передача держится на трёх вещах, которых тест текста не видит
  * вовсе, — postMessage между двумя источниками, IndexedDB во ФРЕЙМЕ и то, что
  * браузер делит хранилище фрейма по САЙТУ верхнего окна. Лендинг и приложение
- * на проде — один сайт (click.simpletranslate.me и simpletranslate.me), и здесь
+ * на проде — один адрес (simpletranslate.me: лендинг в корне, приложение на /app),
+ * а здесь — строже, два имени одного сайта, и здесь
  * так же: два имени одного сайта `st.test`, оба смотрят на 127.0.0.1
  * (`--host-resolver-rules`). Разведи их по разным сайтам — и хранилище фрейма
  * отделилось бы от хранилища приложения, а тест честно бы это показал.
@@ -102,7 +103,8 @@ const server = http.createServer((req, res) => {
     }
     if (url.pathname === "/js/handoff.js")
       return send(200, "text/javascript", fs.readFileSync(path.join(ROOT, "frontend", "js", "handoff.js")));
-    if (url.pathname === "/") return send(200, "text/html; charset=utf-8", CHECK_PAGE);
+    /* Форма ведёт в приложение на /app (с 21.10.2026 корень сайта — лендинг). */
+    if (url.pathname === "/app") return send(200, "text/html; charset=utf-8", CHECK_PAGE);
   }
   send(404, "text/plain", "nf");
 });

@@ -17013,6 +17013,15 @@ async def resegment_project(pid: int, req: ResegmentRequest):
             save_state(STATE)
         return out
     out.update(await run_in_threadpool(_resegment_apply, pid, parsed, content, filename, pl))
+    # Как у автопересборки: картинки новой раскладки читаются сами (Ч1 —
+    # страницы, ушедшие картинками, иначе остались бы без строк).
+    try:
+        with _SAVE_LOCK:
+            project = get_project(pid)
+        _auto_read_images(project, parsed["kind"], parsed.get("imagePages") or 0)
+        save_state(STATE)
+    except Exception as e:
+        print("[backend] авточтение после пересборки %s: %s" % (pid, e), file=sys.stderr)
     return out
 
 

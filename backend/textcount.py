@@ -1097,23 +1097,33 @@ LAYER_CHECK_SAMPLE = int(os.environ.get("LAYER_CHECK_SAMPLE", "12"))
 def layer_fragment_pages(content: bytes, geoms: list) -> set:
     """Номера страниц-сканов, у которых строки слоя — обрывки видимых строк."""
     want = []
+    empty: set = set()
     for i, g in enumerate(geoms or []):
-        if not g or not g.get("lines"):
+        if not g:
             continue
         bx = g.get("box") or [0, 0, 0, 0]
         pw, ph = float(bx[2] - bx[0]), float(bx[3] - bx[1])
         if pw <= 0 or ph <= 0:
             continue
         big = max([(f[2] - f[0]) * (f[3] - f[1]) / (pw * ph) for f in (g.get("figs") or [])] or [0.0])
-        if big >= LAYER_SCAN_FIG and sum(1 for ln in g["lines"] if ln) >= LAYER_MIN_LINES:
+        if big < LAYER_SCAN_FIG:
+            continue
+        n_lines = sum(1 for ln in (g.get("lines") or []) if ln)
+        if n_lines == 0:
+            # Ч1б: страница-скан ВОВСЕ без слоя посреди PDF с текстом
+            # (у «Золотого петушка» — первая): текст у неё только на картинке,
+            # и без картинки-страницы её не прочитает никто — она оставалась
+            # оригиналом целиком.
+            empty.add(i)
+        elif n_lines >= LAYER_MIN_LINES:
             want.append(i)
     if not want:
-        return set()
+        return empty
     try:
         import numpy as np
         import pypdfium2 as pdfium      # type: ignore
     except ImportError:
-        return set()
+        return empty
     out: set = set()
     sc = 1.5
     if len(want) > LAYER_CHECK_SAMPLE > 0:
@@ -1126,7 +1136,7 @@ def layer_fragment_pages(content: bytes, geoms: list) -> set:
         try:
             pdf = pdfium.PdfDocument(io.BytesIO(content))
         except Exception:
-            return set()
+            return empty
     try:
         for n_done, i in enumerate(order):
             if n_done == len(first) and not out:
@@ -1181,7 +1191,7 @@ def layer_fragment_pages(content: bytes, geoms: list) -> set:
                 pdf.close()
             except Exception:
                 pass
-    return out
+    return out | empty
 
 
 def pdf_render_pages(content: bytes, indices: list, dpi: int = 0) -> Optional[list]:

@@ -302,6 +302,10 @@ check("слой покрывает свои строки — страница о
       textcount.layer_fragment_pages(content, geom([352.0] * 8)) == set())
 check("строки слоя — обрывки (10% строки) — страница картинкой",
       textcount.layer_fragment_pages(content, geom([70.0] * 8)) == {0})
+nolayer = geom([70.0] * 8)
+nolayer[0]["lines"] = []
+check("страница-скан вовсе без слоя — тоже картинкой (Ч1)",
+      textcount.layer_fragment_pages(content, nolayer) == {0})
 dig = geom([70.0] * 8)
 dig[0]["figs"] = [[0, 0, 100, 100]]
 check("цифровая страница (нет картинки во весь лист) не рисуется и не судится",

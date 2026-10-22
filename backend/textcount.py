@@ -1074,6 +1074,116 @@ def _render_scale(page, dpi: float) -> float:
     return max(0.05, scale)
 
 
+# Ч1. Слой распознавания у страницы-скана — обрывки видимых строк.
+# Скан со «слоем» (картинка страницы во весь лист и невидимый текст поверх)
+# бывает распознан так, что строка слоя накрывает лишь кусок видимой строки:
+# у «Золотого петушка» 1903 года (проект 111) строки слоя покрывали 4–11%
+# своих видимых строк, у цифровых PDF и CamScanner — 94–100%. Печать по
+# такому слою кладёт перевод кусочками по 6–9 точек, хвосты строк остаются
+# оригиналом, а надписи, прочитанные с той же картинки, печатаются вторым
+# слоем поверх. Правило: страница-скан, где медиана «доли видимой строки,
+# накрытой строкой слоя» ниже `LAYER_LINE_COVER`, — страница картинкой
+# (одним источником: текст читает зрячая модель). Считается только у
+# страниц с картинкой во весь лист — цифровой PDF не рисуется вовсе.
+LAYER_SCAN_FIG = float(os.environ.get("LAYER_SCAN_FIG", "0.85"))     # доля листа под картинкой
+LAYER_LINE_COVER = float(os.environ.get("LAYER_LINE_COVER", "0.5"))
+LAYER_MIN_LINES = 5
+# Качество слоя — свойство распознавателя всего файла: сперва столько
+# листов вразброс, и только если среди них есть обрывочные — все остальные
+# (у книги-скана на 378 листов это секунды вместо пары минут разбора).
+LAYER_CHECK_SAMPLE = int(os.environ.get("LAYER_CHECK_SAMPLE", "12"))
+
+
+def layer_fragment_pages(content: bytes, geoms: list) -> set:
+    """Номера страниц-сканов, у которых строки слоя — обрывки видимых строк."""
+    want = []
+    for i, g in enumerate(geoms or []):
+        if not g or not g.get("lines"):
+            continue
+        bx = g.get("box") or [0, 0, 0, 0]
+        pw, ph = float(bx[2] - bx[0]), float(bx[3] - bx[1])
+        if pw <= 0 or ph <= 0:
+            continue
+        big = max([(f[2] - f[0]) * (f[3] - f[1]) / (pw * ph) for f in (g.get("figs") or [])] or [0.0])
+        if big >= LAYER_SCAN_FIG and sum(1 for ln in g["lines"] if ln) >= LAYER_MIN_LINES:
+            want.append(i)
+    if not want:
+        return set()
+    try:
+        import numpy as np
+        import pypdfium2 as pdfium      # type: ignore
+    except ImportError:
+        return set()
+    out: set = set()
+    sc = 1.5
+    if len(want) > LAYER_CHECK_SAMPLE > 0:
+        step = len(want) / float(LAYER_CHECK_SAMPLE)
+        first = sorted({want[int(k * step)] for k in range(LAYER_CHECK_SAMPLE)})
+        order = first + [i for i in want if i not in set(first)]
+    else:
+        first, order = list(want), list(want)
+    with PDFIUM_LOCK:
+        try:
+            pdf = pdfium.PdfDocument(io.BytesIO(content))
+        except Exception:
+            return set()
+    try:
+        for n_done, i in enumerate(order):
+            if n_done == len(first) and not out:
+                break                   # выборка чистая — слой файла годный
+            with PDFIUM_LOCK:
+                try:
+                    page = pdf[i]
+                    try:
+                        im = page.render(scale=sc).to_pil().convert("L")
+                    finally:
+                        page.close()
+                except Exception:
+                    continue
+            g = geoms[i]
+            bx = g["box"]
+            ph = float(bx[3] - bx[1])
+            a = np.asarray(im).astype(np.int16)
+            H, W = a.shape
+            ink = a < float(np.percentile(a, 90)) - 60
+            ext = []
+            for ln in g["lines"]:
+                if not ln:
+                    continue
+                try:
+                    x0, base, size, x1 = float(ln[0]), float(ln[1]), float(ln[2]), float(ln[3])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                X0, X1 = max(0, int((x0 - bx[0]) * sc)), min(W, int((x1 - bx[0]) * sc))
+                Y0 = max(0, int((ph - (base - bx[1]) - 0.75 * size) * sc))
+                Y1 = min(H, int((ph - (base - bx[1]) + 0.2 * size) * sc))
+                if X1 - X0 < 3 or Y1 - Y0 < 2:
+                    continue
+                band = ink[Y0:Y1].any(axis=0)
+                if not band[X0:X1].any():
+                    continue
+                gap = max(2, int(1.2 * size * sc))
+                L, R = X0, X1
+                # Видимая строка: краска полосы слоя, тянущаяся в обе
+                # стороны с пробелами не шире межсловного.
+                while L > 0 and band[max(0, L - gap):L].any():
+                    L -= 1 if band[L - 1] else min(gap, L)
+                while R < W and band[R:min(W, R + gap)].any():
+                    R += 1 if band[R] else min(gap, W - R)
+                ext.append((X1 - X0) / float(max(1, R - L)))
+            if len(ext) >= LAYER_MIN_LINES:
+                ext.sort()
+                if ext[len(ext) // 2] < LAYER_LINE_COVER:
+                    out.add(i)
+    finally:
+        with PDFIUM_LOCK:
+            try:
+                pdf.close()
+            except Exception:
+                pass
+    return out
+
+
 def pdf_render_pages(content: bytes, indices: list, dpi: int = 0) -> Optional[list]:
     """[(номер страницы, PNG bytes | None)] — страницы, ОТРИСОВАННЫЕ целиком
     (pypdfium2). None вместо списка — рендера нет (модуль не поставлен):

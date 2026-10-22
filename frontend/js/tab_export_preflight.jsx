@@ -821,6 +821,117 @@ function ExpLayoutReport({ report, store }) {
       store.go("editor"); } }, TR("Показать строки")));
 }
 
+/* Приёмка готового файла (Ч5, backend/export_qa.py): лист выгрузки против
+   листа оригинала, независимо от отчёта сборки. Идёт на сервере фоном —
+   опрашиваем, пока «проверяем». Находки — словами человека и числом, без
+   внутренних названий; непроверенные правилами места (`verify`) человеку не
+   показываются, пока их не подтвердил взгляд модели. Свои хуки — в своём
+   компоненте: хуки экрана выгрузки тесты считают по порядку. */
+const EXP_QA_TEXT = {
+  UNTRANSLATED: TR("остался текст на языке оригинала"),
+  NOT_TRANSLATED: TR("строки без перевода остались оригиналом"),
+  OVERPRINT: TR("перевод лёг на соседний текст"),
+  SPILL: TR("перевод или закраска задели рисунок, линию или поле"),
+  SILENT: TR("перевод не напечатан на своём месте"),
+  BLANK: TR("место оригинала стёрто, а перевода там не видно"),
+  RESIDUE: TR("строка оригинала стёрта не до конца"),
+  DUPLICATE: TR("в одном месте напечатаны два перевода"),
+  PAGES: TR("число страниц не совпало с оригиналом"),
+  SMALL: TR("перевод заметно мельче оригинала"),
+  SIZE_MIX: TR("однотипный текст напечатан разным кеглем"),
+  MISSING: TR("перевод не попал в файл"),
+  FRAGMENT: TR("фраза переведена кусками"),
+  OVERLAP: TR("перевод налезает на соседнее"),
+  OVERFLOW: TR("текст вышел за свою рамку"),
+  SIZE: TR("кегль не как в оригинале"),
+  FONT: TR("начертание или цвет не как в оригинале"),
+  ALIGN: TR("выравнивание или отступы не как в оригинале"),
+  MERGED: TR("соседние куски слились в один"),
+  ERASE: TR("видны следы стирания"),
+  SYMBOL: TR("потерян или искажён знак"),
+  BLUR: TR("текст размыт"),
+  READ: TR("оригинал прочитан с ошибкой"),
+};
+
+function expQaRows(rep) {
+  const seen = {};
+  const add = (it) => {
+    const k = it.code;
+    if (!EXP_QA_TEXT[k]) return;
+    const r = seen[k] || (seen[k] = { code: k, n: 0, pages: {}, segs: {} });
+    r.n += it.n || 1;
+    if (it.page != null) r.pages[it.page + 1] = 1;
+    (it.segs || []).forEach(s => { r.segs[s] = 1; });
+  };
+  (rep.issues || []).forEach(it => { if (!it.verify) add(it); });
+  const vis = rep.vision || {};
+  (vis.issues || []).forEach(it => { if (it.real && (it.vision || it.code === "UNTRANSLATED")) add(it); });
+  return Object.keys(seen).map(k => seen[k]).sort((a, b) => b.n - a.n);
+}
+
+function ExpQaReport({ pid, fmt, store }) {
+  const [rep, setRep] = useState(null);
+  const [looking, setLooking] = useState(false);
+  useEffect(() => {
+    let dead = false, timer = null, tries = 0;
+    const tick = async () => {
+      if (!window.API || !window.API.exportQa) return;
+      let r = null;
+      try { r = await window.API.exportQa(pid, fmt); } catch (e) { r = null; }
+      if (dead) return;
+      if (r) setRep(r);
+      tries += 1;
+      if ((!r || r.state === "running" || r.state === "none") && tries < 90) timer = setTimeout(tick, 4000);
+    };
+    tick();
+    return () => { dead = true; if (timer) clearTimeout(timer); };
+  }, [pid, fmt]);
+  if (!rep || rep.state === "none" || rep.state === "stale") return null;
+  const box = { marginTop: 8, fontSize: 13 };
+  /* Не проверили — так и говорим: молчание читалось бы как «всё чисто». */
+  if (rep.state === "error" || rep.mode === "skipped") {
+    return React.createElement("div", { className: "muted", style: box },
+      rep.mode === "skipped" ? TR("Файл слишком большой для автоматической проверки — просмотрите его глазами.")
+        : TR("Проверить готовый файл автоматически не удалось — просмотрите его глазами."));
+  }
+  if (rep.state === "running") {
+    return React.createElement("div", { className: "row", style: Object.assign({ gap: 8 }, box) },
+      React.createElement("span", { className: "muted" }, TR("Проверяем готовый файл против оригинала, лист за листом…")));
+  }
+  const rows = expQaRows(rep);
+  const scope = rep.pages ? (TR(" (проверено страниц: ") + (rep.checked || 0) + TR(" из ") + rep.pages + ")") : "";
+  const canLook = store.can && store.can.super && rep.mode === "pixels";
+  const look = canLook && React.createElement(Btn, { variant: "ghost", size: "sm", disabled: looking, onClick: async () => {
+    setLooking(true);
+    try { await window.API.exportQaLook(pid, fmt); setRep(await window.API.exportQa(pid, fmt)); }
+    catch (e) { /* отказ сказан тостом api.js */ }
+    setLooking(false);
+  } }, looking ? TR("Смотрим…") : TR("Посмотреть глазами модели"));
+  if (!rows.length) {
+    return React.createElement("div", { className: "row row-wrap", style: Object.assign({ gap: 8 }, box) },
+      React.createElement(Icon, { name: "checkCircle", size: 16, style: { color: "var(--c-success)" } }),
+      React.createElement("span", null, TR("Готовый файл сверен с оригиналом: видимых дефектов не найдено") + scope
+        + (rep.partial ? TR(". Остальные страницы проверить не успели.") : ".")
+        + (rep.det === false ? TR(" Надписи внутри картинок не проверялись.") : "")),
+      look);
+  }
+  const segs = {};
+  rows.forEach(r => Object.keys(r.segs).forEach(s => { segs[s] = 1; }));
+  const ids = Object.keys(segs).map(Number);
+  return React.createElement("div", { style: box },
+    React.createElement("div", { style: { color: "var(--c-warning)" } },
+      TR("Готовый файл сверен с оригиналом — есть места, которые стоит посмотреть") + scope + ":"),
+    React.createElement("ul", { style: { margin: "4px 0 0 18px", padding: 0 } },
+      rows.slice(0, 8).map(r => React.createElement("li", { key: r.code },
+        EXP_QA_TEXT[r.code] + " — " + r.n
+          + (Object.keys(r.pages).length ? TR(" (страницы: ") + Object.keys(r.pages).slice(0, 10).join(", ") + ")" : "")))),
+    React.createElement("div", { className: "row row-wrap", style: { gap: 8, marginTop: 6 } },
+      ids.length > 0 && React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => {
+        store.setSegmentFilter(ids, { label: TR("Места из проверки готового файла") });
+        store.go("editor"); } }, TR("Показать строки")),
+      look));
+}
+
 function ExpSheetIcon({ kind }) {
   const box = { stroke: "currentColor", fill: "var(--bg)", strokeWidth: 1.2 };
   const line = (x, y, w, k) => React.createElement("line",
@@ -975,7 +1086,7 @@ function TabExport({ store, toast }) {
       const st = result.stats || {};
       setLayoutReport(st.layout ? { collisions: st.collisions || 0, pages: st.collisionPages || [],
                                     segs: st.collisionSegs || [], small: st.smallShare || 0,
-                                    smallPages: st.smallPages || [] } : null);
+                                    smallPages: st.smallPages || [], fmt, at: Date.now() } : null);
       // Про 1в1 говорим не «готово», а что именно легло в файл: сколько абзацев
       // переведено, сколько осталось на языке оригинала и в скольких границу
       // выделения пришлось ставить по доле длины, а не по знаку препинания.
@@ -1086,7 +1197,8 @@ function TabExport({ store, toast }) {
               : TR("«DOCX 1в1» сохраняет оформление оригинала. Остальные форматы собираются с нуля.")),
           project.pdfSheets && (fmt === "original" || fmt === "pdf")
             && React.createElement(ExpSheetsPick, { info: project.pdfSheets, value: sheets, onChange: setSheets }),
-          layoutReport && React.createElement(ExpLayoutReport, { report: layoutReport, store })
+          layoutReport && React.createElement(ExpLayoutReport, { report: layoutReport, store }),
+          layoutReport && React.createElement(ExpQaReport, { key: layoutReport.at, pid: project.id, fmt: layoutReport.fmt, store })
         ),
         !project.media && React.createElement("div", null,
           React.createElement("h2", { className: "section-title" }, TR("Ваш файл")),

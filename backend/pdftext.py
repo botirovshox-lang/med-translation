@@ -107,8 +107,10 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # странице (Ц6), таблица в своей колонке (Ц7), красная строка и разрез
 # адреса (Ц9); 18 — цепочка операторов до начала следующего куска без
 # оценочного потолка (ложные разрывы строк, где оригинал не стирался); 19 —
-# пересборка «same» снимает из карты и УСТАРЕВШИЕ разрывы (`_merge_layout_fields`).
-RULES_VERSION = 19
+# пересборка «same» снимает из карты и УСТАРЕВШИЕ разрывы (`_merge_layout_fields`);
+# 20 — Ч1: страница-скан, где строки слоя — обрывки видимых строк, —
+# картинкой (`textcount.layer_fragment_pages`).
+RULES_VERSION = 20
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -3514,7 +3516,7 @@ def _head_number(text: str) -> str:
     return m.group(1) or m.group(2) or ""
 
 
-def clean(pages: list, geom: "list | None" = None) -> dict:
+def clean(pages: list, geom: "list | None" = None, force_images: "set | None" = None) -> dict:
     """Страницы (список списков строк) → {items, report}.
 
     items — [("p", текст)], [("img", номер страницы)] и [("fig", номер
@@ -3527,6 +3529,12 @@ def clean(pages: list, geom: "list | None" = None) -> dict:
     страницу, либо None: без неё страница идёт по строкам, как раньше."""
     report = Counter()
     unreliable = {i for i, ls in enumerate(pages) if page_unreliable(ls)}
+    # Ч1: страница-скан, где строки слоя — обрывки видимых строк
+    # (`textcount.layer_fragment_pages`), — тоже картинкой.
+    forced = {i for i in (force_images or ()) if 0 <= i < len(pages)} - unreliable
+    unreliable |= forced
+    if forced:
+        report["layerFragments"] = len(forced)
     good_pages = [ls for i, ls in enumerate(pages) if i not in unreliable]
     heads, feet = running_heads(good_pages)
     words, hyphenated = _vocab(good_pages)

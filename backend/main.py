@@ -3991,7 +3991,7 @@ def _note_cost(step: str, model_id: str, tin: int, cached: int, tout: int, think
     # Ассистент поддержки идёт своим потоком в процессе API, а `_USAGE_SINK`
     # — счётчик ИДУЩЕГО прогона: без этой оговорки ответ в чате раздувал бы
     # расход чужой книги, её смету-факт и бюджет файла.
-    service = getattr(_JOB_TENANT, "id", None) == "_support"
+    service = getattr(_JOB_TENANT, "id", None) in ("_support", "_qa")
     with _USAGE_LOCK:
         for bucket in (_USAGE_TOTAL, None if service else _USAGE_SINK):
             if bucket is not None:
@@ -5716,6 +5716,7 @@ topdf_mod = _safe_import("topdf")
 # в исходном файле. Отдельный модуль — у него свои зависимости (reportlab,
 # шрифт с нужной письменностью), и нет их — отказываем словами.
 layout_pdf_mod = _safe_import("layout_pdf")
+export_qa_mod = _safe_import("export_qa")
 STORE = _store_mod.open_store(os.environ.get("DATABASE_URL"), STATE_FILE)
 
 # ─── Слив счётчиков событий в хранилище ──────────────────────────────
@@ -9281,6 +9282,7 @@ BLOCK_KIND = {
     "dead.writeback": "money",      # просили «как в оригинале», отдали Word
     "dead.pdfLayout503": "fix",
     "dead.pdfLeftover": "fix",      # в готовом PDF остался текст на языке оригинала
+    "dead.exportQa": "fix",         # приёмка готового файла нашла видимый дефект (Ч5)
     "dead.slotsDrift400": "fix",
     "dead.images": "loss",
     "dead.scan": "money",
@@ -10083,6 +10085,7 @@ METRICS_BLOCK_TEXT = {
     "dead.writeback": "просили «как в оригинале», формат этого не умеет — отдали Word",
     "dead.pdfLayout503": "PDF «как в оригинале» не собрался: нет шрифта или библиотеки",
     "dead.pdfLeftover": "в готовом PDF остался текст на языке оригинала",
+    "dead.exportQa": "приёмка готового файла нашла видимый дефект",
     "dead.slotsDrift400": "выгрузка 1в1 отказала: правила разбора файла изменились",
     "dead.images": "чтение надписей с картинок не запустилось",
     "dead.scan": "принесли скан: объём считаем выборкой, а не целиком",
@@ -13144,8 +13147,10 @@ def _store_source_docx(project: dict, content: bytes, filename: str,
     # а state.json переписывается при каждом сохранении. Нет раскладки —
     # выгрузка «как в оригинале» для PDF недоступна, и об этом говорится
     # вслух, а не подменяется Word-документом молча.
-    if layout and layout.get("boxes"):
-        payload["layout"] = {"boxes": {str(k): v for k, v in layout["boxes"].items()},
+    # Рамок слоя может не быть вовсе (Ч1: все страницы с текстом ушли
+    # картинками) — раскладка всё равно нужна: листы и надписи с картинок.
+    if layout and (layout.get("boxes") or layout.get("pages")):
+        payload["layout"] = {"boxes": {str(k): v for k, v in (layout.get("boxes") or {}).items()},
                              "pages": layout.get("pages") or [],
                              # Видимые строки без места (повёрнутые, по дуге): их
                              # оригинал на листе останется — выгрузка их называет.
@@ -13156,7 +13161,7 @@ def _store_source_docx(project: dict, content: bytes, filename: str,
         # можно только по этому плану (см. `_pdf_work_bytes`).
         if layout.get("virt"):
             payload["layout"]["virt"] = layout["virt"]
-    _note_virt(project, (layout or {}).get("virt") if layout and layout.get("boxes") else None)
+    _note_virt(project, (layout or {}).get("virt") if layout and (layout.get("boxes") or layout.get("pages")) else None)
     # Разбор картинок ПЕРЕЖИВАЕТ повторную привязку исходника. Карта абзацев
     # и карта картинок лежат в одном файле, но пишутся из разных мест: пока
     # эта запись их не сохраняла, нажатие «Заменить» в карточке исходника
@@ -35212,7 +35217,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
             sx_, sy_ = (fx1 - fx0) / w, (fy1 - fy0) / h
             # Стирание куска слоя — только у надписи, которая будет напечатана:
             # отсеянная ниже (вложенный повтор) его перевод уже не несёт.
-            out.append({"text": text, "_erase": er_cand, "boxes": [{
+            out.append({"text": text, "_erase": er_cand, "sid": (seg or {}).get("id"), "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
                 "fam": im_fam if im_fam == "hand" else ("" if b.get("serif") else "sans"),
                 "onFig": 1 if on_fig else 0,
@@ -36564,6 +36569,47 @@ def _leftover_kept(text: str, tokens: set) -> bool:
     return all(w in tokens for w in words)
 
 
+def _drop_duplicate_extras(layout: dict, texts: dict, extra: list) -> int:
+    """Ч3. Одно место — один источник: надпись, прочитанная с картинки
+    страницы, которая ложится на строку, уже напечатанную абзацем слоя,
+    не печатается вторым слоем поверх («два перевода одной строки» у скана
+    1903 года, проект 111, и у инфографики проекта 14). Из двух надписей
+    с картинки про одно место остаётся более длинная. Пары «абзац — абзац»
+    не трогаются: их раскладку разводит сама сборка (`_resolve_collisions`).
+    Сравниваются СТРОКИ мест долями листа (`export_qa.duplicates`), а не рамки
+    абзацев: рамка абзаца таблицы законно накрывает соседей. Возвращает,
+    сколько надписей снято."""
+    if export_qa_mod is None or not extra:
+        return 0
+    try:
+        sizes = {}
+        for i, pb in enumerate(layout.get("pages") or []):
+            sizes[i] = (float(pb[2]) - float(pb[0]), float(pb[3]) - float(pb[1]))
+        items = export_qa_mod.printed_items(layout, texts, extra)
+        dups = export_qa_mod.duplicates(items, sizes)
+    except Exception as e:
+        print("[backend] сверка двойной печати не прошла: %s" % e, file=sys.stderr)
+        return 0
+    drop: set = set()
+    for d in dups:
+        ka, kb = d["keys"]
+        if ka[0] == "p" and kb[0] == "x":
+            drop.add(int(kb[1:]))
+        elif kb[0] == "p" and ka[0] == "x":
+            drop.add(int(ka[1:]))
+        elif ka[0] == "x" and kb[0] == "x":
+            a, b = int(ka[1:]), int(kb[1:])
+            if a in drop or b in drop:
+                continue
+            la = len((extra[a].get("text") or "").strip())
+            lb = len((extra[b].get("text") or "").strip())
+            drop.add(b if la >= lb else a)
+    for k in drop:
+        if 0 <= k < len(extra):
+            extra[k]["text"] = ""
+    return len(drop)
+
+
 def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optional[dict]:
     """PDF «как в оригинале»: слой с переводом поверх исходных страниц.
 
@@ -36581,7 +36627,11 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
         return None
     data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
     layout = (data or {}).get("layout") or {}
-    if not layout.get("boxes"):
+    if not layout.get("boxes") and not ((data or {}).get("images") and "layout" in (data or {})):
+        # Рамок слоя нет вовсе. Раньше это значило «раскладки нет» и печать
+        # Word-документа, но у PDF, все страницы с текстом которого ушли
+        # картинками (Ч1: слой — обрывки строк), раскладка есть — это листы
+        # с надписями, прочитанными с картинок (`_pdf_image_boxes`).
         return None
     work = _pdf_work_bytes(project["id"], data)
     if work is None:
@@ -36597,6 +36647,7 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     extra = _pdf_image_boxes(project, data, erase, texts)
     for pidx in erase:
         texts[pidx] = ""
+    dup_dropped = _drop_duplicate_extras(layout, texts, extra)
     # Исходный текст абзацев — по нему печать меряет ширину начертания
     # оригинала (`layout_pdf._width_ratio`).
     by_id = {s_["id"]: s_ for s_ in project.get("segments") or []}
@@ -36605,7 +36656,8 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     try:
         pdf, stats = layout_pdf_mod.build(work, layout, texts,
                                           extra=extra,
-                                          lang=project.get("tgt"), sources=sources)
+                                          lang=project.get("tgt"), sources=sources,
+                                          keep_overlay=export_qa_mod is not None)
     except layout_pdf_mod.NotAvailable as e:
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "
                                  "Доступен Word-документ и PDF из него" % e)
@@ -36618,6 +36670,26 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
             p2s.setdefault(int(pa), []).append(sid)
         stats["collisionSegs"] = sorted({sid for pa in paras for sid in p2s.get(pa, [])})[:300]
     stats.pop("collisionParas", None)
+    # Ч5: слой сборки и то, что она собиралась печатать, — приёмке готового
+    # файла (`_export_qa_kick`). В отчёт не идут: это мегабайты и тексты.
+    # Сбой здесь экспорт не роняет: приёмка — побочная работа.
+    ov = stats.pop("_overlay", None)
+    order = stats.pop("_overlayOrder", None)
+    try:
+        if len(work) + len(ov or b"") <= EXPORT_QA_KEEP_MB * 1048576:
+            with _QA_INPUTS_LOCK:
+                _QA_INPUTS[int(project["id"])] = {
+                    "overlay": ov, "order": order, "layout": layout, "texts": dict(texts),
+                    "extra": extra, "sources": sources, "work": work,
+                    "pairs": data.get("pairs") or [], "at": time.time()}
+                # Входы держат мегабайты: последних трёх сборок хватает —
+                # выгрузку, собранную мимо «Экспорта», приёмка не проверяет.
+                while len(_QA_INPUTS) > 3:
+                    _QA_INPUTS.pop(min(_QA_INPUTS, key=lambda k: _QA_INPUTS[k].get("at") or 0), None)
+    except Exception as e:
+        print("[backend] входы приёмки не сохранены: %s" % e, file=sys.stderr)
+    if dup_dropped:
+        stats["dupDropped"] = dup_dropped
     virt = layout.get("virt")
     if virt:
         # «Лента»: перевод печатался по обычным страницам. Человек выбрал
@@ -37124,6 +37196,387 @@ def export_review_set(rid: int, req: ExportReviewPatch, request: Request):
     raise HTTPException(404, "Нет такой строки очереди")
 
 
+# ─── Приёмка выгрузки (Ч5, backend/export_qa.py) ───────────────────────
+# Готовый файл против оригинала, НЕЗАВИСИМО от отчёта сборки: сборка
+# отчитывается по своим данным, и чего её раскладка не знает (скан с
+# обрывочным слоем, проект 111), того её отчёт не видит. Приёмка смотрит
+# на пиксели листа выгрузки и листа оригинала.
+# Почему фоном, а не в запросе: рендер обоих файлов и детектор строк —
+# секунды на лист, книга — минуты; экспорт и так синхронный. Поток один
+# на процесс (замок), проверок разом — одна; отчёт лежит РЯДОМ с файлом
+# (`<файл>.qa.json`, внутри data/exports — инвариант 3) и привязан к нему
+# размером и временем правки: перевыгрузка делает прежний отчёт чужим.
+# В STATE приёмка не пишет ничего (инвариант 2), в проект — тоже: она
+# только называет. Исправляют ПРАВИЛА (Ч1–Ч3), а не цикл подгонки.
+EXPORT_QA_ON = os.environ.get("EXPORT_QA", "1") != "0"
+EXPORT_QA_BG_TIME = float(os.environ.get("EXPORT_QA_BG_TIME", "240"))
+_QA_INPUTS: dict = {}           # номер проекта → входы последней сборки PDF
+_QA_INPUTS_LOCK = threading.Lock()
+_QA_RUN_LOCK = threading.RLock()
+# Книга-гигант (оригинал + слой больше этого) приёмку по виду не проходит:
+# держать сотни мегабайт в памяти единственного воркера ради неё нельзя —
+# отчёт говорит «не проверялось» (`mode: skipped`), а не «чисто».
+EXPORT_QA_KEEP_MB = float(os.environ.get("EXPORT_QA_KEEP_MB", "120"))
+
+
+def _qa_path(path: Path) -> Path:
+    return path.with_name(path.name + ".qa.json")
+
+
+def _qa_file_sig(path: Path) -> list:
+    try:
+        st = path.stat()
+        return [int(st.st_size), int(st.st_mtime)]
+    except OSError:
+        return [0, 0]
+
+
+def _qa_read(path: Path) -> Optional[dict]:
+    try:
+        return json.loads(_qa_path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _qa_write(path: Path, rep: dict) -> None:
+    try:
+        tmp = _qa_path(path).with_name(_qa_path(path).name + ".%s.tmp" % secrets.token_hex(4))
+        tmp.write_text(json.dumps(rep, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(_qa_path(path)))
+    except Exception as e:
+        print("[backend] отчёт приёмки не записан: %s" % e, file=sys.stderr)
+
+
+def _qa_segs(issue: dict, p2s: dict, extra: list) -> list:
+    """Строки проекта, к которым ведёт находка (`pN` — абзац N слоя,
+    `xK` — надпись с картинки)."""
+    out = []
+    for k in [issue.get("key")] + list(issue.get("keys") or []) + [issue.get("near")]:
+        if not k or not isinstance(k, str):
+            continue
+        try:
+            n = int(k[1:])
+        except ValueError:
+            continue
+        if k[0] == "p":
+            out += p2s.get(n, [])
+        elif k[0] == "x" and 0 <= n < len(extra or []):
+            sid = (extra[n] or {}).get("sid")
+            if sid is not None:
+                out.append(sid)
+    return sorted(set(out))
+
+
+def _qa_structural(stats: dict) -> dict:
+    """Форматы, которые меряются не по виду (Word, Excel, PowerPoint,
+    текст, субтитры): по счётчикам самой выгрузки. «Не записано» (`lost`,
+    `mismatch`, `noslot`) — перевод есть, а в файл не лёг: это MISSING."""
+    issues = []
+    miss = sum(int(stats.get(k) or 0) for k in ("lost", "mismatch", "noslot"))
+    if miss:
+        issues.append({"code": "MISSING", "page": None, "n": miss})
+    un = int(stats.get("untranslated") or 0)
+    if un:
+        issues.append({"code": "NOT_TRANSLATED", "page": None, "n": un})
+    counts = {it["code"]: int(it["n"]) for it in issues}
+    return {"ok": not miss, "mode": "structural", "pages": None, "checked": None,
+            "partial": False, "issues": issues, "counts": counts}
+
+
+def _export_qa_kick(project: dict, fmt: str, path: Path, stats: dict) -> None:
+    """Запуск приёмки готового файла. Ничего не ждёт и не роняет экспорт."""
+    if not EXPORT_QA_ON or export_qa_mod is None:
+        return
+    try:
+        pid = int(project["id"])
+        sig = _qa_file_sig(path)
+        inp = None
+        if stats.get("layout"):
+            with _QA_INPUTS_LOCK:
+                inp = _QA_INPUTS.pop(pid, None)
+            if inp is None:
+                _qa_write(path, {"state": "done", "ok": None, "mode": "skipped", "file": sig,
+                                 "format": fmt, "issues": [], "counts": {}, "why": "big",
+                                 "at": datetime.now().strftime("%Y-%m-%d %H:%M")})
+                return
+        if inp is None:
+            # Не PDF «как в оригинале»: структурная проверка — сразу, по счётчикам.
+            rep = _qa_structural(stats or {})
+            rep.update({"state": "done", "file": sig, "format": fmt,
+                        "at": datetime.now().strftime("%Y-%m-%d %H:%M")})
+            _qa_write(path, rep)
+            return
+        segs = project.get("segments") or []
+        lang = export_qa_mod.Lang([s_.get("source") or "" for s_ in segs],
+                                  [s_.get("target") or "" for s_ in segs])
+        _qa_write(path, {"state": "running", "file": sig, "format": fmt,
+                         "at": datetime.now().strftime("%Y-%m-%d %H:%M")})
+        args = (pid, fmt, path, sig, inp, lang, _tenant_of(project),
+                project.get("title") or "", project.get("src") or "", project.get("tgt") or "")
+        threading.Thread(target=_export_qa_run, args=args, daemon=True,
+                         name="export-qa-%d" % pid).start()
+    except Exception as e:
+        print("[backend] приёмка выгрузки не запущена: %s" % e, file=sys.stderr)
+
+
+def _export_qa_run(pid: int, fmt: str, path: Path, sig: list, inp: dict, lang,
+                   tenant: str, title: str, src: str = "", tgt: str = "") -> None:
+    with _QA_RUN_LOCK:
+        try:
+            if _qa_file_sig(path) != sig:
+                return                  # файл уже перевыгружен — проверять нечего
+            out_bytes = path.read_bytes()
+            if _qa_file_sig(path) != sig:
+                return                  # перевыгрузили, пока читали
+            det = None
+            try:
+                if image_text is not None and image_text.engine_ready()[0]:
+                    det = image_text.detect_lines
+            except Exception:
+                det = None
+            rep = export_qa_mod.inspect_pdf(
+                inp["work"], out_bytes, inp["layout"], inp["texts"], inp["extra"], lang,
+                overlay=inp.get("overlay"), overlay_order=inp.get("order"),
+                time_budget=EXPORT_QA_BG_TIME, detect=det, sources=inp.get("sources"))
+            p2s: dict = {}
+            for pa, sid in inp.get("pairs") or []:
+                p2s.setdefault(int(pa), []).append(sid)
+            for it in rep.get("issues") or []:
+                sids = _qa_segs(it, p2s, inp.get("extra") or [])
+                if sids:
+                    it["segs"] = sids[:50]
+            rep.pop("scales", None)
+            rep["det"] = det is not None
+            rep.update({"state": "done", "file": sig, "format": fmt, "mode": "pixels",
+                        "at": datetime.now().strftime("%Y-%m-%d %H:%M")})
+            if _qa_file_sig(path) == sig:
+                _qa_write(path, rep)
+            pending = any(r.get("project") == pid and r.get("status") == "pending"
+                          for r in (STATE.get("exportReviews") or []))
+            if EXPORT_QA_VISION == "first" and pending:
+                try:
+                    vis = _export_qa_vision(pid, fmt, path, inp["work"], src, tgt)
+                    if vis:
+                        rep["vision"] = vis
+                except Exception as e:
+                    print("[backend] взгляд на выгрузку: %s" % e, file=sys.stderr)
+            _export_qa_tell(pid, tenant, title, fmt, rep)
+        except Exception as e:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            if _qa_file_sig(path) == sig:
+                _qa_write(path, {"state": "error", "file": sig, "format": fmt,
+                                 "why": type(e).__name__})
+
+
+def _export_qa_tell(pid: int, tenant: str, title: str, fmt: str, rep: dict) -> None:
+    """Событие метрик и сообщение владельцу сервиса: только коды и числа.
+    Владельцу — если файл в очереди сверки (первая выгрузка) и приёмка
+    нашла что-то видимое: это и есть материал для правил."""
+    bad = {k: v for k, v in (rep.get("counts") or {}).items()
+           if export_qa_mod.SEVERITY.get(k, 1) >= 2}
+    if bad:
+        _ev("dead.exportQa", tenant)
+    pending = any(r.get("project") == pid and r.get("status") == "pending"
+                  for r in (STATE.get("exportReviews") or []))
+    vis = rep.get("vision") or {}
+    vtxt = ""
+    if vis.get("calls"):
+        vtxt = "; модель: подтвердила %d, сняла %d, нашла сверх правил %d" % (
+            vis.get("confirmed") or 0, vis.get("dismissed") or 0,
+            sum(1 for it in vis.get("issues") or [] if it.get("vision")))
+    if (bad or vtxt) and pending:
+        tg_mod.notify_admin_async(
+            "🧪 Приёмка выгрузки: проект %s «%s» (%s): %s; проверено %s из %s стр.%s%s"
+            % (pid, title[:60], fmt, ", ".join("%s %d" % kv for kv in sorted(bad.items())) or "правила чисто",
+               rep.get("checked"), rep.get("pages"),
+               " (не всё — потолок времени)" if rep.get("partial") else "", vtxt))
+
+
+@app.get("/api/projects/{pid}/export/qa")
+def export_qa_report(pid: int, format: str = "pdf"):
+    """Отчёт приёмки готового файла: {state, ok, counts, issues}.
+    Наружу — коды, страницы, рамки долями листа и номера строк проекта;
+    тексты находок — это текст документа самого клиента. Денег и имён
+    моделей здесь нет по построению: платный взгляд (`vision`) пишет свой
+    раздел, и его стоимость видит только суперпользователь."""
+    project = get_project(pid)
+    fmt = (format or "pdf").lower()
+    if fmt not in EXPORT_EXT:
+        raise HTTPException(400, "Неизвестный формат")
+    path = _export_path(project, fmt)
+    if not path.exists():
+        return {"state": "none"}
+    rep = _qa_read(path)
+    if rep is None:
+        return {"state": "none"}
+    if rep.get("file") != _qa_file_sig(path):
+        return {"state": "stale"}
+    if rep.get("state") == "running":
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            age = 0
+        if age > EXPORT_QA_BG_TIME * 3 + 600:
+            # Поток приёмки не дожил (выкат, рестарт): «проверяем» навсегда
+            # было бы враньём — честно «не проверено».
+            return {"state": "error", "why": "lost"}
+    out = {k: rep.get(k) for k in ("state", "ok", "pages", "checked", "partial", "counts",
+                                   "mode", "at", "detected", "det", "why")}
+    inner = ("key", "keys", "near")
+    out["issues"] = [{k: v for k, v in it.items() if k not in inner}
+                     for it in (rep.get("issues") or [])[:200]]
+    vis = rep.get("vision")
+    if vis:
+        sup = not _hide_cost()
+        keep = ("state", "issues", "pages", "confirmed", "dismissed") + (("cost", "calls") if sup else ())
+        v2 = {k: vis.get(k) for k in keep if k in vis}
+        if not sup:
+            # Заметка модели — свободный текст (может назвать модель или
+            # поставщика, 24а); «budget» раскрывает потолок расхода (22а).
+            v2["issues"] = [{k: x for k, x in it.items() if k != "what"} for it in (v2.get("issues") or [])]
+            if v2.get("state") == "budget":
+                v2["state"] = "done"
+        out["vision"] = v2
+    return out
+
+
+
+# Платный взгляд на выгрузку (Ч5б). Правила не видят начертания, выключки,
+# перевода кусками и не уверены в растровых строках (`verify`) — это видит
+# зрячая модель. Платим МЫ, а не клиент: расход идёт на служебную
+# организацию `_qa` (как ассистент поддержки — `_support`), лимит клиента
+# его не режет и сумм клиент не видит (22а). Сам — только у ПЕРВОЙ выгрузки
+# нового файла (строка очереди сверки), в пределах потолка на файл и на
+# сутки; повторно — кнопкой суперпользователя. Картинки страниц уходят тому
+# же поставщику, что читает надписи (политика его называет).
+EXPORT_QA_VISION = os.environ.get("EXPORT_QA_VISION", "first")   # first | off
+EXPORT_QA_VISION_USD = float(os.environ.get("EXPORT_QA_VISION_USD", "0.3"))
+EXPORT_QA_VISION_DAY_USD = float(os.environ.get("EXPORT_QA_VISION_DAY_USD", "3"))
+QA_SERVICE_TENANT = "_qa"
+# Счёт суток — в памяти процесса: рестарт его обнуляет. Это потолок от
+# случайной лавины первых выгрузок, а не бухгалтерия: настоящие деньги
+# пишутся журналом (`exportqa` в `usage_daily`) у служебной организации.
+_QA_VISION_DAY: dict = {}
+_QA_VISION_DAY_LOCK = threading.Lock()
+
+
+def _export_qa_vision(pid: int, fmt: str, path: Path, orig: bytes, src: str, tgt: str,
+                      force: bool = False) -> Optional[dict]:
+    """Платный взгляд по готовому отчёту приёмки. Пишет раздел `vision`
+    в отчёт рядом с файлом и возвращает его; None — смотреть нечего или
+    нечем (нет ключа, потолок суток)."""
+    rep = _qa_read(path)
+    if not rep or rep.get("state") != "done" or rep.get("mode") != "pixels":
+        return None
+    if rep.get("file") != _qa_file_sig(path):
+        return None
+    if rep.get("vision") and not force:
+        return rep["vision"]
+    day = datetime.now().strftime("%Y-%m-%d")
+    spent_day = float(_QA_VISION_DAY.get(day) or 0.0)
+    if spent_day >= EXPORT_QA_VISION_DAY_USD and not force:
+        return None
+    mdl = _resolve_model(_dm("ocr"))
+    if not _provider_ready(mdl):
+        return None
+    pages = export_qa_mod.vision_pages(rep)
+    if not pages:
+        return None
+    out = {"state": "done", "pages": [], "issues": [], "confirmed": 0, "dismissed": 0,
+           "cost": 0.0, "calls": 0}
+    issues = rep.get("issues") or []
+    prev_tenant = getattr(_JOB_TENANT, "id", None)
+    _JOB_TENANT.id = QA_SERVICE_TENANT
+    try:
+        client = _llm_client(mdl, timeout=120, step="exportqa", max_retries=1)
+        for pg in pages:
+            if out["cost"] >= EXPORT_QA_VISION_USD:
+                out["state"] = "budget"
+                break
+            got = export_qa_mod.vision_pair(orig, path.read_bytes(), pg, issues)
+            if got is None:
+                continue
+            jpeg, marks = got
+            extra = ({"max_completion_tokens": 3000} if mdl["api"] == "modern"
+                     else {"max_tokens": 2000, "temperature": 0})
+            try:
+                resp = client.chat.completions.create(
+                    model=mdl["id"],
+                    messages=[{"role": "system", "content": export_qa_mod.vision_prompt(src, tgt, marks)},
+                              {"role": "user", "content": [{"type": "image_url", "image_url": {
+                                  "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(),
+                                  "detail": "high"}}]}],
+                    **extra)
+            except Exception as e:
+                print("[backend] взгляд на выгрузку не удался: %s" % _err_public(e), file=sys.stderr)
+                out["state"] = "error"
+                break
+            _note_usage("exportqa", mdl["id"], resp)
+            cost = float(_resp_cost(mdl["id"], resp) or 0.0)
+            out["cost"] = round(out["cost"] + cost, 4)
+            out["calls"] += 1
+            with _QA_VISION_DAY_LOCK:
+                _QA_VISION_DAY[day] = float(_QA_VISION_DAY.get(day) or 0.0) + cost
+            got = export_qa_mod.vision_parse(resp.choices[0].message.content or "", marks)
+            out["pages"].append(pg)
+            byn = {m["n"]: m for m in marks}
+            for n in got["confirmed"]:
+                out["confirmed"] += 1
+                out["issues"].append({"code": byn[n]["code"], "page": pg, "box": byn[n]["box"],
+                                      "mark": n, "real": True})
+            for n in got["dismissed"]:
+                out["dismissed"] += 1
+                out["issues"].append({"code": byn[n]["code"], "page": pg, "box": byn[n]["box"],
+                                      "mark": n, "real": False})
+            for e in got["extra"]:
+                out["issues"].append(dict(e, page=pg, real=True, vision=True))
+    finally:
+        _JOB_TENANT.id = prev_tenant
+    rep2 = _qa_read(path) or rep
+    if rep2.get("file") == rep.get("file"):
+        rep2["vision"] = out
+        _qa_write(path, rep2)
+    return out
+
+
+@app.post("/api/admin/export-qa/{pid}")
+def export_qa_vision_run(pid: int, format: str = "pdf"):
+    """Платный взгляд на последнюю выгрузку проекта — суперпользователю
+    (разбор очереди сверки, повторная проверка после правил)."""
+    # Сперва проект: чужой — 404, как у любой двери с номером (инвариант 11);
+    # своему не-суперу — 403.
+    project = get_project(pid)
+    if not _actor_is_super():
+        raise HTTPException(403, "Только администратору сервиса")
+    fmt = (format or "pdf").lower()
+    if fmt not in EXPORT_EXT:
+        raise HTTPException(400, "Неизвестный формат")
+    path = _export_path(project, fmt)
+    rep = _qa_read(path) if path.exists() else None
+    if not rep or rep.get("state") != "done":
+        raise HTTPException(409, "Приёмка этой выгрузки ещё не готова")
+    data = _load_source_map(pid) if project.get("sourceDocx") else None
+    orig = _pdf_work_bytes(pid, data) if data else None
+    if orig is None:
+        raise HTTPException(409, "Нет оригинала для сравнения")
+    # Отдельным потоком: в нём нет сессии суперпользователя, и расход идёт
+    # служебной организации `_qa`, а не организации того, кто нажал.
+    box: dict = {}
+
+    def _go():
+        with _QA_RUN_LOCK:
+            box["v"] = _export_qa_vision(pid, fmt, path, orig, project.get("src") or "",
+                                         project.get("tgt") or "", force=True)
+    th = threading.Thread(target=_go, daemon=True, name="export-qa-look-%d" % pid)
+    th.start()
+    th.join(timeout=600)
+    got = box.get("v")
+    if got is None:
+        raise HTTPException(503, "Взгляд модели сейчас недоступен")
+    return got
+
+
 @app.post("/api/projects/{pid}/export")
 def export_project(pid: int, req: ExportRequest):
     _audit("project.export", project=pid, format=getattr(req, "format", None))
@@ -37172,6 +37625,7 @@ def export_project(pid: int, req: ExportRequest):
     STATE["exportHistory"] = STATE["exportHistory"][:50]
     _export_review_note(project, fmt, path)
     save_state(STATE)
+    _export_qa_kick(project, fmt, path, stats or {})
     return {"ok": True, "file": path.name, "size": f"{size_kb} КБ", "stats": stats,
             "url": f"/api/projects/{pid}/export/download?format={fmt}&source={1 if req.source else 0}"}
 

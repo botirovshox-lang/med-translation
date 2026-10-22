@@ -1158,7 +1158,12 @@ def pdf_to_docx(content: bytes) -> tuple:
                 "читается автоматически. Обратно выгружается PDF из страниц с переведёнными "
                 "надписями." % len(imgs), len(imgs), None)
     textcount.progress("clean")
-    res = pdftext.clean(pages, geom=geoms)
+    try:
+        frag = textcount.layer_fragment_pages(content, geoms)
+    except Exception:
+        frag = set()
+    res = (pdftext.clean(pages, geom=geoms, force_images=frag) if frag
+           else pdftext.clean(pages, geom=geoms))
     textcount.progress("build")
     page_images: dict = {}
     if res["imagePages"]:
@@ -1233,8 +1238,11 @@ def pdf_to_docx(content: bytes) -> tuple:
     if n_text_fallback > 0:
         note += (" Страниц с ненадёжным слоем без картинки страницы оставлено текстом "
                  "как есть: %d." % n_text_fallback)
+    # Ч1: страницы, ушедшие картинками, тоже выгружаются на своих листах
+    # (надписи — поверх картинки страницы), поэтому «тот же PDF» и тогда,
+    # когда рамок абзацев слоя нет вовсе.
     note += (" Надписи внутри картинок не разобраны. Обратно выгружается тот же PDF "
-             "с переводом на месте оригинала." if built["layout"] else
+             "с переводом на месте оригинала." if (built["layout"] or n_img) else
              " Надписи внутри картинок не разобраны. Обратно выгружается PDF, "
              "собранный из документа Word.")
     return (docx_bytes, "pdf", note, n_img,

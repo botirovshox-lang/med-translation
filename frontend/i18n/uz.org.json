@@ -571,6 +571,7 @@
   "раз пробному клиенту перевели фрагмент большого документа — он ждёт весь": "marta sinov mijoziga katta hujjatdan bo'lak tarjima qilindi — u butunini kutmoqda",
   "озвучек собрано приглушением: голос оригинала слышен под переводом": "ta ovoz berish faqat pasaytirish bilan yig‘ildi: asl ovoz tarjima ostida eshitiladi",
   "раз в готовом PDF остался текст на языке оригинала": "marta tayyor PDF da asl tildagi matn qoldi",
+  "раз приёмка готового файла нашла видимый дефект": "marta tayyor faylni tekshirish ko‘rinadigan nuqson topdi",
   "Ищем страницы внутри длинных листов": "Uzun varaqlar ichidan sahifalarni qidiryapmiz",
   "Перечитываем файл": "Faylni qayta o‘qiyapmiz",
   "Чтение файлов улучшено — строки обновятся сами, нажимать ничего не нужно.": "Fayllarni o‘qish yaxshilandi — qatorlar o‘zi yangilanadi, hech narsa bosish shart emas.",

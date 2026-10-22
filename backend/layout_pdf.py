@@ -1552,6 +1552,26 @@ def _dict_cut(word: str, head: str) -> bool:
     return head.endswith("-") and not (0 <= n < len(word) and word[n] == "-")
 
 
+def _hyphen_cut_ok(word: str, k: int) -> bool:
+    """Ч2. Свой дефис слова — место переноса, только если по обе его стороны
+    куски не короче двух букв, а цифры в слове нет вовсе: «COVID-19»,
+    «SARS-CoV-2», «IL-6», «ГПП-1», «COVID-19-га» — одно имя, и разорванное
+    по дефису («COVID-» / «19-га», инфографика проекта 118) читается как
+    два куска. «почечно-сердечно-сосудистых», «ТБ-диспансер» рвутся,
+    как рвались."""
+    def part(a: int, b: int) -> str:
+        return word[a:b].strip(_HYPH_TAIL + "(«\"'")
+    if any(ch.isdigit() for ch in word):
+        return False                    # «COVID-19-га», «IL-6», «SARS-CoV-2» — код целиком
+    left_start = word.rfind("-", 0, k) + 1
+    right_end = word.find("-", k + 1)
+    right_end = len(word) if right_end < 0 else right_end
+    for p in (part(left_start, k), part(k + 1, right_end)):
+        if sum(ch.isalpha() for ch in p) < 2:
+            return False                # «β-»: обрывок в одну букву
+    return True
+
+
 def _hyph_split(word: str, hy, room: float, w_of) -> "tuple | None":
     """(часть с дефисом, остаток): самый длинный перенос слова, у которого
     часть с дефисом входит в `room`. Только слова из букв (цифры, адреса,
@@ -1561,7 +1581,8 @@ def _hyph_split(word: str, hy, room: float, w_of) -> "tuple | None":
     # Составное слово через дефис («почечно-сердечно-сосудистого») рвётся
     # по СВОЕМУ дефису — словарь для этого не нужен, на любом языке.
     if "-" in word.strip("-"):
-        cuts = [k + 1 for k, ch in enumerate(word) if ch == "-" and 2 <= k < len(word) - 3]
+        cuts = [k + 1 for k, ch in enumerate(word) if ch == "-" and 2 <= k < len(word) - 3
+                and _hyphen_cut_ok(word, k)]
         for p in sorted(cuts, reverse=True):
             if w_of(word[:p]) <= room:
                 return word[:p], word[p:]
@@ -5673,14 +5694,22 @@ def _with_bullet(text: str, boxes: list) -> str:
 
 
 def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = None,
-          lang: "str | None" = None, sources: "dict | None" = None) -> tuple:
+          lang: "str | None" = None, sources: "dict | None" = None,
+          keep_overlay: bool = False) -> tuple:
     """См. `_build`. Стирание надписей нейросетью (Ф9) — под одним потолком
-    времени на всю выгрузку: картинок в книге бывают сотни, воркер один."""
+    времени на всю выгрузку: картинок в книге бывают сотни, воркер один.
+
+    `keep_overlay` (Ч5): слой перевода ДО наложения на страницы остаётся
+    в отчёте (`_overlay` — PDF слоя, `_overlayOrder` — номер страницы слоя
+    у каждой страницы документа). Его непрозрачные точки и есть то, где
+    сборка печатала на самом деле, — по ним приёмка выгрузки
+    (`export_qa`) отличает «перевод вылез за своё место» от «закраска легла
+    куда положено». Вызывающий ОБЯЗАН снять оба ключа до показа отчёта."""
     tp = _tp()
     if tp is None or not hasattr(tp, "lama_budget"):
-        return _build(pdf_bytes, layout, texts, extra, lang, sources)
+        return _build(pdf_bytes, layout, texts, extra, lang, sources, keep_overlay)
     with tp.lama_budget():
-        res = _build(pdf_bytes, layout, texts, extra, lang, sources)
+        res = _build(pdf_bytes, layout, texts, extra, lang, sources, keep_overlay)
         st = tp.lama_stats()
     if st.get("lama") or st.get("refused"):
         try:
@@ -5691,7 +5720,8 @@ def build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = No
 
 
 def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = None,
-           lang: "str | None" = None, sources: "dict | None" = None) -> tuple:
+           lang: "str | None" = None, sources: "dict | None" = None,
+           keep_overlay: bool = False) -> tuple:
     """(PDF, отчёт).
 
     `layout` — {"boxes": {номер абзаца: [рамки]}}, `texts` — {номер абзаца:
@@ -6380,6 +6410,9 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
     stats["nocolor"] = len(sampler.missed & pages_used)
     stats["slotParagraphs"] = len(slot_plan)
     buf.seek(0)
+    if keep_overlay:
+        stats["_overlay"] = buf.getvalue()
+        stats["_overlayOrder"] = list(order)
     overlay = PdfReader(buf)
     writer = PdfWriter()
     for i, page in enumerate(reader.pages):

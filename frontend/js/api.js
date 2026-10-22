@@ -636,6 +636,8 @@ function onUnauthorized() {
     checksBatch:(pid, segIds, bcModel)    => call("POST",   `/projects/${pid}/checks/batch`,   { segment_ids: segIds || null, run_backcheck: true, bc_model: bcModel || null }),
     preflight:     (pid)                    => call("POST",   `/projects/${pid}/preflight`),
     exportProject: (pid, format, source, sheets) => call("POST", `/projects/${pid}/export`,         { format, source: source !== false, sheets: sheets === "original" ? "original" : "pages" }),
+    exportQa:      (pid, format)          => call("GET",    `/projects/${pid}/export/qa?format=${encodeURIComponent(format || "pdf")}`),
+    exportQaLook:  (pid, format)          => call("POST",   `/admin/export-qa/${pid}?format=${encodeURIComponent(format || "pdf")}`),
     /* Исходный .docx для экспорта 1в1. Переводы и проверки не трогает: пишется
        только файл и карта абзацев рядом с ним. force — согласие человека
        положить файл, совпавший меньше чем наполовину. */

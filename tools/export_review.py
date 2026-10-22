@@ -64,11 +64,58 @@ def cmd_list(a):
     if not rows:
         print("очередь пуста" if not a.all else "строк нет")
         return
+    qa = _qa_summaries(rows)
     for r in rows:
         print("#%-4s %-8s проект %-5s %-6s %s→%s  %s  «%s»  %s" % (
             r.get("id"), r.get("status"), r.get("project"), r.get("format"),
             r.get("src"), r.get("tgt"), r.get("at"), _plain(r.get("title"))[:60],
             _plain(r.get("report"))))
+        q = qa.get(r.get("id"))
+        if q:
+            print("      приёмка: %s" % q)
+
+
+def _qa_summaries(rows) -> dict:
+    """Сводка приёмки (Ч5) по строкам очереди: отчёт лежит рядом с файлом
+    выгрузки на сервере (`<файл>.qa.json`). Одним ssh на все строки."""
+    paths = {}
+    for r in rows:
+        f = r.get("file") or ""
+        if not SAFE_NAME.match(f) and not f.endswith((".xlsx", ".pptx", ".html", ".txt", ".csv", ".srt", ".vtt")):
+            continue
+        if any(c in f for c in "/\'\"`$;&|<>"):
+            continue
+        ten = re.sub(r"[^A-Za-z0-9_-]+", "_", str(r.get("tenant") or "default"))
+        paths[r.get("id")] = "%s/backend/data/exports/%s/%d/%s.qa.json" % (APP, ten, int(r.get("project") or 0), f)
+    if not paths:
+        return {}
+    cmd = "; ".join("echo '@@%s'; cat %s 2>/dev/null" % (rid, shlex.quote(pth)) for rid, pth in paths.items())
+    out = {}
+    try:
+        raw = ssh(cmd)
+    except SystemExit:
+        return {}
+    for chunk in raw.split("@@")[1:]:
+        head, _, body = chunk.partition(chr(10))
+        try:
+            rep = json.loads(body.strip() or "null")
+        except Exception:
+            rep = None
+        if not rep:
+            continue
+        counts = ", ".join("%s %s" % kv for kv in sorted((rep.get("counts") or {}).items()))
+        vis = rep.get("vision") or {}
+        txt = "%s; стр. %s/%s%s" % (counts or "чисто", rep.get("checked"), rep.get("pages"),
+                                   " (не всё)" if rep.get("partial") else "")
+        if vis.get("calls"):
+            txt += "; модель: +%d / −%d, сверх правил %d" % (
+                vis.get("confirmed") or 0, vis.get("dismissed") or 0,
+                sum(1 for it in vis.get("issues") or [] if it.get("vision")))
+        try:
+            out[int(head.strip())] = txt
+        except ValueError:
+            pass
+    return out
 
 
 def cmd_fetch(a):

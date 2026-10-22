@@ -16848,6 +16848,42 @@ def _resegment_parse(filename: str, content: bytes) -> dict:
     return _parse_upload(filename, content)
 
 
+def _reseg_pages_changed(pid: int, parsed: dict) -> bool:
+    """Ч1: у PDF по новым правилам другие страницы-картинки (страница со
+    слоем-обрывками или вовсе без слоя ушла картинкой). Сравнивается
+    ЧИСЛО страниц-картинок нового разбора с числом в прежнем файле
+    (`imagePages` из примечания разбора не хранится — считаем картинки
+    страниц в собранных документах): сравнение отпечатков всех картинок
+    давало бы «изменилось» от другой сборки pdfium на тех же страницах."""
+    if (parsed.get("kind") or "") != "pdf":
+        return False
+    try:
+        docx_path, _map = _source_paths(pid)
+        old = docx_path.read_bytes() if docx_path.exists() else b""
+        return _docx_page_images(parsed["docx"]) != _docx_page_images(old)
+    except Exception:
+        return False
+
+
+def _docx_page_images(blob: bytes) -> int:
+    """Число картинок СТРАНИЦ (номер страницы в метаданных PNG,
+    `importers._png_with_index`/`medcat-page`) в собранном .docx."""
+    if not blob:
+        return 0
+    import zipfile
+    n = 0
+    try:
+        with zipfile.ZipFile(io.BytesIO(blob)) as z:
+            for name in z.namelist():
+                if name.startswith("word/media/") and name.lower().endswith(".png"):
+                    head = z.read(name)[:4096]
+                    if b"medcat-page" in head:
+                        n += 1
+    except Exception:
+        return 0
+    return n
+
+
 def _resegment_apply(pid: int, parsed: dict, content: bytes, filename: str, pl: dict) -> dict:
     """Запись: замена файла без списания, `prevTarget` у изменившихся,
     картинки на месте, если не изменились."""
@@ -16999,9 +17035,13 @@ async def resegment_project(pid: int, req: ResegmentRequest):
     _resegment_same_file(project, parsed["sha"])
     pl = await run_in_threadpool(_resegment_plan, project, parsed)
     c = pl["counts"]
+    # Ч1: страницы, ушедшие картинками, меняют КАРТИНКИ файла при тех же
+    # (или вовсе без) текстовых строках — это тоже пересборка, а не «нечего».
+    pages_new = _reseg_pages_changed(pid, parsed)
     out = {"ok": True, "dryRun": req.dry_run, "project": pid, "kind": parsed["kind"],
            **c, "samples": pl["samples"], "removedSample": pl["removedSample"],
-           "nothing": not (c["changed"] or c["new"] or c["removed"])}
+           "pagesChanged": pages_new,
+           "nothing": not (c["changed"] or c["new"] or c["removed"] or pages_new)}
     if req.dry_run:
         return out
     if out["nothing"]:
@@ -17138,7 +17178,7 @@ def _auto_resegment(pid: int, tenant: str, claimed: bool = False) -> Optional[st
                     _resegment_same_file(project, parsed["sha"])
                     pl = _resegment_plan(project, parsed)
                     c = pl["counts"]
-                    if not (c["changed"] or c["new"] or c["removed"]):
+                    if not (c["changed"] or c["new"] or c["removed"] or _reseg_pages_changed(pid, parsed)):
                         # Абзацы те же — но разбор новых правил несёт новые
                         # ПОЛЯ места строки (разрывы, поле 10): без них правило
                         # сверки надписей 3 до проекта не дошло бы никогда.

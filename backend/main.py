@@ -16993,7 +16993,7 @@ async def resegment_project(pid: int, req: ResegmentRequest):
         parsed = await run_in_threadpool(_resegment_parse, filename, content)
     except (textcount.Unsupported, textcount.TooBig, textcount.NotAvailable) as e:
         raise _format_error(e, filename)
-    if not parsed["units"]:
+    if not parsed["units"] and not parsed.get("imagePages"):
         raise HTTPException(415, "В исходнике не нашлось ни одной строки текста — пересобирать нечего")
     project = get_project(pid)
     _resegment_same_file(project, parsed["sha"])
@@ -17112,7 +17112,9 @@ def _auto_resegment(pid: int, tenant: str, claimed: bool = False) -> Optional[st
                     return "nosource"
                 filename, content = src
                 parsed = _resegment_parse(filename, content)
-                if not parsed["units"]:
+                # Ч1: все страницы с текстом ушли картинками — текстовых строк
+                # нет, но это не «пустой файл»: строки придут чтением картинок.
+                if not parsed["units"] and not parsed.get("imagePages"):
                     mark["result"] = "empty"
                     _auto_reseg_mark(pid, mark)
                     return "empty"

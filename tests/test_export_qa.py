@@ -311,6 +311,50 @@ res = pdftext.clean([["строка один текст", "строка два �
 check("clean: принудительная страница уходит картинкой", res["imagePages"] == [0]
       and res["report"].get("layerFragments") == 1, res["report"])
 
+print("=== 11б. Ч1 сквозь разбор: скан с невидимым слоем-обрывками ===")
+
+
+def scan_with_layer(frag: bool) -> bytes:
+    im = Image.new("RGB", (800, 600), (250, 248, 240))
+    dr = ImageDraw.Draw(im)
+    for k in range(8):
+        y = 60 + k * 60
+        x = 80
+        while x < 700:
+            dr.rectangle([x, y, x + 40, y + 24], fill=(30, 30, 30))
+            x += 52
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    from reportlab.lib.utils import ImageReader
+    b = io.BytesIO()
+    c = canvas.Canvas(b, pagesize=(400, 300))
+    c.drawImage(ImageReader(io.BytesIO(buf.getvalue())), 0, 0, 400, 300)
+    for k in range(8):
+        base = 300 - (60 + k * 60 + 24) / 2.0 + 1.5
+        t = c.beginText(40, base)
+        t.setTextRenderMode(3)                  # невидимый слой распознавания
+        t.setFont("Helvetica", 12)
+        t.textOut("ab" if frag else "word word word word word word word word")
+        c.drawText(t)
+    c.showPage()
+    c.save()
+    return b.getvalue()
+
+
+import importers  # noqa: E402
+for frag in (True, False):
+    try:
+        _d, kind, note, n_img, lay = importers.pdf_to_docx(scan_with_layer(frag))
+    except Exception as e:
+        check("разбор скана со слоем (%s)" % frag, False, e)
+        continue
+    if frag:
+        check("слой-обрывки: страница ушла картинкой", n_img == 1, (n_img, note))
+        check("слой-обрывки: раскладка листов сохранена, выгрузка — «тот же PDF»",
+              bool(lay and lay.get("pages")) and "тот же PDF" in note, (lay, note))
+    else:
+        check("полный слой: страница осталась текстом", n_img == 0, (n_img, note))
+
 print("=== 12. Сервер: Ч3, сводка форматов без вида, привязка отчёта к файлу ===")
 import main  # noqa: E402
 ext = [dict(e, boxes=[dict(b) for b in e["boxes"]]) for e in extra]

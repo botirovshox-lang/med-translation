@@ -495,5 +495,13 @@
   "Вы уже зарегистрированы": "Siz allaqachon ro'yxatdan o'tgansiz",
   "Сначала укажите почту": "Avval pochtangizni kiriting",
   "Сейчас много бесплатных видео — повторите позже или зарегистрируйтесь": "Hozir bepul videolar ko'p — keyinroq qaytaring yoki ro'yxatdan o'ting",
-  "PDF не читается — проверьте, что файл не повреждён и без пароля": "PDF o'qilmayapti — fayl buzilmaganini va parolsizligini tekshiring"
+  "PDF не читается — проверьте, что файл не повреждён и без пароля": "PDF o'qilmayapti — fayl buzilmaganini va parolsizligini tekshiring",
+  "пояснений в скобках сверх оригинала больше": "asl matnda yoʻq qavs ichidagi izohlar koʻproq",
+  "в переводе варианты через «/» вместо одного: «": "tarjimada bitta oʻrniga «/» bilan ajratilgan variantlar: «",
+  "в переводе пояснение в скобках, которого нет в оригинале: «(": "tarjimada asl matnda yoʻq qavs ichidagi izoh bor: «(",
+  ")» — убери его, переведи только то, что написано": ")» — uni olib tashlang, faqat yozilganini tarjima qiling",
+  "в оригинале строк: ": "asl matndagi qatorlar: ",
+  ", в переводе: ": ", tarjimada: ",
+  " — сохрани разбивку на строки, как в оригинале": " — qatorlarga boʻlinishini asl matndagidek saqlang",
+  "строк перевода не столько, сколько в оригинале": "tarjimadagi qatorlar soni asl matndagidan farq qiladi"
 }

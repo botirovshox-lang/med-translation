@@ -965,7 +965,76 @@ def slots_rule_for(filename: str, content: bytes, sha: str) -> Optional[int]:
     return None
 
 
-def write_back(filename: str, content: bytes, translations: dict, rule: int = SLOT_RULE) -> bytes:
+_HTML_LANG_RE = re.compile(r"(<html\b[^>]*?\blang\s*=\s*)([\"']?)([A-Za-z\-]+)\2", re.I)
+_HTML_NODE_RE = re.compile(r"(<!--.*?-->|<[^>]*>)", re.S)
+
+
+def _html_inline_write(raw: str, translation: str, split) -> str:
+    """Ш16: перевод пробега, РАЗЛОЖЕННЫЙ по его текстовым узлам — инлайн-теги
+    (ссылки меню, <b>, <strong>, <em>, <time>) остаются на месте, каждый
+    кусок встаёт в свой узел. Прежде пробег заменялся целиком текстом
+    перевода: ссылки навигации и выделения пропадали (корпус выгрузки,
+    HTML). Деление — тем же правилом, что у выделений в Word
+    (`main._split_target`: дословные куски, знаки-разделители, доля длины);
+    сумма кусков — весь перевод, потерять текст нельзя по построению.
+    Узел один — перевод в нём, теги вокруг сохраняются. Делить нечем (тег
+    режет слово, кусок вышел пустым) — пробег целиком текстом перевода,
+    как до правила: пустой `<b></b>` посреди фразы хуже потерянного
+    выделения."""
+    parts = _HTML_NODE_RE.split(raw)
+    nodes = [k for k, ptx in enumerate(parts)
+             if k % 2 == 0 and ptx and _html.unescape(ptx).replace("\xad", "").strip()]
+    esc = _html.escape(translation, quote=False)
+    if not nodes:
+        return esc
+    if split is None and len(nodes) > 1:
+        lead = raw[:len(raw) - len(raw.lstrip())]
+        trail = raw[len(raw.rstrip()):]
+        return lead + esc + trail
+    if len(nodes) == 1:
+        k0 = nodes[0]
+        for k in nodes[1:]:
+            parts[k] = ""
+        lead = parts[k0][:len(parts[k0]) - len(parts[k0].lstrip())]
+        trail = parts[k0][len(parts[k0].rstrip()):]
+        parts[k0] = lead + esc + trail
+        return "".join(parts)
+    sources = [" ".join(_html.unescape(parts[k]).replace("\xad", "").split()) for k in nodes]
+    for a, b in zip(nodes, nodes[1:]):
+        ta = _html.unescape(parts[a]).replace("\xad", "")
+        tb = _html.unescape(parts[b]).replace("\xad", "")
+        if ta[-1:].isalnum() and tb[:1].isalnum():
+            # Тег режет СЛОВО («Полн<b>ый</b>»): делить перевод по узлам
+            # нечем — целиком в первый узел, как прежде.
+            return _html_inline_write(raw, translation, None)
+    try:
+        pieces, _approx = split(translation, sources)
+    except Exception:
+        pieces = None
+    if (not pieces or len(pieces) != len(nodes) or "".join(pieces) != translation
+            or any(not p_.strip() for p_ in pieces)):
+        return _html_inline_write(raw, translation, None)
+    new = {}
+    for j, (k, piece) in enumerate(zip(nodes, pieces)):
+        orig = parts[k]
+        lead = orig[:len(orig) - len(orig.lstrip())]
+        trail = orig[len(orig.rstrip()):]
+        if j > 0 and not lead:
+            # Пробел на границе узлов — по оригиналу: внутри куска перевода он
+            # мог остаться с чужой стороны тега. У оригинала на границе пробела
+            # нет, а перевод на ней разделяет слова — пробел ставится в начало
+            # этого узла, иначе слова слиплись бы через тег.
+            prev = parts[nodes[j - 1]]
+            if not prev[len(prev.rstrip()):] and (piece[:1].isspace() or pieces[j - 1][-1:].isspace()):
+                lead = " "
+        new[k] = lead + _html.escape(piece.strip(), quote=False) + trail
+    for k, v in new.items():
+        parts[k] = v
+    return "".join(parts)
+
+
+def write_back(filename: str, content: bytes, translations: dict, rule: int = SLOT_RULE,
+               split=None, lang: str = "") -> bytes:
     """Перевод в файл ИСХОДНОГО формата: translations — {номер слота: текст}.
     Адреса слотов считаются заново по оригиналу тем же кодом, что при
     импорте, и тем же правилом резки (`rule`, см. `slots_rule_for`): от
@@ -984,10 +1053,21 @@ def write_back(filename: str, content: bytes, translations: dict, rule: int = SL
         for i, (a, b) in enumerate(ranges):
             if i in translations and a >= pos:
                 pieces.append(text[pos:a])
-                pieces.append(_html.escape(translations[i], quote=False))
+                pieces.append(_html_inline_write(text[a:b], translations[i], split))
                 pos = b
         pieces.append(text[pos:])
-        return "".join(pieces).encode(_encoding_of(enc, content), errors="xmlcharrefreplace")
+        out = "".join(pieces)
+        if lang:
+            # Язык страницы — язык перевода: по нему браузер выбирает шрифт,
+            # переносы и голос чтения с экрана.
+            # BCP 47: письмо — подтег из четырёх букв («uz-Cyrl»); вариант
+            # правописания каталога («UZ-2026») тегом языка не бывает.
+            pr, _, sub = lang.partition("-")
+            code = pr.lower() + ("-" + sub[:1].upper() + sub[1:].lower()
+                                 if len(sub) == 4 and sub.isalpha() else "")
+            out = _HTML_LANG_RE.sub(lambda m: m.group(1) + (m.group(2) or '"') + code + (m.group(2) or '"'),
+                                    out, count=1)
+        return out.encode(_encoding_of(enc, content), errors="xmlcharrefreplace")
     if ext == ".xlsx":
         addr = [a for _t, a in xlsx_slots(content)]
         repl = {addr[i]: t for i, t in translations.items() if 0 <= i < len(addr)}

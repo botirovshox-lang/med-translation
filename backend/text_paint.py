@@ -222,7 +222,7 @@ def _stem(mask) -> float:
 
 
 def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
-            plate=None) -> dict:
+            plate=None, angle_hint: float = 0.0) -> dict:
     """Измерить надпись на вырезке `rgb` (H×W×3, uint8). Ответ:
     {mask, bg (цвет), ink (цвет), flat, bands, em (кегль в точках снимка),
     pitch, bold, angle (градусы, против часовой; 0 — горизонталь), elong,
@@ -442,6 +442,12 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
     if arc:
         out["arc"] = arc
         angle = 0.0
+    elif angle_hint and not angle and rows <= 1:
+        # Ш23: наклон СТРАНИЦЫ (снимок чека под углом) — короткой строке,
+        # у которой своего замера нет: у «ИТОГО» маска почти квадратная,
+        # вытянутости не хватает, и строка выходила прямой среди наклонных.
+        angle = float(angle_hint)
+        out["angleFrom"] = "page"
     out["angle"], out["elong"] = round(angle, 1), round(elong, 2)
     bands = [] if (angle or arc) else _bands(mask)
     out["bands"] = bands
@@ -1066,6 +1072,10 @@ def _chain_turn(P):
             int(keep.sum()))
 
 
+ARC_COVER = 0.7               # Ш27: доля ширины надписи, покрытая буквами дуги
+ARC_MIN_R_LETTERS = 1.5       # радиус дуги — не меньше стольких высот буквы
+
+
 def _arc_of(comps: list, letter: float, H: int) -> "dict | None":
     """Дуга, по которой стоят буквы однострочной надписи (Т22): буквы дуги —
     области размером около медианной (`ARC_SIZE_BAND`), цепочка их середин
@@ -1114,6 +1124,13 @@ def _arc_of(comps: list, letter: float, H: int) -> "dict | None":
     if chord <= 0 or float(np.sqrt((res ** 2).mean())) > 0.25 * med:
         return None
     if r > ARC_MAX_R * chord or r < 0.4 * chord:
+        return None
+    # Ш27: дуга — у ВСЕЙ надписи, а не у горстки букв. Ячейка ксерокопии
+    # «Лим В. О.» дала «дугу» радиусом 13 точек по трём буквам при ширине
+    # надписи 100 — перевод лёг кружком. Буквы дуги обязаны покрывать
+    # большую часть надписи, а радиус — быть не меньше полутора букв.
+    span_all = max(c_[0] for c_ in comps) - min(c_[0] for c_ in comps)
+    if (span_all > 0 and (x.max() - x.min()) < ARC_COVER * span_all) or r < ARC_MIN_R_LETTERS * med:
         return None
     th = np.arctan2(y - cy, x - cx)
     order = np.argsort(x)
@@ -1193,6 +1210,9 @@ def _bg_spread(rgb, hole, lh: float) -> float:
     return float(np.percentile(v, 95) - np.percentile(v, 5))
 
 
+LAMA_GROW = float(os.environ.get("PAINT_LAMA_GROW", "0.12"))
+
+
 def _lama():
     """Модуль LaMa (Ф9) или None — нет модуля, модели или выключен."""
     try:
@@ -1217,6 +1237,36 @@ def lama_budget(seconds: float = None):
     pl = _lama()
     import contextlib
     return pl.budget(seconds) if pl is not None else contextlib.nullcontext()
+
+
+LAMA_CTX = float(os.environ.get("PAINT_LAMA_CTX", "0.6"))     # поле вокруг вырезки, × строки
+
+
+def _lama_ctx(lama, rgb, hole, ctx, lh: float):
+    """Ш24: LaMa — с ПОЛЕМ вокруг вырезки. Вырезка надписи — почти целиком
+    дыра, и модель, не видя бумаги вокруг, заливала её ровным светлым тоном:
+    под шапкой чека на тени снимка вставал светлый прямоугольник. `ctx` —
+    (вся картинка, x0, y0 вырезки); поле — `LAMA_CTX` строки с каждой
+    стороны (не меньше 8 точек; шире — модель переносит в дыру соседние строки). Ответ — вырезка исходного размера."""
+    if ctx is None:
+        return lama.inpaint(np.ascontiguousarray(rgb), hole)
+    big, x0, y0 = ctx
+    H, W = big.shape[:2]
+    h, w = hole.shape
+    pad = max(8, int(LAMA_CTX * lh))
+    bx0, by0 = max(0, x0 - pad), max(0, y0 - pad)
+    bx1, by1 = min(W, x0 + w + pad), min(H, y0 + h + pad)
+    win = np.ascontiguousarray(big[by0:by1, bx0:bx1, :3]).copy()
+    ox, oy = x0 - bx0, y0 - by0
+    if win.shape[0] < oy + h or win.shape[1] < ox + w:
+        return lama.inpaint(np.ascontiguousarray(rgb), hole)
+    win[oy:oy + h, ox:ox + w] = rgb[..., :3]        # вырезка могла быть уже правлена
+    bh = np.zeros(win.shape[:2], bool)
+    bh[oy:oy + h, ox:ox + w] = hole
+    res = lama.inpaint(win, bh)
+    if res is None:
+        return None
+    return np.ascontiguousarray(res[oy:oy + h, ox:ox + w])
 
 
 def erase(rgb, m: dict):
@@ -1294,8 +1344,20 @@ def erase(rgb, m: dict):
         out = None
         lama = _lama()
         if lama is not None and _bg_spread(rgb, grow > 0, lh) >= LAMA_SPREAD_MIN:
-            out = lama.inpaint(np.ascontiguousarray(rgb), grow > 0)
+            # Ш20: LaMa ДОРИСОВЫВАЕТ то, что видит у края дыры, — размытый
+            # ореол выцветших и расплывшихся букв (чек, обгоревшее письмо,
+            # залитая страница) она достраивала обратно в буквы, и сквозь
+            # перевод проступал двойник оригинала. Дыра для неё шире маски
+            # на ширину размытия (`LAMA_GROW` строки): заполнять бумагой
+            # большую дыру модель умеет, а ореола у края больше нет.
+            r_ = max(2, int(round(LAMA_GROW * lh)))
+            g2 = cv2.dilate(grow, np.ones((2 * r_ + 1, 2 * r_ + 1), np.uint8))
+            if prot is not None:
+                g2[prot] = 0
+            out = _lama_ctx(lama, rgb, g2 > 0, m.get("_ctx"), lh)
             m["eraseHow"] = "lama" if out is not None else "telea"
+            if out is not None:
+                grow = g2
         if out is None:
             out = cv2.inpaint(np.ascontiguousarray(rgb), grow, INPAINT_R, cv2.INPAINT_TELEA)
     out = _tone_match(out, rgb, grow > 0)

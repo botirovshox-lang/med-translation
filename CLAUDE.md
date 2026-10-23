@@ -127,6 +127,10 @@
   правило в справочнике И `handled_by` у записи каталога. Замеры
   точности выгрузки — `backend/fidelity.py`, базовая линия эталонов —
   `tests/fixtures/fidelity_baseline.json` (`tools/fidelity_report.py`).
+- **Корпус выгрузки (раздел «Ш» справочника)** — `tools/corpus_build.py` (30 файлов
+  разных форматов и вёрсток, 10 трудночитаемых), `tools/corpus_run.py` (прогон через
+  API стадиями: загрузка → перевод → выгрузка → приёмка), `tools/corpus_offline.py`
+  (перевёрстка без модели). Регрессия разбора — сравнение абзацев с эталонами.
 - **`docs/rules/pdf-reading.md`** — справочник правил чтения PDF и выгрузки
   «как в оригинале»: как устроены чужие файлы (обрезка, формы, невидимый
   текст, кернинг в TJ, коды вместо букв, сноски, повёрнутые строки) и что
@@ -3609,6 +3613,8 @@ node tests/test_home_examples_browser.js                            # «Прим
 .venv/bin/python tests/test_synth.py                                 # синтетические страницы: рецепты данными → раскраска → замеры (Х23)
 .venv/bin/python tests/test_doc_catalog.py                           # каталог элементов, правил и форматов; страница покрытия
 .venv/bin/python tests/test_paint_marks.py                           # Х20 печать/подпись не стираются, Х21 неразрывный пробел
+.venv/bin/python tests/test_corpus_rules.py                          # Ш1–Ш5: слова одной базовой линии, абзацы по геометрии, стихи, отточия
+.venv/bin/python tests/test_corpus_image_rules.py                    # Ш7–Ш23: строки чтения, скобки/варианты, LaMa видит дыру закрытой, наклон
 python tools/catalog_report.py                                       # docs/rules/catalog.md пересобрана из backend/doc_catalog
 python tools/landing_build.py                                        # лендинг пересобран из landing/src/home.html
 .venv/bin/python tests/test_pdf_figures.py                           # рисунки книги доезжают до документа

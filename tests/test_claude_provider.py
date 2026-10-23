@@ -204,6 +204,10 @@ check(legal._model_provider() == "Своя строка", "MODEL_PROVIDER_NAME �
 os.environ.pop("MODEL_PROVIDER_NAME", None)
 check(main._is_quota_error("Your credit balance is too low to access the Anthropic API."),
       "пустой баланс Anthropic — остановка прогона, а не повторы")
+check(main._is_quota_error("Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', "
+                           "'message': 'You have reached your specified API usage limits. You will regain "
+                           "access on 2026-11-01 at 00:00 UTC.'}}"),
+      "лимит расхода, выставленный в кабинете Anthropic, — тоже остановка, а не повторы")
 
 print("(6) termcross: спор, человек, кэш")
 check("termcross" in main.SYSTEM_MODEL_STEPS and main._dm("termcross") == "claude-sonnet-5"

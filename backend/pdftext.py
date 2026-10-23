@@ -109,8 +109,10 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # оценочного потолка (ложные разрывы строк, где оригинал не стирался); 19 —
 # пересборка «same» снимает из карты и УСТАРЕВШИЕ разрывы (`_merge_layout_fields`);
 # 20 — Ч1: страница-скан, где строки слоя — обрывки видимых строк, —
-# картинкой (`textcount.layer_fragment_pages`).
-RULES_VERSION = 20
+# картинкой (`textcount.layer_fragment_pages`);
+# 21 — Ш1–Ш3: куски одной базовой линии — одна строка; конец абзаца —
+# по тому, влезло бы первое слово следующей строки (а не по точке).
+RULES_VERSION = 21
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -220,6 +222,10 @@ _END_RE = re.compile(r"[.!?…:;»”\")\]]\s*$")
 # от первой (`_table_streams`, Т6).
 TABLE_CONT_LEAD = 2.5
 PARA_MAX = 1200
+# Ш2: абзац, который геометрия держит открытым, длиннее PARA_MAX рвётся на
+# ближайшем КОНЦЕ ПРЕДЛОЖЕНИЯ на конце строки; посреди фразы — только после
+# PARA_HARD_MAX (прежде — на любой строке после PARA_MAX, то есть посреди фразы).
+PARA_HARD_MAX = 3000
 
 # Пороги ненадёжного слоя. Медиана мусора по боевой книге — 0 %, 95-й
 # процентиль — 0,8 %; обложки дали 21 % и 7 %. Отдельно — доля ОДИНОЧНЫХ
@@ -659,11 +665,21 @@ def _math_token(t: str) -> bool:
         for c in edge)
 
 
+# Ш5: строка только из знаков отточия/линейки (точки, многоточия, средние
+# точки, подчёркивания, тире) — не меньше четырёх.
+_LEADER_LINE_RE = re.compile(r"^[\s.·•…‥_\-–—]{4,}$")
+
+
 def _clean_line(line: str, report: dict):
     """Строка без мусора распознавания либо None, если она вся мусор."""
     # Имена глифов и разрядка — ЗДЕСЬ, после раскладки: части строки
     # (`split`) режутся по смещениям в сыром тексте ответа pypdf.
     line = _unspace(_glyph_names(line))
+    if _LEADER_LINE_RE.match(line):
+        # Ш5: отточие (меню, оглавление, бланк) — разметка, а не текст: в
+        # перевод не идёт, на листе остаётся как было.
+        report["leaders"] += 1
+        return None
     if _is_ornament(line):
         report["ornaments"] += 1
         return None
@@ -934,6 +950,150 @@ def _join_scripts(recs: list, report: dict) -> list:
     return out
 
 
+# Ш1. Куски ОДНОЙ базовой линии, которые pypdf отдал отдельными «строками»
+# (генератор ставит каждое слово своим оператором — так пишут выключку по
+# ширине многие программы и слои распознавания), — одна видимая строка.
+# Иначе абзац собирался из строк-слов, и склейка рвала его на каждой точке
+# («…над хребтом.» / «Тропа сначала…» — два перевода одной фразы соседей).
+# Зазор до WORD_JOIN_FREE кегля склеивается сразу (межсловный, в том числе
+# у выключки); шире, до WORD_JOIN_MAX, — только если по нему ПИШЕТ соседняя
+# строка (межколонник и промежуток между ячейками свидетелей не имеют:
+# тот же закон, что у `image_text._join_pieces`). Через вертикальную линию
+# таблицы — никогда. Части ОДНОЙ строки pypdf (`split`) разведены нарочно
+# и обратно не сводятся.
+WORD_JOIN_FREE = 0.6
+WORD_JOIN_MAX = 8.0          # выключка узкой колонки разгоняет пробелы до нескольких кеглей
+WORD_JOIN_LOOK = 8.0         # в кеглях: где искать строки-свидетели выше и ниже
+WORD_JOIN_WITNESS = 0.5      # доля соседних строк, которые пишут по зазору
+WORD_JOIN_COLSTART = 3       # столько соседних строк начинают кусок там же — это столбец
+WORD_JOIN = os.environ.get("PDF_WORD_JOIN", "1") != "0"
+
+
+def _twin_piece(ta: str, tb: str) -> bool:
+    """Кусок b повторяет хвост куска a (та же надпись, прочитанная дважды
+    рядом: «На заметку» + «На заметку $»): два слова подряд или одно от пяти
+    букв."""
+    wa = [w for w in (re.sub(r"[^\w]+", " ", ta.lower())).split() if any(c.isalpha() for c in w)]
+    wb = [w for w in (re.sub(r"[^\w]+", " ", tb.lower())).split() if any(c.isalpha() for c in w)]
+    for n in range(min(len(wa), len(wb)), 0, -1):
+        if wa[-n:] == wb[:n] and (n >= 2 or len(wb[0]) >= 5):
+            return True
+    return False
+
+
+_YIDX: dict = {}
+
+
+def _y_index(recs: list) -> tuple:
+    """(отсортированные y, номера строк в этом порядке) — окно свидетелей
+    двоичным поиском, а не проходом по всей странице на каждую пару."""
+    key = id(recs)
+    got = _YIDX.get(key)
+    if got is None or got[0] is not recs:
+        order = sorted(range(len(recs)), key=lambda j: recs[j]["y"])
+        got = (recs, [recs[j]["y"] for j in order], order)
+        _YIDX.clear()
+        _YIDX[key] = got
+    return got[1], got[2]
+
+
+def _baseline_piece(a: dict, b: dict, recs: list, vrules) -> bool:
+    if a.get("li") is not None and a.get("li") == b.get("li"):
+        return False
+    s = max(a.get("s") or 0.0, b.get("s") or 0.0, 1.0)
+    if abs(a["y"] - b["y"]) > 0.2 * s or abs((a.get("s") or 0) - (b.get("s") or 0)) > 0.15 * s:
+        return False
+    if a.get("bul") is not b.get("bul") and b.get("bul"):
+        return False
+    gap = b["x0"] - a["x1"]
+    if gap < -0.3 * s or gap > WORD_JOIN_MAX * s or b["x0"] <= a["x0"]:
+        return False
+    if _twin_piece(a["t"], b["t"]):
+        return False                    # двойник надписи (распознана дважды) — дело `_fix_labels`
+    lo, hi = min(a["x1"], b["x0"]) - 0.5, max(a["x1"], b["x0"]) + 0.5
+    for v in vrules or ():
+        try:
+            vx0, vy0, vx1, vy1 = (float(t) for t in v[:4])
+        except Exception:
+            continue
+        if lo <= (vx0 + vx1) / 2 <= hi and min(vy0, vy1) - 1 <= a["y"] <= max(vy0, vy1) + 1:
+            return False
+    if gap <= WORD_JOIN_FREE * s:
+        return True
+    # Шире межсловного: решают соседние строки. По пробелу внутри строки
+    # пишут почти все строки колонки, по межколоннику и промежутку между
+    # ячейками — почти никто (разве что заголовок во всю ширину). А кусок,
+    # начатый там же, где куски соседних строк, — начало столбца таблицы
+    # или колонки, а не слово посреди строки.
+    mid = (a["x1"] + b["x0"]) / 2
+    lines: dict = {}
+    starts = 0
+    ys, order = _y_index(recs)
+    lo = bisect.bisect_left(ys, a["y"] - WORD_JOIN_LOOK * s)
+    hi = bisect.bisect_right(ys, a["y"] + WORD_JOIN_LOOK * s)
+    for r in (recs[j] for j in order[lo:hi]):
+        if r is a or r is b:
+            continue
+        dy = abs(r["y"] - a["y"])
+        if not (0.5 * s < dy <= WORD_JOIN_LOOK * s):
+            continue
+        if abs(r["x0"] - b["x0"]) <= 0.3 * s:
+            starts += 1
+        if r["x1"] < a["x0"] or r["x0"] > b["x1"]:
+            continue                    # строка другой колонки — не свидетель
+        key = round(r["y"] / max(0.3 * s, 0.5))
+        lines[key] = lines.get(key, False) or (r["x0"] < mid < r["x1"])
+    if starts >= WORD_JOIN_COLSTART:
+        return False
+    if len(lines) < 3:
+        return False
+    return sum(1 for v in lines.values() if v) > WORD_JOIN_WITNESS * len(lines)
+
+
+def _join_baseline_pieces(recs: list, vrules, report: dict) -> list:
+    """Проходы до неподвижной точки: свидетели второго прохода — уже
+    склеенные строки (слово-свидетель накрывает зазор через раз, строка —
+    почти всегда)."""
+    if not WORD_JOIN or len(recs) < 2:
+        return recs
+    for _ in range(4):
+        n0 = len(recs)
+        recs = _join_pass(recs, vrules, report)
+        if len(recs) == n0:
+            break
+    return recs
+
+
+def _join_pass(recs: list, vrules, report: dict) -> list:
+    out: list = []
+    for r in recs:
+        a = out[-1] if out else None
+        if a is not None and _baseline_piece(a, r, recs, vrules):
+            s = max(a.get("s") or 0.0, 1.0)
+            sp = " " if (r["x0"] - a["x1"] > 0.12 * s or a.get("rsp") or r.get("lsp")) else ""
+            m = dict(a)
+            m["t"] = a["t"] + sp + r["t"]
+            m["x1"] = max(a["x1"], r["x1"])
+            m["xl"] = r.get("xl") if r.get("xl") is not None else r["x0"]
+            m["exact"] = r.get("exact")
+            m["rsp"] = r.get("rsp", False)
+            # Начертание строки — у большей её части: жирное слово посреди
+            # строки начертания всей строке не задаёт.
+            if (r.get("st") or "") != (a.get("st") or "") and len(r["t"]) > len(a["t"]):
+                m["st"] = r.get("st") or ""
+            if r.get("after"):
+                m["after"] = list(a.get("after") or []) + list(r["after"])
+            if a.get("gaps") or r.get("gaps"):
+                m["gaps"] = list(a.get("gaps") or []) + list(r.get("gaps") or [])
+            if a.get("parts") or r.get("parts"):
+                m.pop("parts", None)
+            out[-1] = m
+            report["wordJoins"] += 1
+        else:
+            out.append(r)
+    return out
+
+
 def _vocab(pages: list) -> tuple:
     """(слова строчными → число, составные с дефисом посреди строки)."""
     words: Counter = Counter()
@@ -972,7 +1132,7 @@ def _letter_mark_midphrase(buf: str, line: str, nxt: str = "") -> bool:
 
 
 def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0.0,
-               report: dict = None, spans: list = None) -> list:
+               report: dict = None, spans: list = None, cont: "set | None" = None) -> list:
     """Строки → абзацы. Конец абзаца — конец предложения, короткая строка
     перед заглавной, строка КАПСОМ, маркер списка, пустая строка, потолок.
     Перенос слова снимается: мягкий — всегда, дефисный — когда продолжение
@@ -981,8 +1141,13 @@ def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0
     `spans` — если передать список, в него ляжет по паре (первая, последняя)
     строка на каждый абзац. Нужно выгрузке «как в оригинале»: место абзаца
     на странице — это рамка его СТРОК, и восстановить её после склейки
-    нечем. Ответ от этого не меняется ни на знак."""
+    нечем. Ответ от этого не меняется ни на знак.
+
+    `cont` — номера строк, после которых абзац ПРОДОЛЖАЕТСЯ по геометрии
+    (Ш2: следующее слово на строку не влезло бы — её кончила ширина колонки),
+    хоть строка и кончилась знаком конца предложения."""
     report = report if report is not None else Counter()
+    cont = cont or set()
     out, buf = [], ""
     buf_caps = False               # в буфере — заголовок КАПСОМ (склеивается со следующим таким же)
     n = len(lines)
@@ -1006,7 +1171,8 @@ def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0
             continue
         nxt = (lines[i + 1] or "").strip() if i + 1 < n else ""
         caps = _is_caps_heading(line)
-        if buf and ((_BULLET_RE.match(line) and not _letter_mark_midphrase(buf, line, nxt))
+        if buf and ((_BULLET_RE.match(line) and not _letter_mark_midphrase(buf, line, nxt)
+                     and (i - 1) not in cont)
                     or (buf_caps != caps and not buf.endswith((SOFT, "-")))):
             flush()
         # Строку записываем в отпечаток ПОСЛЕ возможного сброса: иначе
@@ -1047,8 +1213,12 @@ def join_lines(lines: list, hyphenated: set = frozenset(), median_len: float = 0
                 continue
             flush()
             continue
-        if (_END_RE.search(buf) and not _addr_cut(buf, nxt)) or len(buf) >= PARA_MAX:
+        if ((len(buf) >= PARA_MAX and i not in cont) or len(buf) >= PARA_HARD_MAX
+                or (_END_RE.search(buf) and not _addr_cut(buf, nxt)
+                    and (i not in cont or len(buf) >= PARA_MAX))):
             flush()
+            continue
+        if i in cont:
             continue
         if (median_len and len(line) < HEADING_LEN_SHARE * median_len
                 and not line.endswith((",", "-", "—", "–", SOFT))
@@ -1592,6 +1762,26 @@ class _HiddenRun(list):
 _WORD_BREAK = ("-", SOFT, "‐")
 
 
+def _script_head_fix(r: dict) -> None:
+    """Ш26: строка pypdf с надстрочником В НАЧАЛЕ («¹Diabetes Research…»,
+    знак аффилиации) несёт место и кегль ПЕРВОЙ части — самой цифры: кегль
+    3.7 при тексте 5.6, правый край — сразу за цифрой. Дальше это рвало
+    абзац по «разнице кегля» (Ш4) и мерило край колонки по цифре. Место
+    строки — у её основной части (больше всего знаков), правый край — самый
+    дальний; конец строки при этом — оценка (точный был концом цифры)."""
+    parts = r.get("parts")
+    if not parts or len(parts) < 2:
+        return
+    try:
+        dom = max(parts, key=lambda q: q[5] if len(q) > 5 else 0)
+        if r["s"] and float(dom[2]) and r["s"] <= SCRIPT_SIZE_SHARE * float(dom[2]):
+            r["s"], r["y"] = float(dom[2]), float(dom[1])
+            r["x1"] = max(r["x1"], max(float(q[3]) for q in parts))
+            r["exact"] = False
+    except (TypeError, ValueError, IndexError):
+        return
+
+
 def _geo_page(lines: list, g, placeless: "list | None" = None) -> "list | None":
     """Строки страницы с местом: [{t, x0, x1, y, s}] в порядке потока; None —
     у страницы нет полной геометрии (тогда она идёт прежней дорогой).
@@ -1735,10 +1925,13 @@ def _geo_page(lines: list, g, placeless: "list | None" = None) -> "list | None":
                      # Разрывы строки: [[конец куска, начало следующего]] —
                      # там, где по слою пусто (в картинке там бывает текст).
                      "gaps": p[10] if len(p) > 10 else None,
+                     # Ш14: разрядка строки (Tc на листе, пт) — печать повторит её.
+                     "tc": p[11] if len(p) > 11 else None,
                      "lsp": raw[:1] == " ", "rsp": raw[-1:] == " ",
                      # Номер строки ответа pypdf: части одной строки (`split`)
                      # колонками друг другу не свидетельствуют.
                      "li": li})
+        _script_head_fix(recs[-1])
     if run:
         if recs and recs[-1]["t"].rstrip().endswith(_WORD_BREAK):
             recs[-1].setdefault("after", []).extend(run)
@@ -2988,6 +3181,237 @@ def _merge_label_lines(paras: list, groups: list, all_entries: list, words, repo
     return paras, groups
 
 
+# Ш2/Ш3. Конец абзаца — по ГЕОМЕТРИИ строки, а не по точке на её конце.
+# Строку кончает либо ширина колонки (первое слово следующей строки на неё
+# не влезло бы), либо автор (влезло бы, а строка всё равно кончилась):
+#   • Ш2 — кончила ширина: абзац продолжается, хоть строка и кончилась
+#     точкой (прежде так рвался почти каждый десятый абзац прозы);
+#   • Ш3 — кончил автор: абзац, строка стиха или пункт кончились, даже без
+#     точки («Туман над рекою, как лёгкая шаль,» / «Укрыл берега…» — строки
+#     стиха не сводятся в прозу; пункты и адреса — не в одну строку).
+# Мерка — правый край КОЛОНКИ: самый дальний конец строк того же места
+# и кегля рядом, если до него дотягиваются хотя бы две строки (иначе края
+# у колонки нет — правило молчит). Только у строк с ТОЧНЫМ концом (метрики
+# шрифта): оценка по ширине знака ошибается на слово. Выключенные по центру
+# и вправо пары правило не трогает: у них строку кончает не ширина.
+GEO_BREAK = os.environ.get("PDF_GEO_BREAK", "1") != "0"
+GEO_EDGE_TOL = 2.0           # в кеглях: строка «дотягивается» до края колонки
+GEO_WINDOW = 5               # строк в каждую сторону — где искать край колонки
+GEO_SPACE = 0.3              # ширина пробела, в кеглях
+GEO_FREE_EXTRA = 1.0         # запас «влезло бы» сверх слова и пробела, в кеглях (ширина слова — оценка)
+GEO_SIZE_BREAK = 0.15        # Ш4: доля кегля, с которой соседние строки — разные надписи
+GEO_PARA_SPACE = 1.3         # зазор больше межстрочного блока во столько раз — отбивка абзаца
+GEO_SIZE_STRONG = 1.4        # во столько раз крупнее — другая надпись даже перед строчной
+GEO_TITLE_SHARE = 0.6        # доля слов с заглавной — строка в Title Case
+GEO_FULL_TOL = 0.3           # в кеглях: строка с концом фразы «дошла до края»
+GEO_IND_MIN = 0.8            # Ш3в: красная строка — отступ от поля, в кеглях
+GEO_IND_MAX = 5.0
+GEO_IND_PROSE = 12.0         # строка с красной строкой — не короче стольких кеглей
+VERSE_RUN = 3                # Ш3б: строк подряд с заглавной
+VERSE_RAGGED = 2.0           # разброс правых концов, в кеглях
+VERSE_INDENT = 3.0           # разброс левых краёв (отступ чётных строк), в кеглях
+
+
+def _first_word_w(e: dict) -> "float | None":
+    g = e.get("geo")
+    t = (e.get("t") or "").strip()
+    if not g or not t:
+        return None
+    n = len(t)
+    w = (g[3] - g[1]) / max(n, 1)
+    first = t.split()[0] if t.split() else t
+    return w * len(first)
+
+
+def _title_case(t: str) -> bool:
+    """Строка в Title Case (заголовок, список авторов, место работы): у
+    большинства слов от трёх букв — заглавная. Заглавная в начале следующей
+    строки тут ничего не говорит о конце абзаца (Ш3: «…the European» /
+    «Association for the Study of» рвалось на три абзаца)."""
+    ws = [w for w in re.findall(r"[^\W\d_]+", t) if len(w) >= 3]
+    return len(ws) >= 2 and sum(1 for w in ws if w[:1].isupper()) >= GEO_TITLE_SHARE * len(ws)
+
+
+def _geo_breaks(lines: list, src: list) -> tuple:
+    """(строки, источники, cont) — с пустыми строками там, где абзац кончил
+    автор (Ш3), и номерами строк, после которых абзац продолжается (Ш2)."""
+    if not GEO_BREAK or not src:
+        return lines, src, set()
+    n = len(lines)
+    brk: set = set()
+    cont: set = set()
+    caps_run: list = []                 # Ш3б: подряд идущие пары строк с заглавной
+    for k in range(n - 1):
+        e1, e2 = src[k], src[k + 1]
+        if not e1 or not e2 or not lines[k] or not lines[k + 1]:
+            caps_run.append(None)
+            continue
+        g1, g2 = e1.get("geo"), e2.get("geo")
+        if not g1 or not g2 or g1[0] != g2[0] or e1.get("role") != e2.get("role"):
+            caps_run.append(None)
+            continue
+        s = max(g1[4] or 0.0, g2[4] or 0.0, 1.0)
+        dy = g1[2] - g2[2]
+        t1 = lines[k].rstrip()
+        t2 = lines[k + 1].lstrip()
+        hy = t1.endswith(("-", SOFT, "‐"))
+        if abs((g1[4] or 0) - (g2[4] or 0)) > GEO_SIZE_BREAK * s:
+            # Ш4: соседние строки разного кегля — разные надписи (название
+            # блюда и описание под ним мельче; подпись и текст), если фраза
+            # не перенесена и вторая не продолжает со строчной.
+            lo_s = max(min(g1[4] or 0, g2[4] or 0), 0.1)
+            strong = max(g1[4] or 0, g2[4] or 0) / lo_s >= GEO_SIZE_STRONG
+            if 0 < dy <= 3.0 * s and not hy and (strong or not t2[:1].islower()):
+                brk.add(k)
+            caps_run.append(None)
+            continue
+        if not (0.6 * s <= dy <= 2.2 * s):
+            caps_run.append(None)
+            continue                    # не соседние строки одной колонки
+        up = (bool(t2[:1]) and t2[:1].isupper() and not hy and bool(t1[:1]) and t1.lstrip()[:1].isupper()
+              and len(g1) > 9 and bool(g1[9]) and len(g2) > 9 and bool(g2[9]))
+        caps_run.append((k, g1, g2, up, t1))
+        # Ш3в: красная строка. Левое поле блока — самое левое начало строк
+        # того же кегля рядом; новая строка начинается с отступом от поля
+        # (`GEO_IND_MIN`–`GEO_IND_MAX` кегля), а строка после неё снова
+        # у поля — это начало абзаца, даже если предыдущая строка дошла
+        # до края колонки (и тем более не «продолжение по ширине»): у Чехова
+        # «…спрятался за спину отца.» во всю ширину и «— Ну, как живёшь…»
+        # с красной строки сливались в один абзац.
+        ind_b = False
+        lefts = []
+        for j in range(max(0, k - GEO_WINDOW), min(n, k + 2 + GEO_WINDOW)):
+            if j > k + 1 and not lines[j]:
+                break
+            gj = (src[j] or {}).get("geo") if src[j] else None
+            if gj and gj[0] == g1[0] and abs((gj[4] or 0) - (g1[4] or 0)) <= 0.12 * s:
+                lefts.append(gj[1])
+        if len(lefts) >= 3:
+            left = min(lefts)
+            ind = g2[1] - left
+            g3 = (src[k + 2] or {}).get("geo") if k + 2 < n and src[k + 2] and lines[k + 2] else None
+            back = (g3 is not None and g3[0] == g2[0] and abs(g3[1] - left) <= 0.5 * s
+                    and 0.6 * s <= g2[2] - g3[2] <= 2.2 * s)
+            # Красная строка бывает только у блока с РОВНЫМ левым краем (не
+            # меньше двух строк у поля) и не у выключки вправо или по центру:
+            # у подписи схемы, выровненной вправо, рваный левый край — не отступ.
+            flush = sum(1 for v in lefts if abs(v - left) <= 0.5 * s) >= 2
+            aligned = (abs(((g1[1] + g1[3]) - (g2[1] + g2[3])) / 2) < 0.6 * s
+                       and abs(g1[1] - g2[1]) > 1.0 * s)        # по центру
+            prose = (g2[3] - g2[1]) >= GEO_IND_PROSE * s     # короткие строки подписи — не проза
+            ind_b = GEO_IND_MIN * s <= ind <= GEO_IND_MAX * s and flush and not aligned and prose
+            if ind_b and back and not hy and not t2[:1].islower() and not e2.get("bul"):
+                brk.add(k)
+                continue
+        if not (len(g1) > 9 and g1[9]):
+            continue                    # конец строки — оценка: судить нечем
+        x0a, x1a, x0b, x1b = g1[1], g1[3], g2[1], g2[3]
+        if abs(((x0a + x1a) - (x0b + x1b)) / 2) < 0.6 * s and abs(x0a - x0b) > 1.0 * s:
+            continue                    # выключка по центру
+        if abs(x1a - x1b) < 0.5 * s and abs(x0a - x0b) > 1.0 * s:
+            continue                    # выключка вправо
+        # край колонки: строки рядом, того же кегля, пересекающиеся с e1, —
+        # только своего БЛОКА (до пустой строки-разделителя): соседний блок
+        # схемы со своей шириной края этой колонке не задаёт.
+        lo_j, hi_j = k, k + 1
+        while lo_j > max(0, k - GEO_WINDOW) and lines[lo_j - 1] and src[lo_j - 1]:
+            lo_j -= 1
+        while hi_j < min(n - 1, k + 1 + GEO_WINDOW) and lines[hi_j + 1] and src[hi_j + 1]:
+            hi_j += 1
+        ends = []
+        steps = []                      # межстрочный блока — мерка «отбивки»
+        for j in range(lo_j, hi_j):
+            ga_, gb_ = (src[j] or {}).get("geo"), (src[j + 1] or {}).get("geo")
+            if ga_ and gb_ and ga_[0] == gb_[0] and abs((ga_[4] or 0) - (gb_[4] or 0)) <= 0.12 * s:
+                d_ = ga_[2] - gb_[2]
+                if 0.6 * s <= d_ <= 2.2 * s:
+                    steps.append(d_)
+        lead = statistics.median(steps) if len(steps) >= 2 else None
+        spaced = lead is not None and dy > GEO_PARA_SPACE * lead
+        if spaced:
+            # Отбивка: зазор заметно больше межстрочного блока — новый абзац
+            # (если новая строка не со строчной), продолжением он не бывает.
+            if not hy and not t2[:1].islower():
+                brk.add(k)
+            continue
+        for j in range(lo_j, hi_j + 1):
+            ej = src[j]
+            gj = ej.get("geo") if ej else None
+            if not gj or gj[0] != g1[0] or abs((gj[4] or 0) - (g1[4] or 0)) > 0.12 * s:
+                continue
+            ov = min(gj[3], x1a) - max(gj[1], x0a)
+            if ov < 0.3 * min(gj[3] - gj[1], x1a - x0a):
+                continue
+            ends.append(gj[3])
+        if len(ends) < 3:
+            continue
+        edge = max(ends)
+        if sum(1 for v in ends if v >= edge - GEO_EDGE_TOL * s) < 2:
+            continue                    # края нет: дальше всех одна строка
+        if " " not in t1.strip():
+            continue                    # письмо без пробелов: «первое слово» — вся строка
+            # (однословная СЛЕДУЮЩАЯ строка у письма с пробелами — законна:
+            # «school.28–31» в конце абзаца статьи)
+        wf = _first_word_w(e2)
+        if wf is None:
+            continue
+        room = edge - x1a
+        need = wf + GEO_SPACE * s
+        t1 = lines[k].rstrip()
+        if room < need:
+            # Строка, кончившаяся концом фразы, — продолжение, только когда
+            # дошла до края ВПЛОТНУЮ (выключка): почти полная последняя
+            # строка абзаца при неточном крае иначе склеивала два абзаца.
+            full = not _END_RE.search(t1) or x1a >= edge - GEO_FULL_TOL * s
+            if x0b <= x0a + 0.5 * s and not e2.get("bul") and not ind_b and full:
+                cont.add(k)             # Ш2: кончила ширина колонки
+        elif (room >= need + GEO_FREE_EXTRA * s and not t1.endswith(("-", SOFT, "‐"))
+              and (_END_RE.search(t1) or (t2[:1].isalpha() and t2[:1].isupper()
+                                          and not _title_case(t1)))):
+            # Ш3: кончил автор. Продолжение со СТРОЧНОЙ — та же фраза
+            # (заголовок, разбитый на строки для равновесия), не новый абзац.
+            brk.add(k)
+    # Ш3б: стихи без края колонки (страница-стихотворение: дальше всех одна
+    # строка, мерить «влезло бы» не от чего). Не меньше VERSE_RUN строк
+    # подряд, КАЖДАЯ с заглавной, рваный правый край и левый край в пределах
+    # отступа — это строки стиха (или пункты), а не проза: в прозе три строки
+    # подряд, начатые заглавной, — редкость, и вместе с рваным краем —
+    # почти невозможность.
+    run: list = []
+    for item in caps_run + [None]:
+        if item is not None and item[3]:
+            run.append(item)
+            continue
+        if len(run) + 1 >= VERSE_RUN:
+            xs1 = [it[1][3] for it in run] + [run[-1][2][3]]
+            xs0 = [it[1][1] for it in run] + [run[-1][2][1]]
+            sz = max(run[0][1][4] or 1.0, 1.0)
+            # У стихов строки разной длины: до самого дальнего конца
+            # дотягивается одна строка; у прозы с выключкой — несколько.
+            at_edge = sum(1 for v in xs1 if v >= max(xs1) - 0.5 * sz)
+            # Строки в Title Case и КАПСОМ (список авторов, заголовок на две
+            # строки) — тоже «каждая с заглавной», но это не стихи: у строк
+            # стиха большинство слов строчные.
+            titled = sum(1 for it in run if _title_case(it[4])) * 2 > len(run)
+            if (max(xs1) - min(xs1) >= VERSE_RAGGED * sz and max(xs0) - min(xs0) <= VERSE_INDENT * sz
+                    and at_edge <= 1 and not titled):
+                for it in run:
+                    brk.add(it[0])
+        run = []
+    if not brk:
+        return lines, src, cont
+    out_l, out_s, out_c = [], [], set()
+    for k in range(n):
+        out_l.append(lines[k])
+        out_s.append(src[k])
+        if k in cont:
+            out_c.add(len(out_l) - 1)
+        if k in brk:
+            out_l.append("")
+            out_s.append(None)
+    return out_l, out_s, out_c
+
+
 def _assemble(entries: list, median_len: float, src: list = None) -> list:
     """Поток строк с разметкой ролей → строки для `join_lines`: вставки
     и заголовки — отдельными абзацами (пустая строка вокруг), а вставка,
@@ -3318,6 +3742,29 @@ def _base_style(laid: dict) -> str:
     return tally.most_common(1)[0][0] if tally else ""
 
 
+def _bold_from_scan(laid: dict, geom) -> bool:
+    """Основной полужирный текст лежит большей частью на страницах-сканах
+    (картинка почти во весь лист, `textcount.LAYER_SCAN_FIG`) — то есть это
+    слой распознавания, и его «Bold» — догадка распознавателя."""
+    on_scan = total = 0
+    for i, pg in laid.items():
+        g = geom[i] if isinstance(geom, (list, tuple)) and i < len(geom) else None
+        scan = False
+        if isinstance(g, dict) and g.get("box"):
+            bx = g["box"]
+            pa = max(1e-6, float(bx[2] - bx[0]) * float(bx[3] - bx[1]))
+            scan = any((f[2] - f[0]) * (f[3] - f[1]) / pa >= BOLD_SCAN_FIG for f in (g.get("figs") or []))
+        for r in pg.get("recs") or []:
+            if "b" in (r.get("st") or ""):
+                n = max(1, len((r.get("t") or "").strip()))
+                total += n
+                on_scan += n if scan else 0
+    return total > 0 and on_scan >= 0.5 * total
+
+
+BOLD_SCAN_FIG = 0.85
+
+
 def _base_family(laid: dict) -> str:
     """Гарнитура, которой набран сам документ: ею печатается абзац, у строк
     которого гарнитура не узнана (символьный шрифт, имя без гарнитуры)."""
@@ -3380,6 +3827,7 @@ def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | No
         exact = 1 if (len(g) > 9 and g[9]) else 0
         color = g[10] if len(g) > 10 else None
         gaps = g[11] if len(g) > 11 else None
+        track = g[12] if len(g) > 12 else None
         b = by_page.setdefault(pg, {"page": pg, "x0": x0, "y0": y, "x1": x1, "y1": y,
                                     "sizes": [], "ys": [], "first": x0, "st": Counter(),
                                     "fam": Counter()})
@@ -3410,8 +3858,9 @@ def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | No
                                               round(xl, 1) if xl is not None else None,
                                               len((e.get("t") or "").strip()), exact,
                                               # 8 — путь повёрнутой строки, 9 — цвет краски,
-                                              # 10 — разрывы строки (сверка надписей со слоем)
-                                              None, color, gaps])
+                                              # 10 — разрывы строки (сверка надписей со слоем),
+                                              # 11 — разрядка (Ш14)
+                                              None, color, gaps, track])
     if not by_page:
         return None
     out = []
@@ -3573,6 +4022,10 @@ def clean(pages: list, geom: "list | None" = None, force_images: "set | None" = 
         # всего остального: по местам строк считаются поля, колонки, роли
         # и украшения, и разорванная надвое строка врала бы им всем.
         kept = _join_scripts(kept, report)
+        # Ш1: строки-слова одной базовой линии — в видимую строку (после
+        # индексов: те ищут свою строку по ещё не склеенным кускам).
+        kept = _join_baseline_pieces(kept, (geom[i] or {}).get("vrules") if isinstance(geom[i], dict) else None,
+                                     report)
         # Украшение, распознанное буквами: одна-три буквы кеглем вдвое больше
         # основного («ЧР’» кеглем 30, «ш» кеглем 46 над первой строкой
         # страницы). Вставкой оно разрывает слово. Но крупная короткая
@@ -3631,11 +4084,25 @@ def clean(pages: list, geom: "list | None" = None, force_images: "set | None" = 
         laid[i] = {"recs": kept, "st": st, "top": top, "bottom": bottom, "multi": multi,
                    "loose": loose, "leads": _size_leads(kept)}
 
+    # Ш1: средняя длина строки — по ВИДИМЫМ строкам: у PDF, где каждое
+    # слово стоит своим оператором, сырые «строки» pypdf — это слова,
+    # и мерка «короткая строка» по ним не работала вовсе.
+    if laid and report.get("wordJoins"):
+        _ll = [len(_norm_line(r["t"])) for pg_ in laid.values() for r in pg_["recs"] if _norm_line(r["t"])]
+        if _ll:
+            median_len = statistics.median(_ll)
     _fix_labels(laid, words, report)
     _bands_by_place(laid, report)
     # Начертание документа — до разбора страниц: по нему считается, что
     # в книге выделено, а что просто её основной текст.
     base_style = _base_style(laid)
+    if "b" in base_style and not _bold_from_scan(laid, geom):
+        # Ш9: «полужирным набран весь документ» — артефакт РАСПОЗНАВАТЕЛЯ
+        # (слой под картинкой страницы-скана, боевая книга пчеловода). У
+        # цифрового PDF (инфографика белым полужирным по плашкам) полужирное
+        # настоящее, и разжаловать его в обычное — подменить вид.
+        base_style = base_style.replace("b", "")
+        report["boldKept"] += 1
     base_fam = _base_family(laid)
 
     # Проход 2: колонтитулы по месту и повтору — нечётко, потому что
@@ -3719,7 +4186,8 @@ def clean(pages: list, geom: "list | None" = None, force_images: "set | None" = 
         entries.clear()
         if any(buf_lines):
             spans: list = []
-            paras = join_lines(buf_lines, hyphenated, median_len, report, spans=spans)
+            buf_lines, src, cont = _geo_breaks(buf_lines, src)
+            paras = join_lines(buf_lines, hyphenated, median_len, report, spans=spans, cont=cont)
             paras = restore_dropcaps(paras, words, report)
             groups = [src[a:b + 1] if a is not None else None for a, b in spans]
             paras, groups = _merge_label_lines(paras, groups, [e for e in src if e], words, report)
@@ -3885,7 +4353,7 @@ def clean(pages: list, geom: "list | None" = None, force_images: "set | None" = 
                             # Место строки — для выгрузки «как в оригинале».
                             "geo": (i, r["x0"], r["y"], r["x1"], r["s"], r.get("st") or "",
                                     r.get("fam") or "", r.get("xl"), r.get("parts"),
-                                    r.get("exact"), r.get("color"), r.get("gaps")),
+                                    r.get("exact"), r.get("color"), r.get("gaps"), r.get("tc")),
                             # Колонка таблицы (`_table_streams`): абзац из одной
                             # колонки в другую не переходит.
                             "tcol": r.get("tcol"),

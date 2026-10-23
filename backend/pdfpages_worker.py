@@ -515,7 +515,12 @@ def page_lines(page) -> tuple:
         # 6 — начало ЦЕПОЧКИ (матрица текста без пера): второй Tj того же BT
         # начинается дальше начала последнего куска строки, а строке
         # принадлежит — по нему и судим.
-        return (x0, y0, x1, font_key(fd), y1, abs(y1 - y0) < 0.5, ox)
+        # 7 — разрядка (Tc) на листе, в пунктах: межбуквенный интервал
+        # оригинала (Ш14, заголовки и стихи «вразрядку»).
+        tx, ty = at(tc)
+        bx_, by_ = at(0.0)
+        tc_pt = ((tx - bx_) ** 2 + (ty - by_) ** 2) ** 0.5 * (1 if tc >= 0 else -1)
+        return (x0, y0, x1, font_key(fd), y1, abs(y1 - y0) < 0.5, ox, tc_pt)
 
     def op_rec(op, args, cm, tm, got=None):
         """Точка, угол базовой линии, кегль и число знаков оператора показа
@@ -1081,6 +1086,9 @@ def _other_row_at(row_starts: dict, x: float, y: float, me: int) -> bool:
     return False
 
 
+TRACK_MIN = 0.03          # разрядка от этой доли кегля — не кернинг, а оформление
+
+
 def _exact_ends(geo_lines: list, op_ends, op_recs=()) -> None:
     """Точный конец строки — по концам ОПЕРАТОРОВ показа текста (`op_end`).
 
@@ -1107,7 +1115,7 @@ def _exact_ends(geo_lines: list, op_ends, op_recs=()) -> None:
     for k, g in rows:
         keys = g[9] if len(g) > 9 else set()
         # 9 — цвет краски, 10 — разрывы строки (`_line_gaps`).
-        g[:] = g[:9] + [g[10] if len(g) > 10 else None, g[11] if len(g) > 11 else None]
+        g[:] = g[:9] + [g[10] if len(g) > 10 else None, g[11] if len(g) > 11 else None, None]
         if not op_ends or not keys:
             continue
         x0, y, size, xl = g[0], g[1], max(g[2], 1.0), g[6]
@@ -1126,6 +1134,9 @@ def _exact_ends(geo_lines: list, op_ends, op_recs=()) -> None:
             if (abs(sy - y) <= 0.3 * size and x0 - 0.5 <= sx <= xl + 0.5
                     and (lim is None or sx < lim - 0.5) and key in keys):
                 best = ex if best is None else max(best, ex)
+                if len(o) > 7 and o[7] and o[7] > TRACK_MIN * size:
+                    # Ш14: разрядка строки — у её операторов (поле 11).
+                    g[11] = round(max(g[11] or 0.0, float(o[7])), 2)
         # Строка продолжается и ЗА началом последнего куска: надстрочная
         # ссылка посреди строки («…memory.⁷,⁸ These effects have been»,
         # статья 19) — свой оператор, и pypdf кладёт ссылку и текст после неё
@@ -1710,6 +1721,7 @@ def _rules_of(segs, pending, vrules: list, hrules: list) -> None:
 
 
 GRID_TOL = 1.2           # пт: конец линии «упирается» в другую
+GRID_END_TOL = 3.0       # пт: по высоте конца вертикали у горизонтали (выступ пера)
 GRID_PAIRS_MAX = 400000  # вертикалей × горизонталей: дороже — это рисунок, и проверять его некогда
 
 
@@ -1726,7 +1738,12 @@ def _grid_rules(vrules: list, hrules: list) -> tuple:
         return [], []                   # густая сетка штрихов — диаграмма, не таблица
 
     def touches(x, y):
-        return any(abs((h[1] + h[3]) / 2.0 - y) <= t and h[0] - t <= x <= h[2] + t for h in hrules)
+        # Конец вертикали — у горизонтали с допуском GRID_END_TOL: линии
+        # таблиц выступают за крайнюю горизонталь на толщину пера и неточность
+        # генератора (корпус выгрузки, счёт: 2 пт), и при 1.2 пт вся сетка
+        # пропадала — ячейки склеивались через линию.
+        return any(abs((h[1] + h[3]) / 2.0 - y) <= GRID_END_TOL and h[0] - t <= x <= h[2] + t
+                   for h in hrules)
     vs = [v for v in vrules if touches((v[0] + v[2]) / 2.0, v[1]) and touches((v[0] + v[2]) / 2.0, v[3])]
     if len(vs) < 2:
         return [], []

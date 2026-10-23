@@ -199,13 +199,20 @@ def inpaint(rgb, hole):
             if time.monotonic() - start + _ST.tile_s > room:
                 return _refuse()             # сделанное отбрасывается: `out` — копия
             img = out[ty:ty + h, tx:tx + w].astype(np.float32)
+            mk = left[ty:ty + h, tx:tx + w].astype(np.float32)
             if h < SIDE or w < SIDE:
                 # Край вырезки — отражением, а не чёрным: сеть читает
-                # чёрное поле как часть сцены.
-                img = np.pad(img, ((0, SIDE - h), (0, SIDE - w), (0, 0)),
-                             mode="reflect" if min(h, w) > 1 else "edge")
-            mk = np.zeros((SIDE, SIDE), np.float32)
-            mk[:h, :w] = left[ty:ty + h, tx:tx + w]
+                # чёрное поле как часть сцены. Маска отражается ВМЕСТЕ
+                # с картинкой (Ш22): иначе в зеркальной копии буквы стоят
+                # открытыми, и сеть переносит их в дыру перевёрнутыми.
+                md = "reflect" if min(h, w) > 1 else "edge"
+                img = np.pad(img, ((0, SIDE - h), (0, SIDE - w), (0, 0)), mode=md)
+                mk = np.pad(mk, ((0, SIDE - h), (0, SIDE - w)), mode=md)
+            # Ш22: дыра подаётся ЗАКРЫТОЙ (img·(1−mask)), как LaMa и обучена:
+            # эта сборка ONNX маску на изображение сама не накладывает, и сеть
+            # видела буквы внутри дыры — и рисовала их обратно (обгоревшее
+            # письмо: «Анна!» проступало под переводом при отчёте «стёрто»).
+            img = img * (1.0 - mk[..., None])
             t0 = time.monotonic()
             res = sess.run(None, {
                 "image": np.ascontiguousarray((img / 255.0).transpose(2, 0, 1)[None], dtype=np.float32),

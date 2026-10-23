@@ -116,7 +116,7 @@ check(srcs == ["Титул", "Заголовок", "Абзац жирный & т
 translate_all(PH["id"])
 path, d = export_original(PH["id"])
 out = path.read_text(encoding="utf-8")
-check("<title>[Титул]</title>" in out and "<p>[Абзац жирный &amp; текст]</p>" in out
+check("<title>[Титул]</title>" in out and "<p>[Абзац <b>жирный</b> &amp; текст]</p>" in out
       and "<p>[До] <img src=\"a.png\"> [после]</p>" in out and "<script>var x = '<p>нет</p>';</script>" in out,
       "html: переводы на местах, картинка и скрипт целы")
 

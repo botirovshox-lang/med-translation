@@ -458,6 +458,29 @@ def _synth(fonts: dict, name: str, style: str) -> str:
     return "".join(ch for ch in "bi" if ch in (style or "") and ch not in real)
 
 
+# Ш10. Полужирный обводкой (файла начертания нет) — толщина пера по ПЛОТНОСТИ
+# письма: у иероглифов, каны и хангыля штрихи стоят вплотную, и обводка
+# 0.04 кегля на мелком кегле заливала просветы — буквы сливались в пятна
+# («размытие» шапки таблицы и плашки EN→ZH корпуса). Плотное письмо —
+# доля таких знаков в строке от `SYNTH_DENSE_SHARE`.
+SYNTH_STROKE = float(os.environ.get("LAYOUT_SYNTH_STROKE", "0.04"))
+SYNTH_STROKE_DENSE = float(os.environ.get("LAYOUT_SYNTH_STROKE_DENSE", "0.012"))
+SYNTH_DENSE_SHARE = 0.3
+
+
+def _dense_char(ch: str) -> bool:
+    o = ord(ch)
+    return (0x2E80 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF or 0xF900 <= o <= 0xFAFF
+            or 0x3040 <= o <= 0x30FF or 0x20000 <= o <= 0x2FA1F)
+
+
+def _synth_stroke(text: str, size: float) -> float:
+    letters = [ch for ch in (text or "") if not ch.isspace()]
+    dense = sum(1 for ch in letters if _dense_char(ch))
+    k = SYNTH_STROKE_DENSE if letters and dense >= SYNTH_DENSE_SHARE * len(letters) else SYNTH_STROKE
+    return k * size
+
+
 def _face_style(style: str) -> str:
     """Начертание для выбора ФАЙЛА шрифта: «b», «i», «bi». Флаг узкого
     начертания «c» — про сжатие (`HSCALE_COND`), а не про файл: с ним
@@ -664,7 +687,8 @@ def _slot_boxes(b: dict) -> list:
                 "n": int(sl[6]) if len(sl) > 6 and sl[6] else 0,
                 "exact": bool(sl[7]) if len(sl) > 7 else False,
                 "style": (sl[4] if len(sl) > 4 else "") or "", "page": b["page"],
-                "color": _color_of(sl[9] if len(sl) > 9 else None)}
+                "color": _color_of(sl[9] if len(sl) > 9 else None),
+                "tc": float(sl[11]) if len(sl) > 11 and sl[11] else 0.0}
         out.extend(_gap_pieces(base, sl[10] if len(sl) > 10 else None))
     return out
 
@@ -856,6 +880,40 @@ def _arc_cells(sd: dict) -> list:
     return out
 
 
+ROT_STRIPS = 8
+
+
+def _rot_strip_paper(sample, sd: dict, pad: float) -> list:
+    """Цвет бумаги в `ROT_STRIPS` клетках вдоль прямой повёрнутой строки:
+    в каждой — самый частый тон квадратика на её полосе (Ш15)."""
+    import math
+    try:
+        size = sd["size"]
+        a = math.radians(sd["a"])
+        L = sd["x1"] + 2 * pad
+        n = max(ROT_STRIPS, min(64, int(L / max(0.4 * size, 1.0))))
+        out = []
+        for k in range(n):
+            t = -pad + (k + 0.5) * L / n
+            # середина полосы строки: на 0.3 кегля над базовой линией
+            cx = sd["ox"] + math.cos(a) * t - math.sin(a) * 0.3 * size
+            cy = sd["oy"] + math.sin(a) * t + math.cos(a) * 0.3 * size
+            h = 0.5 * max(0.4 * size, L / n)
+            # Клетка — ПОВЁРНУТЫЙ прямоугольник (вдоль строки h, поперёк 0.7
+            # кегля), а замер — по его описанному прямоугольнику: у отвесной
+            # строки прямоугольник «h вширь, 0.7 кегля ввысь» лежал внутри
+            # букв, и «бумагой» выходила краска (буклет: полосы цвета букв).
+            ca, sa = abs(math.cos(a)), abs(math.sin(a))
+            hx, hy = ca * h + sa * 0.7 * size, sa * h + ca * 0.7 * size
+            box = {"x0": cx - hx, "x1": cx + hx, "bottom": cy - hy, "top": cy + hy,
+                   "size": size}
+            got = _slot_paper(sample, box, 0.0, 1)
+            out.append(got[0] if got else (1.0, 1.0, 1.0))
+        return out
+    except Exception:
+        return []
+
+
 def _fill_rot(c, sd: dict, colors: list, pad: float) -> None:
     """Закраска повёрнутой строки: прямой — одним повёрнутым прямоугольником,
     дуги — по букве (у каждой свой угол и свой цвет фона под ней)."""
@@ -864,8 +922,21 @@ def _fill_rot(c, sd: dict, colors: list, pad: float) -> None:
         c.saveState()
         c.translate(sd["ox"], sd["oy"])
         c.rotate(sd["a"])
-        c.setFillColorRGB(*(colors[0] if colors else (1, 1, 1)))
-        c.rect(-pad, -0.25 * size - pad, sd["x1"] + 2 * pad, 1.1 * size + 2 * pad, stroke=0, fill=1)
+        segs = sd.get("_sfill") or []
+        if len(segs) > 1:
+            # Ш15: прямая повёрнутая строка поперёк двух подложек (зелёная
+            # колонка буклета и белая бумага) — полосами вдоль базовой линии,
+            # у каждой свой цвет: одним цветом заплатка ложилась на соседнюю
+            # подложку прямоугольником.
+            L = sd["x1"] + 2 * pad
+            step = L / len(segs)
+            for k, col in enumerate(segs):
+                c.setFillColorRGB(*col)
+                c.rect(-pad + k * step, -0.25 * size - pad, step * (1.4 if k < len(segs) - 1 else 1.0),
+                       1.1 * size + 2 * pad, stroke=0, fill=1)
+        else:
+            c.setFillColorRGB(*(colors[0] if colors else (1, 1, 1)))
+            c.rect(-pad, -0.25 * size - pad, sd["x1"] + 2 * pad, 1.1 * size + 2 * pad, stroke=0, fill=1)
         c.restoreState()
         return
     cols = sd.get("_cfill") or []
@@ -4393,6 +4464,25 @@ LIGHT_INK = 60.0                 # светлее тёмной бумаги на
 INV_PAPER = 0.7                  # бумага темнее этого — на ней бывает светлая краска
 
 
+def _rule_cols(gray, x0, x1, y0, y1, dark: float) -> set:
+    """Номера столбцов полосы [x0, x1), тёмных СПЛОШЬ от выше полосы строки
+    до ниже неё (на полвысоты полосы в каждую сторону) — вертикальная линия."""
+    if not RULE_KEEP:
+        return set()
+    ext = max(2, int((y1 - y0) * 0.5))
+    band = _col_maxs(gray, x0, x1, y0, y1)
+    if not band:
+        return set()
+    up = _col_maxs(gray, x0, x1, max(0, int(y0) - ext), int(y0)) or [255] * len(band)
+    dn = _col_maxs(gray, x0, x1, int(y1), min(gray.size[1], int(y1) + ext)) or [255] * len(band)
+    off = max(0, int(x0)) - int(x0)
+    # Сквозь полосу строки и хотя бы в одну сторону за неё: у крайней строки
+    # таблицы вертикаль кончается на нижней линейке сразу под строкой.
+    def side(arr, k):
+        return k < len(arr) and arr[k] < dark
+    return {k + off for k, u in enumerate(band) if u < dark and (side(up, k) or side(dn, k))}
+
+
 def _ink_cols(gray, x0, x1, y0, y1, paper: float) -> list:
     """Столбцы полосы для поиска КРАСКИ: самый тёмный пиксель, а на тёмной
     бумаге (`INV_PAPER`: цветная плашка) столбец со светлой краской (белый заголовок на
@@ -4592,10 +4682,16 @@ def _ink_box(sample, box: dict, pad: float, paper: float) -> tuple:
     left_pt = (INK_EXACT_SLACK * 0.5 if box.get("exact") else INK_LEFT_PT) * size
     own = (_own_ink_cols(sample, box, left - min(limit, left_pt * scale), left, y0, y1)
            if "exact" in box else None)
-    mins = own if own is not None else _ink_cols(
-        gray, left - min(limit, left_pt * scale), left, y0, y1, paper)
+    lx0 = left - min(limit, left_pt * scale)
+    mins = own if own is not None else _ink_cols(gray, lx0, left, y0, y1, paper)
+    # Ш13б: линия листа (вертикаль таблицы вплотную к ячейке) — не буква:
+    # она темна и выше, и ниже полосы строки. Раздвижка на ней кончается,
+    # иначе перевод садился на саму линию.
+    ruled = _rule_cols(gray, lx0, left, y0, y1, dark)
     run, reach = 0, 0
     for k, v in enumerate(reversed(mins)):
+        if (len(mins) - 1 - k) in ruled:
+            break
         if v < dark:
             run, reach = 0, k + 1
         else:
@@ -4684,7 +4780,14 @@ def _free_room(sample, sd: dict, paper: float) -> None:
     # цветной плашке не вправе выйти за плашку на белую бумагу (её там не
     # видно), и тёмная — на чужую плашку.
     hit = _room_hit(mins, maxs, dark, light, paper)
+    # Ш13б: тонкая линия таблицы светлее «краски», но она — граница: рост
+    # строки на ней кончается (иначе ячейка вылезала на линию и за неё).
+    soft = paper * 255.0 - RULE_SOFT_DIFF
+    xs_ = (sd["x1"] - cb[0]) * scale
+    rc = sorted(_rule_cols(gray, xs_, (right_cap + margin - cb[0]) * scale, y0, y1, soft))
     free_to = sd["x1"] + 0.3 * size + (len(mins) if hit is None else hit) / scale - margin
+    if rc:
+        free_to = min(free_to, sd["x1"] + rc[0] / scale - 0.5 * size)
     free_to = min(free_to, right_cap)
     if free_to - sd["x1"] >= FREE_MIN * size:
         sd["room1"] = free_to
@@ -4693,7 +4796,11 @@ def _free_room(sample, sd: dict, paper: float) -> None:
     mins = _col_mins(gray, (left_cap - margin - cb[0]) * scale, end, y0, y1)
     maxs = _col_maxs(gray, (left_cap - margin - cb[0]) * scale, end, y0, y1)
     hit = _room_hit(list(reversed(mins)), list(reversed(maxs)), dark, light, paper)
+    xa_ = (left_cap - margin - cb[0]) * scale
+    rc = sorted(_rule_cols(gray, xa_, (sd["x0"] - cb[0]) * scale, y0, y1, soft))
     free_from = sd["x0"] - 0.3 * size - (len(mins) if hit is None else hit) / scale + margin
+    if rc:
+        free_from = max(free_from, (xa_ + rc[-1] + 1) / scale + cb[0] + 0.5 * size)
     free_from = max(free_from, left_cap)
     if hit is not None and ROOM_TAKE > 0:
         # Краска слева близко — сосед; ему остаётся его доля зазора (Т4).
@@ -5257,6 +5364,111 @@ def _pad_guard(sample, sd: dict, pad: float, colors: list, top_pad: float,
         return (pl, pr, pt, pb)
     except Exception:
         return None
+
+
+# Ш13. Линия листа (линейка таблицы, рамка таблички, кант плашки), которая
+# пересекает заплатку НАСКВОЗЬ, после заливки дорисовывается её же цветом.
+# Поле заплатки (Т28) не заходит на линию РЯДОМ, но линия, проходящая через
+# само место строки (ячейка «Ед.» вплотную к вертикали, пункт под
+# подчёркиванием), заливкой рвалась: таблица счёта корпуса выходила с
+# обрывками линеек. Линия находится по самой странице, без геометрии
+# слоя — правило работает и на сканах: тёмная полоса не толще
+# `RULE_KEEP_MAX` кегля, тёмная по всей высоте (ширине) заплатки и за её
+# краем — буквы так не стоят (у буквы есть просветы и она кончается внутри
+# места строки). `LAYOUT_RULE_KEEP=0` — выключить.
+RULE_KEEP = os.environ.get("LAYOUT_RULE_KEEP", "1") != "0"
+RULE_KEEP_COVER = 0.92       # доля длины заплатки, на которой полоса тёмная
+RULE_KEEP_MAX = 0.18         # толщина линии не больше доли кегля
+RULE_KEEP_DIFF = 0.55        # тёмная — темнее бумаги на эту долю
+RULE_SOFT_DIFF = 40.0        # линия-граница роста строки: темнее бумаги на столько (из 255)
+
+
+def _fill_rect(box: dict, pad: float, x0f=None, x1f=None, top_pad=None) -> tuple:
+    """Прямоугольник заплатки (x0, y0, x1, y1) в пунктах — тем же расчётом,
+    что `_fill_box`."""
+    bx0 = box["x0"] if x0f is None else x0f
+    bx1 = box["x1"] if x1f is None else x1f
+    tp = pad if top_pad is None else top_pad
+    pl = pr = pb = pad
+    guard = box.get("_pads")
+    if guard:
+        pl, pr, gt, pb = guard
+        tp = min(tp, gt)
+    return (bx0 - pl, box["bottom"] - pb, bx1 + pr, box["top"] + tp)
+
+
+def _rules_in(sample, box: dict, pad: float, top_pad=None) -> list:
+    """Линии листа насквозь через заплатку: [(x0, y0, x1, y1, ширина, цвет)]."""
+    if not RULE_KEEP or not sample:
+        return []
+    try:
+        import numpy as np
+        im, scale, cb, gray = sample
+        W, H = im.size
+        x0, y0, x1, y1 = _fill_rect(box, pad, top_pad=top_pad)
+        c0, c1 = int(max(0, (x0 - cb[0]) * scale)), int(min(W, (x1 - cb[0]) * scale))
+        r0, r1 = int(max(0, H - (y1 - cb[1]) * scale)), int(min(H, H - (y0 - cb[1]) * scale))
+        if c1 - c0 < 3 or r1 - r0 < 3:
+            return []
+        m = 3                                           # запас за краем, точек
+        R0, R1 = max(0, r0 - m), min(H, r1 + m)
+        C0, C1 = max(0, c0 - m), min(W, c1 + m)
+        g = np.asarray(gray.crop((C0, R0, C1, R1)), dtype=np.float32)
+        paper = float(np.percentile(g, 90))
+        dark = g < paper * (1.0 - RULE_KEEP_DIFF)
+        inner = dark[(r0 - R0):(r1 - R0), (c0 - C0):(c1 - C0)]
+        size = max(float(box.get("size") or 10.0), 1.0)
+        thick = max(2, int(round(RULE_KEEP_MAX * size * scale)))
+        rgb = np.asarray(im.crop((C0, R0, C1, R1)), dtype=np.float32)
+        out = []
+
+        def runs(flags):
+            res, k = [], 0
+            while k < len(flags):
+                if flags[k]:
+                    j = k
+                    while j < len(flags) and flags[j]:
+                        j += 1
+                    res.append((k, j))
+                    k = j
+                else:
+                    k += 1
+            return res
+        # вертикали: столбец тёмный по всей высоте и за верхним/нижним краем
+        colf = inner.mean(axis=0) >= RULE_KEEP_COVER
+        for a, b in runs(list(colf)):
+            if b - a > thick:
+                continue
+            xs = slice(c0 - C0 + a, c0 - C0 + b)
+            outside = dark[:(r0 - R0), xs].any() or dark[(r1 - R0):, xs].any()
+            if not outside:
+                continue
+            col = rgb[(r0 - R0):(r1 - R0), xs][inner[:, a:b]].reshape(-1, 3)
+            colr = tuple(float(v) / 255.0 for v in (np.median(col, axis=0) if len(col) else (0, 0, 0)))
+            xm = x0 + ((a + b) / 2.0) / scale
+            out.append((xm, y0, xm, y1, max(0.3, (b - a) / scale), colr))
+        rowf = inner.mean(axis=1) >= RULE_KEEP_COVER
+        for a, b in runs(list(rowf)):
+            if b - a > thick:
+                continue
+            ys = slice(r0 - R0 + a, r0 - R0 + b)
+            outside = dark[ys, :(c0 - C0)].any() or dark[ys, (c1 - C0):].any()
+            if not outside:
+                continue
+            col = rgb[ys, (c0 - C0):(c1 - C0)][inner[a:b, :]].reshape(-1, 3)
+            colr = tuple(float(v) / 255.0 for v in (np.median(col, axis=0) if len(col) else (0, 0, 0)))
+            ym = y1 - ((a + b) / 2.0) / scale
+            out.append((x0, ym, x1, ym, max(0.3, (b - a) / scale), colr))
+        return out
+    except Exception:
+        return []
+
+
+def _stroke_rules(c, rules: list) -> None:
+    for x0, y0, x1, y1, w, col in rules or []:
+        c.setStrokeColorRGB(*col)
+        c.setLineWidth(w)
+        c.line(x0, y0, x1, y1)
 
 
 def _fill_box(c, box: dict, pad: float, colors: list, x0f=None, x1f=None, top_pad=None):
@@ -5886,6 +6098,8 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                             colors = _slot_paper(sample, bb, 0.0, 1)
                             paper = (sum(colors[0]) / 3.0) if colors else 1.0
                             sd["_fill"] = (colors, paper, pad)
+                            if not sd.get("curved"):
+                                sd["_sfill"] = _rot_strip_paper(sample, sd, pad)
                             sd["_ink"] = _ink_color(sample, bb, 0.0, paper, either=True)
                             if sd.get("color") is not None:
                                 sd["_ink"] = sd["color"]
@@ -5953,6 +6167,7 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                         sd["_pads"] = _pad_guard(sample, sd, pad, colors, min(pad, 0.05 * sd["size"]),
                                                  foreign=len(sbs) <= 2)
                         _free_room(sample, sd, paper)
+                        sd["_rules"] = _rules_in(sample, sd, pad, min(pad, 0.05 * sd["size"]))
                         # Цвет букв из самого PDF сильнее замера: на мелком
                         # кегле сглаживание делает чёрный серым.
                         if sd.get("color") is not None:
@@ -6005,6 +6220,7 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                 b["x0"], b["x1"] = x0, x1
                 b["_fill"] = (colors, paper, pad)
                 b["_ink"] = ink
+                b["_rules"] = _rules_in(sample, b, pad)
                 if b.get("onFig") and colors:
                     # Надпись на рисунке, где буквы не выделились по пикселям
                     # (`_paint_measure`), на НЕРОВНОМ фоне (дуга схемы, градиент):
@@ -6282,6 +6498,14 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
             colors, _paper, pad = b.get("_fill") or ([(1.0, 1.0, 1.0)] * FILL_STRIPS, 1.0,
                                                      PAD_SHARE * max(b["size"], 1.0))
             _fill_box(c, b, pad, colors)
+        # Ш13: линии, которые заливка перерезала, — обратно, до текста.
+        kept_ = [r for sd in fill_by.get(i, []) for r in (sd.get("_rules") or [])]
+        kept_ += [r for b, *_r in here for r in (b.get("_rules") or [])]
+        if kept_:
+            c.saveState()
+            _stroke_rules(c, kept_)
+            c.restoreState()
+            stats["rulesKept"] = stats.get("rulesKept", 0) + len(kept_)
         for b, lines, size, lead, font, n in here:
             paper = (b.get("_fill") or (None, 1.0, None))[1]
             if not lines:
@@ -6349,6 +6573,13 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                 if not ln:
                     continue
                 w = sw(ln, font, size) * hsc
+                # Ш14: разрядка оригинала — в той же доле кегля, но не шире,
+                # чем позволяет место строки (перевод длиннее — разрядка уже).
+                tce = 0.0
+                if sd.get("tc") and not (jw and k == 0) and len(ln) > 1 and not sd.get("_r"):
+                    room_ = (sd["x1"] - sd["x0"]) - w
+                    tce = max(0.0, min(sd["tc"] * f, room_ / (len(ln) - 1)))
+                    w += tce * (len(ln) - 1)
                 if align == "center":
                     x = (sd["x0"] + sd["x1"]) / 2.0 - w / 2.0
                 elif align == "right":
@@ -6378,11 +6609,14 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                 to.setFont(font, size)
                 if hsc < 0.999:
                     to.setHorizScale(hsc * 100.0)
+                if tce > 0:
+                    to.setCharSpace(tce)
+                    stats["tracked"] = stats.get("tracked", 0) + 1
                 if "b" in synth:
                     # Обводка тем же цветом — полужирный из прямого.
                     c.setStrokeColorRGB(*(ink if ink is not None else
                                           ((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0))))
-                    c.setLineWidth(0.04 * size)
+                    c.setLineWidth(_synth_stroke(ln, size))
                     to.setTextRenderMode(2)
                 if jw and k == 0:
                     # Выключка по ширине — слово за словом с расчётным

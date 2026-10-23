@@ -387,6 +387,154 @@ def read_clean(text: str) -> str:
     return re.sub(r"[ \t]*\r?\n[ \t]*", " ", t).strip()
 
 
+# Ш7. Строки блока, которые кончил АВТОР, — разрыв строки в тексте сегмента.
+# Блок картинки — один сегмент (контекст перевода целиком), но строки факса,
+# чека, рецепта, приказа, таблички — поля, а не абзац прозы: склеенные
+# пробелом, они переводились одним абзацем и перевёрстывались сплошным
+# текстом — названия товаров уезжали от своих цен, «ВНИМАНИЕ!» и
+# «ЗАПРЕЩЁН» теряли размер и цвет. Правило то же, что Ш3 у PDF: если первое
+# слово следующей строки влезло бы в остаток этой (с запасом
+# `IMG_BREAK_FREE` высоты строки), а строка всё равно кончилась — и кончилась
+# знаком конца фразы или следующая начата заглавной, — строку кончил автор.
+# Строка заметно другой высоты (`IMG_BREAK_SIZE`) — разрыв всегда (Х19 для
+# любой строки, а не только последней). Разрыв — данные: перевод держит
+# число разрывов (`_openai_translate`), печать делит блок по ним на части,
+# и каждая встаёт в свои строки оригинала (`split_parts`) со своим кеглем
+# и цветом. Ширина слова — оценка по средней ширине знака строки.
+# `IMG_LINE_BREAKS=0` — прежняя склейка пробелом.
+IMG_LINE_BREAKS = os.environ.get("IMG_LINE_BREAKS", "1") != "0"
+IMG_BREAK_SIZE = float(os.environ.get("IMG_BREAK_SIZE", "1.35"))
+IMG_BREAK_FREE = float(os.environ.get("IMG_BREAK_FREE", "0.6"))
+IMG_BREAK_RUN = int(os.environ.get("IMG_BREAK_RUN", "3"))
+_END_PUNCT_RE = re.compile(r"[.!?…:;»”\")\]]\s*$")
+
+
+IMG_GAP_ROWS = 0.3              # Ш31: доля рядов места строки с краской
+
+
+def row_boxes(line_boxes) -> list:
+    """Ш31: рамки строк одной ВИДИМОЙ строки — одна. Детектор отдаёт кусок
+    перекошенной строки отдельной рамкой («P.01» в конце шапки факса), и рамок
+    оказывалось больше, чем строк чтения: разбивка на строки отключалась
+    целиком. Рамки, перекрытые по высоте на половину меньшей и не
+    перекрытые по ширине, сводятся."""
+    lbs = sorted((list(x[:4]) for x in (line_boxes or []) if isinstance(x, (list, tuple)) and len(x) >= 4),
+                 key=lambda b: (b[1], b[0]))
+    out: list = []
+    for b in lbs:
+        for o in out:
+            hmin = max(1.0, min(o[3] - o[1], b[3] - b[1]))
+            ov_y = min(o[3], b[3]) - max(o[1], b[1])
+            ov_x = min(o[2], b[2]) - max(o[0], b[0])
+            if ov_y >= 0.5 * hmin and ov_x <= 0:
+                o[0], o[1], o[2], o[3] = min(o[0], b[0]), min(o[1], b[1]), max(o[2], b[2]), max(o[3], b[3])
+                break
+        else:
+            out.append(b)
+    out.sort(key=lambda b: b[1])
+    return out
+
+
+def read_lines(text: str, line_boxes, align: "str | None" = None) -> tuple:
+    """(текст блока, номера строк, после которых разрыв) — Ш7.
+
+    Строки чтения сопоставляются с рамками строк ПО ЧИСЛУ: разошлось — как
+    прежде (`read_clean`, пробелом, без разрывов)."""
+    lbs = row_boxes(line_boxes)
+    lines = [ln.strip() for ln in (text or "").replace("\r\n", "\n").split("\n") if ln.strip()]
+    if not IMG_LINE_BREAKS or len(lbs) < 2 or len(lines) != len(lbs):
+        return read_clean(text), []
+    align = align or _align_of([{"box": x} for x in lbs])
+    L = min(x[0] for x in lbs)
+    R = max(x[2] for x in lbs)
+    n = len(lines)
+
+    def cap(t):
+        return bool(t[:1]) and (t[:1].isdigit() or (t[:1].isalpha() and t[:1].isupper()))
+    # Пункты и поля: VERSE_RUN и больше строк подряд, каждая с заглавной
+    # (или цифры), — разрыв у каждой; в прозе так не бывает.
+    in_run = set()
+    k = 0
+    while k < n:
+        j = k
+        while j < n and cap(lines[j]):
+            j += 1
+        if j - k >= IMG_BREAK_RUN:
+            # Только при РВАНОМ правом крае (как Ш3б у PDF): у прозы с
+            # выключкой до края доходят многие строки, и немецкие
+            # существительные с заглавной не делают из неё пункты.
+            ends = [lbs[x][2] for x in range(k, j)]
+            hs = sorted(max(1.0, lbs[x][3] - lbs[x][1]) for x in range(k, j))
+            hm = hs[len(hs) // 2]
+            at_edge = sum(1 for v in ends if v >= max(ends) - 0.5 * hm)
+            if max(ends) - min(ends) >= IMG_BREAK_RAGGED * hm and at_edge <= 1:
+                in_run.update(range(k, j - 1))
+        k = max(j, k + 1)
+    breaks: list = []
+    parts = [lines[0]]
+    for i in range(len(lines) - 1):
+        a, b = lines[i], lines[i + 1]
+        ba, bb = lbs[i], lbs[i + 1]
+        ha, hb = max(1.0, ba[3] - ba[1]), max(1.0, bb[3] - bb[1])
+        hyph = a[-1:] in _HYPHENS and b[:1].islower()
+        brk = False
+        if not hyph:
+            if max(ha, hb) / min(ha, hb) >= IMG_BREAK_SIZE or i in in_run:
+                brk = True
+            elif " " in a or " " in b:
+                cw = (bb[2] - bb[0]) / max(1, len(b))
+                first = b.split()[0] if b.split() else b
+                need = cw * len(first) + 0.3 * hb
+                if align == "center":
+                    room = (R - L) - (ba[2] - ba[0])
+                elif align == "right":
+                    room = ba[0] - L
+                else:
+                    room = R - ba[2]
+                brk = (room >= need + IMG_BREAK_FREE * hb and not b[:1].islower()
+                       and (bool(_END_PUNCT_RE.search(a)) or (b[:1].isalpha() and b[:1].isupper())))
+        if brk:
+            breaks.append(i)
+            parts.append(b)
+        else:
+            parts[-1] = parts[-1] + ("" if hyph else " ") + b if not hyph else parts[-1][:-1] + b
+    return "\n".join(dehyphen(x).strip() for x in parts), breaks
+
+
+def split_parts(item: dict) -> list:
+    """Ш7: блок с разрывами — части, каждая в своих строках. Разрывов
+    в переводе столько же, сколько в оригинале, и строк хватает — иначе
+    блок как есть (одна часть)."""
+    brk = item.get("breaks") or []
+    lbs = row_boxes(item.get("lineBoxes"))
+    text, src = item.get("text") or "", item.get("src") or ""
+    if (not brk or not lbs or text.count("\n") != len(brk) or src.count("\n") != len(brk)
+            or max(brk) >= len(lbs) - 1):
+        return [item]
+    tparts, sparts = text.split("\n"), src.split("\n")
+    bounds = [-1] + sorted(brk) + [len(lbs) - 1]
+    # Ш19: блок целиком — для замера вида печати один раз на все части.
+    blk = {k: item.get(k) for k in ("box", "lineBoxes", "rows", "lineH", "fam", "align", "era")}
+    blk.update({"text": " ".join(text.split()), "src": " ".join(src.split())})
+    out = []
+    for k in range(len(bounds) - 1):
+        grp = lbs[bounds[k] + 1: bounds[k + 1] + 1]
+        if not grp or not tparts[k].strip():
+            return [item]
+        hs = sorted(x[3] - x[1] for x in grp)
+        sub = dict(item)
+        sub.pop("breaks", None)
+        sub.update({"box": [min(x[0] for x in grp), min(x[1] for x in grp),
+                            max(x[2] for x in grp), max(x[3] for x in grp)],
+                    "lineBoxes": grp, "rows": len(grp), "lineH": hs[len(hs) // 2],
+                    "text": tparts[k].strip(), "src": sparts[k].strip(), "part": k,
+                    "blkItem": blk})
+        if len(grp) == 1:
+            sub["align"] = item.get("align") or "left"
+        out.append(sub)
+    return out
+
+
 def _block_text(lines: list) -> str:
     """Текст блока — строки сверху вниз. Перенос по дефису снимается: подпись
     под рисунком разбита на «сооб-щения», и без склейки в сегмент уедет
@@ -610,6 +758,30 @@ def detect_lines(img_bytes: bytes) -> Optional[list]:
     except EngineAnswer as e:
         print("[image_text] %s" % e, file=sys.stderr)
         return None
+    # Ш18: испорченный снимок (пятна, гарь, разводы воды, тень под углом) —
+    # третий взгляд по картинке с ВЫРОВНЕННЫМ фоном: строка на пятне или
+    # у прожжённой дыры детектору не видна (корпус выгрузки: обгоревшее
+    # письмо — одна строка из семи пропала совсем). Как и увеличение,
+    # только СКЛАДЫВАЕТСЯ с прежним: найденное прежним разбором остаётся.
+    try:
+        flat_arr = (_flattened(arr) if found and arr.shape[0] * arr.shape[1] <= IMG_FLAT_MAX_MPX * 1e6
+                    and _uneven_background(arr) else None)
+    except Exception:
+        flat_arr = None
+    if flat_arr is not None:
+        try:
+            # Выровненный взгляд добавляет только строки той же высоты, что
+            # нашёл первый взгляд (±40 %), и увереннее порога: CLAHE на
+            # снимке поднимает и фактуру, а каждая лишняя рамка — платный кроп.
+            hs = sorted(f["box"][3] - f["box"][1] for f in found)
+            hm = hs[len(hs) // 2]
+            for f in _detect_boxes(eng, flat_arr, 1):
+                bh = f["box"][3] - f["box"][1]
+                if (0.6 * hm <= bh <= 1.6 * hm
+                        and (f.get("conf") is None or f["conf"] >= IMG_MIN_CONF + 0.05)):
+                    found.append(f)
+        except Exception as e:
+            print("[image_text] выровненный взгляд не вышел (%s)" % e, file=sys.stderr)
     k = _detect_scale(im.width, im.height)
     if k > 1:
         try:
@@ -627,8 +799,10 @@ def detect_lines(img_bytes: bytes) -> Optional[list]:
     # которого не смотрели, — и заливка стёрла бы попавшую в зазор графику.
     out = _join_pieces(_dedupe_boxes(found))
     # Строки, пропущенные детектором в ровной колонке (рукопись), — по краске.
-    for gb in rhythm_gaps(arr, [l["box"] for l in out]):
+    for gb in rhythm_gaps(arr, [l["box"] for l in out], confirm=True):
         out.append({"box": gb, "conf": None, "gap": 1})
+    if flat_arr is not None:
+        _extend_by_ink(arr, out)
     # Плоскость фона считаем по ИСХОДНОЙ картинке: увеличение сглаживает
     # пиксели, и снимок сошёл бы за ровный фон, на который можно писать.
     return _finish_lines(arr, out)
@@ -731,6 +905,121 @@ def engine_ready_pixels() -> tuple:
     if _np is None:
         return False, "не установлен numpy"
     return True, ""
+
+
+IMG_FLAT_PASS = os.environ.get("IMG_FLAT_PASS", "1") != "0"
+IMG_UNEVEN_STD = float(os.environ.get("IMG_UNEVEN_STD", "14"))
+
+
+IMG_PAGE_FAM_SHARE = 0.6
+IMG_BREAK_RAGGED = 2.0                            # Ш7: разброс правых концов пунктов, × высоты строки
+IMG_GAP_MAX_SLOTS = 8                             # Ш21: мест пропущенных строк на картинку — не больше
+IMG_FLAT_MAX_MPX = float(os.environ.get("IMG_FLAT_MAX_MPX", "16"))
+IMG_PAGE_TILT_LO, IMG_PAGE_TILT_HI = 1.0, 25.0     # градусы: что считать наклоном страницы
+IMG_PAGE_TILT_MIN = 3                             # строк с согласным наклоном
+IMG_PAGE_TILT_SHARE = 0.4                         # доля однострочных с замером
+IMG_PAGE_TILT_MAD = 1.5
+
+
+IMG_EXTEND_INK = 60            # Ш33: расстояние цвета до краски строки
+IMG_EXTEND_SHARE = 0.01        # доля точек окна цвета краски — строка продолжается
+IMG_EXTEND_GAP = 2             # пустых окон подряд — конец строки
+IMG_EXTEND_BLOB = 0.35         # доля точек окна цвета краски — уже пятно, не буквы
+IMG_EXTEND_MAX = 0.5           # продлить не больше чем на эту долю исходной ширины
+
+
+def _extend_by_ink(arr, out: list) -> None:
+    """Ш33: на испорченном снимке (пятно, разводы, гарь) детектор обрывает
+    строку у пятна, и хвост строки за ним не стирался и не переводился
+    (залитая страница: «…не пошли» оставалось оригиналом рядом с
+    переводом). Рамка продлевается вправо и влево окнами в полстроки, пока
+    в полосе строки есть точки цвета её краски; два пустых окна подряд —
+    конец строки. В чужую найденную рамку не заходит."""
+    if _np is None:
+        return
+    H, W = arr.shape[:2]
+    a3 = arr[..., :3].astype(_np.int16)
+    boxes = [l["box"] for l in out]
+    for n_, l in enumerate(out):
+        x0, y0, x1, y1 = (int(v) for v in l["box"])
+        lh = max(4, y1 - y0)
+        band = a3[max(0, y0):min(H, y1), max(0, x0):min(W, x1)]
+        if band.size == 0:
+            continue
+        g = band.mean(axis=2)
+        dark = band[g <= _np.percentile(g, 15)]
+        if dark.size == 0:
+            continue
+        ink = _np.median(dark.reshape(-1, 3), axis=0)
+        step = max(2, lh // 2)
+
+        def has_ink(xa, xb):
+            """1 — буквы, 0 — пусто, -1 — пятно (краской залито сплошь)."""
+            win = a3[max(0, y0):min(H, y1), max(0, xa):min(W, xb)]
+            if win.size == 0:
+                return 0
+            sh = float((_np.abs(win - ink).max(axis=2) <= IMG_EXTEND_INK).mean())
+            return -1 if sh >= IMG_EXTEND_BLOB else (1 if sh >= IMG_EXTEND_SHARE else 0)
+
+        def blocked(xa, xb):
+            for m, b in enumerate(boxes):
+                if m != n_ and min(xb, b[2]) - max(xa, b[0]) > 0 and min(y1, b[3]) - max(y0, b[1]) > 0.5 * lh:
+                    return True
+            return False
+
+        reach = IMG_EXTEND_MAX * (x1 - x0)
+        for direction in (1, -1):
+            edge, empty = (x1 if direction > 0 else x0), 0
+            last = start = edge
+            while 0 < edge < W and empty < IMG_EXTEND_GAP and abs(edge - start) < reach:
+                xa, xb = (edge, edge + step) if direction > 0 else (edge - step, edge)
+                if blocked(xa, xb):
+                    break
+                got = has_ink(xa, xb)
+                if got < 0:
+                    break                       # пятно, прожог — не строка
+                if got:
+                    empty = 0
+                    last = xb if direction > 0 else xa
+                else:
+                    empty += 1
+                edge = xb if direction > 0 else xa
+            if direction > 0 and last > x1:
+                x1 = min(W, last)
+            elif direction < 0 and last < x0:
+                x0 = max(0, last)
+        if [x0, y0, x1, y1] != [int(v) for v in l["box"]]:
+            l["box"] = [x0, y0, x1, y1]
+            l["extended"] = 1
+            boxes[n_] = l["box"]
+
+
+def _uneven_background(arr) -> bool:
+    """Фон снимка неровный: разброс сильно размытой яркости (то есть фона
+    без букв) выше `IMG_UNEVEN_STD`. У чистого скана и скриншота — единицы."""
+    if not IMG_FLAT_PASS or _np is None:
+        return False
+    import cv2
+    a3 = arr[..., :3]
+    g = cv2.cvtColor(a3 if a3.dtype == _np.uint8 else a3.astype("uint8"), cv2.COLOR_RGB2GRAY)
+    h, w = g.shape
+    sc = max(1, int(max(h, w) / 400))
+    small = g[::sc, ::sc]
+    bg = cv2.medianBlur(small, 21 if min(small.shape) > 42 else 3)
+    return float(bg.std()) > IMG_UNEVEN_STD
+
+
+def _flattened(arr):
+    """Картинка с выровненным фоном: яркость делится на фон (медиана широкого
+    окна), затем местный контраст (CLAHE) — пятно и тень уходят, штрих
+    остаётся. Три канала, как ждёт детектор."""
+    import cv2
+    g = cv2.cvtColor(arr[..., :3].astype("uint8"), cv2.COLOR_RGB2GRAY)
+    k = max(31, (min(g.shape) // 20) | 1)
+    bg = cv2.GaussianBlur(cv2.medianBlur(g, min(k, 255) if min(k, 255) % 2 else min(k, 255) - 1), (0, 0), 15)
+    n = _np.clip(g.astype("float32") / _np.maximum(bg.astype("float32"), 1.0) * 230.0, 0, 255)
+    cl = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(n.astype("uint8"))
+    return cv2.cvtColor(cl, cv2.COLOR_GRAY2RGB)
 
 
 def _detect_boxes(eng, arr, k: int) -> list:
@@ -1322,14 +1611,23 @@ IMG_GAP_STEP = float(os.environ.get("IMG_GAP_STEP", "1.7"))      # × шага: 
 # а полосы бумаги сразу над и под местом почти чисты (краски там меньше
 # `IMG_GAP_EDGE` доли от краски места) — рисунок тянется за край места.
 IMG_GAP_OVERLAP = float(os.environ.get("IMG_GAP_OVERLAP", "0.2"))
+# Ш21: колонка для поиска пропусков — от пяти строк (три ровных шага и один
+# пропуск; краска места проверяется всё равно) и по перекрытию с половиной
+# короткой строки.
+IMG_GAP_MIN_LINES = int(os.environ.get("IMG_GAP_MIN_LINES", "5"))
+IMG_GAP_COL_SHARE = float(os.environ.get("IMG_GAP_COL_SHARE", "0.5"))
+IMG_GAP_CONFIRM_H = 1.6     # × высоты строки: рамка выше — не строка, а пятно
 IMG_GAP_EDGE = float(os.environ.get("IMG_GAP_EDGE", "0.5"))
+
+
+IMG_RHYTHM_EDGES = os.environ.get("IMG_RHYTHM_EDGES", "1") != "0"
 
 
 def gap_slots(boxes: list) -> list:
     """Места, где в ровной колонке должна стоять строка, а её нет:
     [(x0, y0, x1, y1, высота строки)]. Только геометрия, картинка не нужна —
     по этому ответу решают, стоит ли вообще отрисовывать страницу."""
-    if len(boxes) < IMG_RHYTHM_MIN_LINES:
+    if len(boxes) < IMG_GAP_MIN_LINES:
         return []
     chains: list = []
     for b in sorted((list(x) for x in boxes), key=lambda b: b[1]):
@@ -1341,17 +1639,34 @@ def gap_slots(boxes: list) -> list:
             last = ch[-1]
             narrow = max(1, min(b[2] - b[0], lx1 - lx0))
             lh = max(1.0, h, last[3] - last[1])
-            if (min(b[2], lx1) - max(b[0], lx0) > 0.7 * narrow and b[1] >= last[3]
-                    and abs(h - (last[3] - last[1])) <= IMG_RHYTHM_SIZE * lh):
+            # Ш21: колонка — по перекрытию с ПОЛОВИНОЙ короткой строки и к
+            # БЛИЖАЙШЕЙ сверху цепочке. У обгоревшего письма строка начинается
+            # у прожжённой дыры, и перекрытие 0.7 рвало колонку на обрывки
+            # (на два пикселя), а строка между ними так и не находилась.
+            if (min(b[2], lx1) - max(b[0], lx0) > IMG_GAP_COL_SHARE * narrow and b[1] >= last[3]
+                    and abs(h - (last[3] - last[1])) <= IMG_RHYTHM_SIZE * lh
+                    and (home is None or last[3] > home[-1][3])):
                 home = ch
-                break
         if home is None:
             chains.append([b])
         else:
             home.append(b)
+
+    def taken(slot):
+        area = max(1.0, (slot[2] - slot[0]) * (slot[3] - slot[1]))
+        for b in boxes:
+            ov = (max(0, min(slot[2], b[2]) - max(slot[0], b[0]))
+                  * max(0, min(slot[3], b[3]) - max(slot[1], b[1])))
+            # Занято, если найденная строка накрывает заметную долю места
+            # ИЛИ место накрывает большую часть самой строки: короткая
+            # «Дорогая Анна!» в широком месте — та же строка, а не пропуск.
+            if ov > IMG_GAP_OVERLAP * area or ov > 0.5 * max(1.0, (b[2] - b[0]) * (b[3] - b[1])):
+                return True
+        return False
+
     out = []
     for ch in chains:
-        if len(ch) < IMG_RHYTHM_MIN_LINES:
+        if len(ch) < IMG_GAP_MIN_LINES:
             continue
         steps = [b_[1] - a_[1] for a_, b_ in zip(ch, ch[1:])]
         st = sorted(steps)
@@ -1361,34 +1676,86 @@ def gap_slots(boxes: list) -> list:
             continue
         lh = sorted(c[3] - c[1] for c in ch)[len(ch) // 2]
         cx0, cx1 = min(c[0] for c in ch), max(c[2] for c in ch)
+        # Ш18б: на шаг выше первой и ниже последней строки колонки — тоже
+        # место строки: детектор теряет и КРАЙНЮЮ строку (выцветший приказ:
+        # девятая строка «и горячим питанием.» осталась непереведённой).
+        # Строка ли это, решает краска (`rhythm_gaps`), как и у пропусков.
+        if IMG_RHYTHM_EDGES:
+            for y0 in (ch[0][1] - pitch, ch[-1][1] + pitch):
+                slot = (cx0, y0, cx1, y0 + lh)
+                if y0 >= 0 and not taken(slot):
+                    out.append((cx0, y0, cx1, y0 + lh, lh))
         for a_, x in zip(ch, steps):
             if x < IMG_GAP_STEP * pitch:
                 continue
             for j in range(1, int(round(x / pitch))):
                 y0 = a_[1] + j * pitch
                 slot = (cx0, y0, cx1, y0 + lh)
-                area = max(1.0, (cx1 - cx0) * lh)
-                if any(max(0, min(slot[2], b[2]) - max(slot[0], b[0]))
-                       * max(0, min(slot[3], b[3]) - max(slot[1], b[1])) > IMG_GAP_OVERLAP * area
-                       for b in boxes):
+                if taken(slot):
                     continue                    # место занято найденной строкой
                 out.append((cx0, y0, cx1, y0 + lh, lh))
     return out
 
 
-def rhythm_gaps(arr, boxes: list) -> list:
+def _gap_confirm(slot, ctx: dict):
+    """Ш21: место строки на ИСПОРЧЕННОМ снимке подтверждает детектор — по
+    вырезке места из картинки с выровненным фоном. Краска тут не мерило:
+    у прожжённой дыры или пятна воды «краска» тянется за место строки, и
+    правило «рисунок, не строка» отвергало настоящую строку обгоревшего
+    письма. Рамка — [x0, y0, x1, y1] или None."""
+    x0, y0, x1, y1, lh = slot
+    if "flat" not in ctx:
+        ctx["flat"], ctx["eng"] = None, None
+        try:
+            if _uneven_background(ctx["arr"]):
+                ctx["flat"] = _flattened(ctx["arr"])
+                ok, _why = engine_ready()
+                ctx["eng"] = _engine() if ok else None
+        except Exception:
+            ctx["flat"] = None
+    fa, eng = ctx["flat"], ctx["eng"]
+    if fa is None or eng is None:
+        return None
+    H, W = fa.shape[:2]
+    pad = int(lh)
+    cx0, cy0 = max(0, int(x0) - pad), max(0, int(y0) - pad)
+    crop = _np.ascontiguousarray(fa[cy0:min(H, int(y1) + pad), cx0:min(W, int(x1) + pad)])
+    try:
+        found = _detect_boxes(eng, crop, 1)
+    except Exception:
+        return None
+    hits = []
+    for f in found:
+        b = f["box"]
+        mid = cy0 + (b[1] + b[3]) / 2.0
+        if y0 <= mid <= y1 and (b[3] - b[1]) <= IMG_GAP_CONFIRM_H * lh:
+            hits.append((cx0 + b[0], cx0 + b[2]))
+    if not hits or sum(b - a for a, b in hits) < IMG_RHYTHM_WIDE * lh:
+        return None
+    return [int(min(a for a, _ in hits)), int(y0), int(max(x1, max(b for _, b in hits))), int(y1)]
+
+
+def rhythm_gaps(arr, boxes: list, confirm: bool = False) -> list:
     """Рамки строк, пропущенных детектором в ровной колонке: [[x0,y0,x1,y1]].
-    Место из `gap_slots` — строка, только если в нём есть краска."""
+    Место из `gap_slots` — строка, только если в нём есть краска (или, при
+    `confirm`, на испорченном снимке его подтвердил детектор — `_gap_confirm`)."""
     slots = gap_slots(boxes)
     if _np is None or arr is None or not slots:
         return []
     H, W = arr.shape[:2]
     lum = arr[..., :3].astype(_np.float32) @ _np.array([0.299, 0.587, 0.114], dtype=_np.float32)
     out = []
-    for x0, y0, x1, y1, lh in slots:
+    ctx = {"arr": arr}
+    for slot in slots[:IMG_GAP_MAX_SLOTS]:
+        x0, y0, x1, y1, lh = slot
         x0, y0, x1, y1 = max(0, int(x0)), max(0, int(y0)), min(W, int(x1)), min(H, int(y1))
         if y1 - y0 < 4 or x1 - x0 < 8:
             continue
+        if confirm:
+            got = _gap_confirm((x0, y0, x1, y1, lh), ctx)
+            if got is not None:
+                out.append(got)
+                continue
         band = lum[y0:y1, x0:x1]
         bg = float(_np.median(band))
         ink = band < bg - IMG_GAP_INK_DELTA
@@ -1401,6 +1768,12 @@ def rhythm_gaps(arr, boxes: list) -> list:
         if any(st.size and float((st < bg - IMG_GAP_INK_DELTA).mean()) > IMG_GAP_EDGE * share
                for st in edges):
             continue                            # краска тянется за место — рисунок, не строка
+        # Ш31: у строки краска стоит на высоту буквы — у линии (пунктир
+        # внизу факса, черта бланка) она занимает пару рядов точек. Мера —
+        # доля рядов места, где краска есть.
+        rows_ink = float((ink.mean(axis=1) > 0.02).mean())
+        if rows_ink < IMG_GAP_ROWS:
+            continue
         cols = _np.where(ink.any(axis=0))[0]
         if cols.size == 0 or (cols[-1] - cols[0]) < IMG_RHYTHM_WIDE * lh:
             continue
@@ -1982,7 +2355,8 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         bgv = _np.median(_np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]]), axis=0)
         rgb_m[obj[0]] = bgv.astype(_np.uint8)
     try:
-        m = tp.measure(rgb_m, it.get("src") or "", rows, float(it.get("lineH") or 0), inner=inner)
+        m = tp.measure(rgb_m, it.get("src") or "", rows, float(it.get("lineH") or 0), inner=inner,
+                       angle_hint=float(it.get("angleLock") or 0.0))
         if not m.get("found"):
             return None
         icons = []
@@ -2020,7 +2394,14 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
             lo, hi = tp.text_span(m["mask"], obj[1], lh_, x1 - x0)
             if lo > 0 or hi < x1 - x0:
                 tx = (x0 + lo, x0 + hi)
-        erased, alpha = tp.erase(rgb, m)
+        if it.get("_measureOnly"):
+            # Замер ради вида печати (Ш19, проход 0): стирать незачем —
+            # LaMa на единственном воркере стоит секунд и бюджета.
+            erased, alpha = rgb, _np.zeros(rgb.shape[:2], _np.uint8)
+        else:
+            m["_ctx"] = (arr, x0, y0)
+            erased, alpha = tp.erase(rgb, m)
+            m.pop("_ctx", None)
     except Exception:
         return None
     if len(m["bands"]) > rows + 1:
@@ -2045,6 +2426,13 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
             m["bold"] = False               # Х11: жирный — от размытия
     if fam == "serif" and (it.get("era") == "old" or _pf().pre_reform(it.get("src") or "")):
         fam = "old"                         # Х10: дореформенная печать
+    if it.get("famLock") is not None:
+        # Ш19: часть блока — видом печати ВСЕГО блока (машинопись узнаётся
+        # по шагу знака на двух и больше строках, и однострочная часть
+        # приказа выходила рубленым шрифтом рядом с машинописными).
+        fam = it["famLock"]
+    if it.get("boldLock") is not None:
+        m["bold"] = bool(it["boldLock"])
     fpath = _paint_font(m["bold"], text, fam)
     if not fpath:
         return None
@@ -2485,6 +2873,57 @@ def _one_line_grow(pm: dict, pp, draw, others: list, arr, w: int, h: int):
     return p2
 
 
+IMG_SINGLE_EVEN_RATIO = 1.2     # Ш28: кегли однострочных в пределах — один класс
+IMG_SINGLE_EVEN_MIN = 3
+IMG_PART_EM_DEV = 1.35           # Ш28: часть блока дальше этого от кегля соседних — их кегль
+
+
+def _single_even(pms: list, items: list, even: dict) -> None:
+    """Ш28: однострочные надписи с близким кеглем — ячейки таблицы, пункты
+    меню, поля бланка — один класс, и кегль класса — медиана. Замер каждой
+    сам по себе на размытом снимке шумит на десятки процентов: в таблице
+    ксерокопии «Date» выходила крупно, «Neurology» — ещё крупнее, а соседние
+    ячейки мельче. Не влезет в своё место — раскладка ужмёт ровно эту."""
+    # Части ОДНОГО блока (Ш7) напечатаны одним кеглем: часть, чей замер
+    # ушёл от соседних больше чем на треть (строку пересекает линия листа,
+    # пятно), берёт кегль соседних частей.
+    groups: dict = {}
+    for i, pm in enumerate(pms):
+        if pm is not None and i not in even and items[i].get("blkItem") is not None and pm.get("em"):
+            groups.setdefault(id(items[i]["blkItem"]), []).append(i)
+    for mem in groups.values():
+        if len(mem) < 3:
+            continue
+        ems = sorted(pms[i]["em"] for i in mem)
+        med = ems[len(ems) // 2]
+        for i in mem:
+            if not (1 / IMG_PART_EM_DEV <= pms[i]["em"] / med <= IMG_PART_EM_DEV):
+                pms[i]["em"] = med
+    idx = sorted((i for i, pm in enumerate(pms)
+                  if pm is not None and i not in even and (items[i].get("rows") or 1) <= 1
+                  and not pm.get("geo") and not pm["m"].get("arc") and pm.get("em")),
+                 key=lambda i: pms[i]["em"])
+    cls: list = []
+    for i in idx:
+        if (cls and pms[i]["em"] <= IMG_SINGLE_EVEN_RATIO * pms[cls[0]]["em"]
+                and pms[i].get("fam") == pms[cls[0]].get("fam")
+                and bool(pms[i]["m"].get("bold")) == bool(pms[cls[0]]["m"].get("bold"))):
+            cls.append(i)
+            continue
+        if len(cls) >= IMG_SINGLE_EVEN_MIN:
+            _even_set(pms, cls)
+        cls = [i]
+    if len(cls) >= IMG_SINGLE_EVEN_MIN:
+        _even_set(pms, cls)
+
+
+def _even_set(pms: list, cls: list) -> None:
+    ems = sorted(pms[i]["em"] for i in cls)
+    med = ems[len(ems) // 2]
+    for i in cls:
+        pms[i]["em"] = med
+
+
 def _page_even(pms: list, draw, arr, w: int, h: int, others_of) -> dict:
     """Ф4: один кегль, шаг и цвет на класс абзацев страницы. {номер: план}."""
     tp = _tp()
@@ -2874,6 +3313,7 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
         return _refuse(items, "no_pillow")
     if not items:
         return None, []
+    items = list(items)                     # проходы правят элементы — список вызывающего не трогаем
     fpath = font_path()
     if fpath is None:
         return _refuse(items, "no_font")
@@ -2908,6 +3348,32 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
     n = len(items)
     report: list = [None] * n
     plan, paint = [], []
+    # ── Проход 0: вид печати блока, разделённого на части (Ш19) ──
+    locks: dict = {}
+    for it0 in items:
+        blk = it0.get("blkItem")
+        if not blk or id(blk) in locks:
+            continue
+        locks[id(blk)] = None
+        try:
+            bx = blk.get("box") or [0, 0, 0, 0]
+            py_ = _pad_for(bx, blk.get("lineH"), blk.get("rows"), 0.14)
+            px_ = _pad_for(bx, blk.get("lineH"), blk.get("rows"), 0.10)
+            pb0 = _clip((bx[0] - px_, bx[1] - py_, bx[2] + px_, bx[3] + py_), w, h)
+            if pb0[2] - pb0[0] >= 4 and pb0[3] - pb0[1] >= 4:
+                pm0 = _paint_measure(arr, pb0, dict(blk, _measureOnly=1), k, draw)
+                if pm0 and pm0["fam"]:
+                    locks[id(blk)] = pm0["fam"]
+        except Exception:
+            locks[id(blk)] = None
+    if any(locks.values()):
+        # Вид печати передаётся частям, только когда он ДОКАЗАН (машинопись,
+        # засечки, рукопись): «не узнан» у блока — не довод (наклонный снимок
+        # чека смазывает шаг знака), и часть остаётся голосовать страницей.
+        # Вес (полужирный) не передаётся: части и разделены по РАЗНОЙ
+        # высоте строк (заголовок и текст), и вес у каждой свой.
+        items = [dict(x, famLock=locks[id(x["blkItem"])])
+                 if x.get("blkItem") and locks.get(id(x["blkItem"])) else x for x in items]
     # ── Проход 1: проверки рамки и замер по пикселям ──
     pre: list = [None] * n
     pms: list = [None] * n
@@ -2943,6 +3409,45 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
         # по маске букв (клетка и линейка — по модели бумаги, Ф6).
         pms[i] = _paint_measure(arr, pbox, it, k, draw)
 
+    # Ш23: наклон страницы. Снимок под углом наклоняет ВСЕ строки одинаково,
+    # но мерится наклон только у вытянутой маски: короткое «ИТОГО» и
+    # «Сдача» выходили прямыми среди наклонных строк чека. Наклоны, согласные
+    # между собой (разброс ≤ `IMG_PAGE_TILT_MAD`°) у большинства строк с
+    # замером, — наклон страницы; однострочным без своего наклона — он же.
+    tilts = [(pm["m"]["angle"], len(items[i].get("text") or "")) for i, pm in enumerate(pms)
+             if pm is not None and not pm["m"].get("arc") and (items[i].get("rows") or 1) <= 1
+             and IMG_PAGE_TILT_LO <= abs(pm["m"]["angle"]) <= IMG_PAGE_TILT_HI]
+    singles = [i for i, pm in enumerate(pms)
+               if pm is not None and (items[i].get("rows") or 1) <= 1 and not pm["m"].get("arc")]
+    if len(tilts) >= IMG_PAGE_TILT_MIN and len(tilts) >= IMG_PAGE_TILT_SHARE * len(singles):
+        av = sorted(a for a, _ in tilts)
+        med = av[len(av) // 2]
+        if sorted(abs(a - med) for a in av)[len(av) // 2] <= IMG_PAGE_TILT_MAD:
+            for i in singles:
+                if not pms[i]["m"]["angle"] and pre[i] is not None and not pre[i][1]:
+                    items[i] = dict(items[i], angleLock=med)
+                    pms[i] = _paint_measure(arr, pre[i][0], items[i], k, draw) or pms[i]
+
+    # Ш19б: машинопись узнаётся по шагу знака на двух и больше строках; у
+    # однострочного блока признака нет, и подпись «Директор станции» под
+    # машинописным приказом печаталась рубленым. Страница, где блоки от двух
+    # строк большей частью (по тексту) машинописные, — и однострочные без
+    # своего вида (не рукопись, не засечки) машинописью.
+    votes: dict = {}
+    for i, pm in enumerate(pms):
+        # Голос — у замера с доказательством: блок от двух строк либо часть
+        # такого блока (вид печати ей задан блоком, Ш19).
+        if pm is not None and ((items[i].get("rows") or 1) >= 2 or items[i].get("famLock") is not None):
+            votes[pm["fam"]] = votes.get(pm["fam"], 0) + len(items[i].get("text") or "")
+    if votes and sum(votes.values()) > 0:
+        top = max(votes, key=votes.get)
+        if top == "type" and votes[top] >= IMG_PAGE_FAM_SHARE * sum(votes.values()):
+            for i, pm in enumerate(pms):
+                if (pm is not None and (items[i].get("rows") or 1) < 2 and pm["fam"] == ""
+                        and items[i].get("famLock") is None and pre[i] is not None):
+                    items[i] = dict(items[i], famLock="type")
+                    pms[i] = _paint_measure(arr, pre[i][0], items[i], k, draw) or pm
+
     # ── Проход 2: страница — один кегль, шаг и цвет у класса абзацев (Ф4) ──
     boxes_all = [list(o) for o in (obstacles or []) if o and len(o) >= 4]
     for j, it2 in enumerate(items):
@@ -2953,6 +3458,7 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
         own = list(items[i].get("box") or [])[:4]
         return [o for o in boxes_all if o[:4] != own]
     even = _page_even(pms, draw, arr, w, h, others_of)
+    _single_even(pms, items, even)
 
     # ── Проход 3: раскладка, плашка там, где букв не выделить ──
     for i, it in enumerate(items):
@@ -3016,8 +3522,20 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
         fill, ink = _fill_and_ink(arr, pbox)
         sbox = [v * k for v in pbox]
         bw, bh = sbox[2] - sbox[0], sbox[3] - sbox[1]
-        font, rows, step, size = _fit(draw, text, _paint_font(False, text, it.get("fam") or "") or fpath,
-                                      bw, bh, max(6, int(bh)))
+        # Ш32: часть блока, у которой замер не вышел (через строку идёт линия
+        # листа), — видом печати блока и кеглем соседних частей: рамка такой
+        # строки испорчена линией, и кегль по её высоте выходил то вдвое
+        # крупнее соседей, то мельче (факс: «От:» рубленым крупно, «Калий»
+        # мелко посреди машинописи).
+        sib = sorted(pms[j]["em"] for j in range(n)
+                     if j != i and pms[j] is not None and items[j].get("blkItem") is not None
+                     and items[j].get("blkItem") is it.get("blkItem") and pms[j].get("em"))
+        cap, fit_h = max(6, int(bh)), bh
+        if sib:
+            em_s = sib[len(sib) // 2]
+            cap, fit_h = max(6, int(em_s)), max(bh, 1.25 * em_s * max(1, int(it.get("rows") or 1)))
+        font, rows, step, size = _fit(draw, text, _paint_font(False, text, it.get("famLock") or it.get("fam") or "")
+                                      or fpath, bw, fit_h, cap)
         if font is None or size < IMG_FONT_MIN_PX * k:
             # Влезть-то влезет, но читать будет нечего. Такой блок уходит
             # подписью под картинкой — это честнее нечитаемой строки.

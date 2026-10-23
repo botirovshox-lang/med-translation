@@ -1533,6 +1533,44 @@ def _lang_rule(code: str) -> dict:
     return _LANG_RULES.get((code or "").strip().upper()) or {}
 
 
+_NORM_CACHE: dict = {}
+
+
+def _lang_normalize(text: str, code: str, src: str = "") -> str:
+    """Ш12: орфографическая нормализация языка перевода ДАННЫМИ
+    (`lang_rules.json` → `normalize`: [[шаблон, замена], …]). Модель пишет
+    узбекское «oʻ» то U+2018, то апострофом, то U+02BB вперемешку в одном
+    документе (корпус выгрузки: «bo‘tqa» рядом с «yoʻl»); правило языка
+    приводит к одному знаку детерминированно и бесплатно. Нет записи —
+    текст как есть."""
+    if not text:
+        return text
+    rules = _lang_rule(code).get("normalize") or []
+    if not rules:
+        return text
+    key = (code or "").upper()
+    comp = _NORM_CACHE.get(key)
+    if comp is None:
+        comp = []
+        for r in rules:
+            try:
+                comp.append((re.compile(r[0]), r[1]))
+            except (re.error, IndexError, TypeError):
+                continue
+        _NORM_CACHE[key] = comp
+    # Слово, стоящее в оригинале буква в букву (имя «O'Brien», код), адрес
+    # и почта — не текст языка перевода: их не трогаем.
+    keep = set(src.split()) if src else set()
+
+    def fix(tok: str) -> str:
+        if not tok.strip() or tok in keep or "://" in tok or "@" in tok or tok.startswith("www."):
+            return tok
+        for rx, repl in comp:
+            tok = rx.sub(repl, tok)
+        return tok
+    return "".join(fix(t) for t in re.split(r"(\s+)", text))
+
+
 def _lang_conventions(code: str) -> str:
     """Блок правил языка перевода для промптов перевода, ремонта и ревизии.
 
@@ -3793,7 +3831,12 @@ def _fn_step_closed(step: str) -> bool:
 _QUOTA_MARKERS = ("insufficient_quota", "exceeded your current quota", "billing_hard_limit",
                   "billing hard limit", "account is not active", "check your plan and billing",
                   # Anthropic: «Your credit balance is too low to access the Anthropic API»
-                  "credit balance is too low")
+                  "credit balance is too low",
+                  # Anthropic: лимит расхода, выставленный в кабинете (400
+                  # invalid_request_error «You have reached your specified API
+                  # usage limits. You will regain access on …», 23.10.2026) —
+                  # отказывает каждый вызов до указанной даты.
+                  "reached your specified api usage limits")
 # Отказ ПО СТРАНЕ (09.10.2026: OpenAI — 403 `unsupported_country_region_territory`,
 # Anthropic — 403 «Request not allowed» адресу сервера в РФ). По смыслу это
 # тот же класс, что пустой счёт: отказывает каждый вызов, ожидание не поможет,
@@ -4411,6 +4454,17 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         "   popular science; established terms for textbooks, manuals and contracts. Words that\n"
         "   form a pair or a list (up/down, opposites, enumerations) come from the SAME register —\n"
         "   never mix a bookish word with a colloquial partner.\n"
+        # Ш30 (корпус выгрузки, критик перевода): имя организации в кавычках
+        # и монограмма переводились («СВ» → «MCHJ», «Северный ветер» →
+        # «Shimoliy shamol»), копейки становились тийинами, а строки адреса
+        # и подписи сливались в одну. Правила про любой язык и пару.
+        "12. Proper names — people, companies and brands in quotes, monograms, logos — are\n"
+        f"   TRANSLITERATED into {tgt} script, never translated word by word.\n"
+        "13. Keep the currency, units and measures of the SOURCE (kopecks stay kopecks, roubles\n"
+        "   stay roubles); never convert them into the target country's units. Use one currency\n"
+        "   notation throughout the text.\n"
+        "14. If the source has line breaks, the translation has the SAME number of lines, broken\n"
+        "   at the same places.\n"
         )
         # Стайл-шит документа (`_style_block`) — только в обычный перевод,
         # никогда в обратный: тот обязан ОТРАЖАТЬ текст, а не причёсывать его.
@@ -4586,7 +4640,8 @@ def _openai_translate(text: str, src: str, tgt: str,
     # Адрес из оригинала — буква в букву, даже если модель его переписала
     # своими буквами («хттпс://дои.орг/…», проект 14): ссылка в переводе
     # обязана работать. Обратный перевод (`literal`) не трогаем — он мера.
-    return out if literal else _decimal_fix(text, _keep_verbatim(text, _strip_markdown(text, out)), src, tgt)
+    return out if literal else _lang_normalize(
+        _decimal_fix(text, _keep_verbatim(text, _strip_markdown(text, out)), src, tgt), tgt, text)
 
 # ─────────────────────────────────────────────────────────────────────
 # Аутентификация
@@ -18100,17 +18155,22 @@ def _image_read_system(dom: dict, src_lang: str) -> str:
         "For EVERY block return:\n"
         '  "text"    — exactly what is written in that crop, verbatim, in the '
         "original language. Keep numbers, units and capitalisation. If the "
-        "block is split into several lines, join them into one string; if a "
-        "word is hyphenated at a line break, join it back into one word. "
+        "block has several lines, keep them as lines: put each visual line of "
+        "the crop on its own line, top to bottom, separated by a line break "
+        "(\\n); a word hyphenated at a line end stays as written. "
         "Transcribe, do not edit: never correct, complete, normalise or "
         "replace a word with a more plausible one, even in handwriting — "
         "copy what is written letter by letter, and keep every punctuation "
         "mark, including the final full stop. "
-        "If you cannot read it, return an empty string — never guess.\n"
+        "If PART of the text is lost (burnt, torn, stained, faded, washed out), "
+        "transcribe every word that is still legible and put […] where words "
+        "are lost; never guess the lost words. Return an empty string only if "
+        "nothing at all is legible.\n"
         '  "overlay" — true if this is NOT text of the document but a label '
         "burnt in by equipment or software: patient name, examination date, "
-        "scanner settings, ruler marks, menu items, watermark, file name. "
-        "Otherwise false.\n"
+        "scanner settings, ruler marks, watermark, file name. When the picture "
+        "itself is a screenshot, a form or a page, its menus, buttons and labels "
+        "ARE the document: overlay false. Otherwise false.\n"
         '  "hand"    — true if the text is WRITTEN BY HAND (pen, pencil, marker), '
         "false if it is printed or typed.\n"
         '  "serif"   — true if the text is PRINTED in a serif typeface (letters with '
@@ -18150,6 +18210,42 @@ def _image_read_parse(raw: str) -> list:
         if isinstance(obj, dict) and "i" in obj:
             out.append(obj)
     return out
+
+
+def _overlay_column_fix(blocks: list) -> int:
+    """Ш29: блок, который модель назвала надпечаткой аппарата, а он стоит
+    в одной колонке с переводимыми строками той же высоты (левый край
+    в пределах `OVERLAY_COL_X` строки, высота строки в пределах 40 %), —
+    текст документа. Скриншот интерфейса: «Главная», «Заказы», «Платежи»
+    переводились, а «Настройки» и «Выход» под ними модель пометила
+    надпечаткой, и они остались по-русски. Решение человека не трогаем.
+    Ответ — сколько блоков вернули в документ."""
+    docs = [b for b in blocks if not b.get("skip") and (b.get("text") or "").strip() and b.get("box")]
+    fixed = 0
+    for b in blocks:
+        if b.get("skip") != "overlay" or b.get("by") == "human" or not b.get("box"):
+            continue
+        lh = float(b.get("lineH") or 0) or float(b["box"][3] - b["box"][1]) / max(1, int(b.get("rows") or 1))
+        if lh <= 0:
+            continue
+        if any(ch.isdigit() for ch in (b.get("text") or "")):
+            continue                    # цифры — показания, дата, номер: надпечатка аппарата
+        col_over = sum(1 for o in blocks if o.get("skip") == "overlay" and o.get("box")
+                       and abs(float(o["box"][0]) - float(b["box"][0])) <= OVERLAY_COL_X * lh)
+        mates = 0
+        for d in docs:
+            dl = float(d.get("lineH") or 0) or float(d["box"][3] - d["box"][1]) / max(1, int(d.get("rows") or 1))
+            if abs(float(d["box"][0]) - float(b["box"][0])) <= OVERLAY_COL_X * lh and dl > 0                     and 0.6 <= dl / lh <= 1.4:
+                mates += 1
+        if mates >= OVERLAY_COL_MIN and col_over * 2 <= mates:
+            b.pop("skip", None)
+            b["by"] = "column"
+            fixed += 1
+    return fixed
+
+
+OVERLAY_COL_X = 0.6
+OVERLAY_COL_MIN = 3
 
 
 def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
@@ -18263,7 +18359,18 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
             continue
         # Перенос, оставленный чтением посреди строки, снимается здесь, до
         # сегмента: иначе он доезжает до перевода («civil ser- vant»).
-        out[i] = {"text": image_text.read_clean(item.get("text") or ""),
+        # Ш7: строки, которые кончил автор, — разрывом (поля, пункты);
+        # продолжение фразы — пробелом. Последняя строка, читанная своей
+        # вырезкой (Х19), сюда не входит — её разрыв ставится ниже.
+        lbs_i = list(blocks[i].get("lineBoxes") or [])
+        if i in tails.values():
+            lbs_i = lbs_i[:-1]
+        if system is None and hasattr(image_text, "read_lines"):
+            txt_i, brk_i = image_text.read_lines(item.get("text") or "", lbs_i,
+                                                image_text.block_align(blocks[i]))
+        else:
+            txt_i, brk_i = image_text.read_clean(item.get("text") or ""), []
+        out[i] = {"text": txt_i, "breaks": brk_i,
                   "overlay": bool(item.get("overlay")),
                   # Рукопись: по ней печать берёт рукописный шрифт (`_hand_image`).
                   "hand": bool(item.get("hand")),
@@ -18278,6 +18385,10 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
         if out[i] is not None and t and out[i]["text"]:
             out[i]["text"] = out[i]["text"] + "\n" + t
             out[i]["sizeBreak"] = 1
+            # Х19 — тот же разрыв, что Ш7: после предпоследней строки блока.
+            n_lb = len(image_text.row_boxes(blocks[i].get("lineBoxes")))
+            if n_lb >= 2:
+                out[i]["breaks"] = list(out[i].get("breaks") or []) + [n_lb - 2]
         elif out[i] is not None and t and not out[i]["text"]:
             out[i]["text"] = t
     return out
@@ -18358,7 +18469,7 @@ def _regroup_gaps(rec: dict, blob: bytes) -> int:
     except Exception:
         return 0
     added = []
-    for gb in image_text.rhythm_gaps(arr, boxes):
+    for gb in image_text.rhythm_gaps(arr, boxes, confirm=True):
         added.append({"box": gb, "rows": 1, "lineH": int(gb[3] - gb[1]), "conf": None,
                       "flat": round(image_text.flatness(arr, gb), 3), "align": "left",
                       "lineBoxes": [gb], "gap": 1})
@@ -19697,6 +19808,10 @@ def _job_images(job: dict) -> None:
                             continue
                         b = blocks[i]
                         b["text"] = ans["text"]
+                        if ans.get("breaks"):
+                            b["breaks"] = list(ans["breaks"])     # Ш7
+                        else:
+                            b.pop("breaks", None)
                         job["counters"]["read"] = job["counters"].get("read", 0) + 1
                         b["reader"] = ans["model"]
                         if ans.get("hand"):
@@ -19723,6 +19838,11 @@ def _job_images(job: dict) -> None:
                         else:
                             b.pop("skip", None)
                         map_dirty = True
+
+        # Ш29: «надпечатка» в одной колонке с текстом документа — текст документа.
+        for _n, _b, rec in work:
+            if _overlay_column_fix(rec.get("blocks") or []):
+                map_dirty = True
 
         # 3. СЕГМЕНТЫ — по документу, картинка за картинкой. Только то, что
         # прочитано, не является надпечаткой аппарата и не шум. Уже заведённые
@@ -26142,7 +26262,8 @@ def _repair_findings(seg: dict, project: Optional[dict] = None) -> list:
     # обязан откатиться.
     items = (_gloss_misses(seg, project) + _consist_misses(seg, project)
              + _case_misses(seg) + _script_misses(seg) + _dup_misses(seg)
-             + _variant_misses(seg) + _ident_misses(seg)
+             + _variant_misses(seg) + _ident_misses(seg) + _paren_misses(seg)
+             + _lines_misses(seg)
              # Письмо и алфавит ЯЗЫКА ПЕРЕВОДА (латиница вместо узбекской
              # кириллицы): с проектом — находка, без проекта — доезжает
              # списком `_alphabet_ids`, как разнобой.
@@ -26759,6 +26880,66 @@ def _adjacent_repeat(text: str) -> list:
 
 
 _VARIANTS_RE = re.compile(r"(\S+(?:\s+\S+){0,3}?)\s+/\s+(\S+(?:\s+\S+){0,3})")
+_VARIANT_GLUED_MIN = 4
+_VARIANT_GLUED_RE = re.compile(r"(?<![\w/])[^\W\d_]{%d,}/[^\W\d_]{%d,}(?![\w/])"
+                               % (_VARIANT_GLUED_MIN, _VARIANT_GLUED_MIN))
+# Ш11: пояснение в скобках, которого нет в оригинале.
+_PAREN_RE = re.compile(r"[(（]([^()（）]{1,80})[)）]")
+
+
+def _paren_count(t: str) -> int:
+    return t.count("(") + t.count("（")
+
+
+def _lines_misses(seg: dict) -> list:
+    """Ш30б: у оригинала с переносами строк (строки картинки, адрес, подпись,
+    стих) перевод обязан иметь СТОЛЬКО ЖЕ строк: по ним перевод встаёт
+    в строки картинки (Ш7) и в строки стиха. Модель сливала их в одну
+    («Министерство… Управление кадров», подпись письма). Без языка и
+    без модели; оригинал в одну строку — проверять нечего."""
+    src = (seg.get("source") or "").strip()
+    tgt = (seg.get("target") or "").strip()
+    if "\n" not in src or not tgt or (seg.get("origin") or {}).get("kind") != "image":
+        return []                   # строки держит только картинка (Ш7)
+    ns = len([x for x in src.split("\n") if x.strip()])
+    nt = len([x for x in tgt.split("\n") if x.strip()])
+    if ns == nt:
+        return []
+    return [{"kind": "lines",
+             "text": "в оригинале строк: " + str(ns) + ", в переводе: " + str(nt)
+                     + " — сохрани разбивку на строки, как в оригинале"}]
+
+
+def _paren_misses(seg: dict) -> list:
+    """Перевод добавил ПОЯСНЕНИЕ в скобках, которого в оригинале нет:
+    «Chaikhana (Teahouse)», «Gen. (Genosse) S. I. Lebedew», «Q2 (II quarter)»,
+    «范围(温度范围)» (корпус выгрузки, 23.10.2026). Правило 9 промпта перевода
+    («не добавляй, не объясняй») модель нарушает, и ни одна проверка этого не
+    видела: back-check возвращает лишнее слово обратно, termcheck судит
+    термины. Бесплатно и без знания языка: скобок в переводе больше, чем
+    в оригинале, и в лишней скобке есть слово (буквы), а не код или число,
+    стоящее в оригинале буква в букву («(HbA1c)», «(rs10905277)»)."""
+    tgt = seg.get("target") or ""
+    src = seg.get("source") or ""
+    if _paren_count(tgt) <= _paren_count(src):
+        return []
+    out = []
+    for m in _PAREN_RE.finditer(tgt):
+        inner = m.group(1).strip()
+        if not any(ch.isalpha() for ch in inner) or inner in src:
+            continue
+        if len(inner) <= 8 and inner == inner.upper() and " " not in inner:
+            continue                # сокращение при раскрытии («tuberculosis (TB)») — законно
+        out.append({"kind": "addon",
+                    "text": "в переводе пояснение в скобках, которого нет в оригинале: «("
+                            + inner + ")» — убери его, переведи только то, что написано"})
+        if len(out) >= 2:
+            break
+    # Лишняя скобка ровно одна, а пояснений нашлось больше — законная скобка
+    # оригинала среди них; без точного соответствия молчим.
+    if len(out) > _paren_count(tgt) - _paren_count(src):
+        return []
+    return out
 
 
 def _variant_misses(seg: dict) -> list:
@@ -26771,9 +26952,21 @@ def _variant_misses(seg: dict) -> list:
     есть ли «/» в оригинале вообще. Слитная черта без пробелов («и/или»)
     не ловится намеренно: это законное написание."""
     tgt = seg.get("target") or ""
-    if " / " not in tgt or "/" in (seg.get("source") or ""):
+    if "/" in (seg.get("source") or "") or "/" not in tgt:
         return []
     out = []
+    # Ш11: слитная черта между двумя СЛОВАМИ («Prozeduren/Verfahren»,
+    # «teapot/kettle», корпус выгрузки) — тоже нерешённый выбор. Короткие
+    # законные пары («и/или», «and/or») и единицы («мг/л», «km/h») короче
+    # `_VARIANT_GLUED_MIN` букв с одной из сторон и под правило не попадают.
+    for m in _VARIANT_GLUED_RE.finditer(tgt):
+        out.append({"kind": "variants",
+                    "text": "в переводе варианты через «/» вместо одного: «" + m.group(0)
+                            + "» — оставь один вариант, верный по смыслу в этом месте"})
+        if len(out) >= 3:
+            return out
+    if " / " not in tgt:
+        return out
     for m in _VARIANTS_RE.finditer(tgt):
         out.append({"kind": "variants",
                     "text": "в переводе варианты через « / » вместо одного: «" + m.group(0)
@@ -27111,6 +27304,10 @@ def _repair_scores(seg: dict, project: Optional[dict] = None,
         "self_dup": len(_dup_misses(seg)),
         # Варианты через « / » вместо одного перевода — бесплатно, по тексту.
         "variants": len(_variant_misses(seg)),
+        # Ш11: пояснения в скобках сверх оригинала — бесплатно, по тексту.
+        "addon": len(_paren_misses(seg)),
+        # Ш30б: число строк перевода против оригинала — бесплатно, по тексту.
+        "lines": len(_lines_misses(seg)),
         # Регистр приказных терминов: бесплатно, но глоссарий нужен — с
         # project=None считается нулём, как и `gloss` рядом.
         "term_case": len(_term_case_misses(seg, project)),
@@ -27199,7 +27396,9 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # хуже» засчитало бы успехом любой переписанный текст. Мерить тут есть чем
     # и это бесплатно — сама находка детерминированная, поэтому спрашиваем
     # прямо: убавилось ли расхождений по регистру.
-    had_free = any(f["kind"] in ("case", "script", "term_case", "dup", "variants", "ident") for f in findings)
+    had_free = any(f["kind"] in ("case", "script", "term_case", "dup", "variants", "ident", "addon",
+                                 "lines")
+                   for f in findings)
     only_free = had_free and not had_bc and not had_tc
     # Доказательство, сильнее ли находка заверения, снимаем ДО правки: после
     # перепроверки back-check описывает уже НОВЫЙ текст, и находки на старом
@@ -27600,7 +27799,8 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
     # принимался бы никогда — сумма 0 → 0 читалась бы как «не сняла ничего»,
     # верная правка откатывалась, а сегмент запирался клеймом захода.
     _free = lambda d: (d["case"] + d["script"] + d["term_case"] + d["dup"] + d["self_dup"]
-                       + d.get("alphabet", 0) + d.get("variants", 0) + d.get("ident", 0))
+                       + d.get("alphabet", 0) + d.get("variants", 0) + d.get("ident", 0)
+                       + d.get("addon", 0) + d.get("lines", 0))
     if only_free and _free(after) >= _free(before):
         better = False
         why.append("правка не сняла ни регистра, ни чужого письма, ни самоповтора: "
@@ -27868,7 +28068,7 @@ REVIEW_APPLY_LABEL = ("%g" % REVIEW_APPLY_MAX)
 # нет намеренно: первый меряет не то, вторые потребовали бы вызовов модели,
 # ради отказа от которых шаг и заведён.
 REVIEW_FREE_KEYS = ("gloss", "case", "script", "dup", "self_dup", "term_case",
-                    "doc", "translit", "alphabet", "variants", "ident")
+                    "doc", "translit", "alphabet", "variants", "ident", "addon", "lines")
 # Оценка, ниже которой сегмент зовёт человека, даже если правки не было.
 # Отдельно от REVIEW_APPLY_MAX намеренно: тот отвечает на вопрос «когда машина
 # правит сама», а этот — «когда звать человека», и двигают их по разным
@@ -27969,6 +28169,8 @@ REVIEW_VETO_LABELS = {
     "alphabet": "букв вне письма языка перевода больше",
     "ident": "символов оригинала не перенесено больше",
     "variants": "вариантов через косую черту больше",
+    "addon": "пояснений в скобках сверх оригинала больше",
+    "lines": "строк перевода не столько, сколько в оригинале",
     "hard": "расхождение чисел, единиц или отрицания",
 }
 
@@ -33735,7 +33937,8 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                 # её «пока что» значило бы выбросить текст совсем.
                 stats["img_untranslated"] += 1
                 continue
-            items.append({"box": b["box"], "text": target, "align": _blk_align(b),
+            items.extend(image_text.split_parts({"box": b["box"], "text": target, "align": _blk_align(b),
+                          "breaks": b.get("breaks"),
                           # Высота строки и число строк: по ним считаются поля
                           # рамки и решается, нужно ли увеличивать картинку.
                           "lineH": b.get("lineH"), "rows": b.get("rows"),
@@ -33744,10 +33947,15 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                           # Семейство: рукопись — на всю страницу; иначе
                           # засечки по признаку чтения (Х6), машинопись узнаёт
                           # печать по пикселям (Х1).
-                          "fam": im_fam or ("serif" if b.get("serif") else ""),
+                          "fam": _blk_fam(im_fam, b) or ("serif" if b.get("serif") else ""),
                           # Исходный текст: по нему меряется кегль букв
                           # (заглавные или строчные, `text_paint.measure`).
-                          "src": (seg.get("source") or "").strip()})
+                          "src": (seg.get("source") or "").strip()}) if hasattr(image_text, "split_parts")
+                         else [{"box": b["box"], "text": target, "align": _blk_align(b),
+                                "lineH": b.get("lineH"), "rows": b.get("rows"),
+                                "lineBoxes": b.get("lineBoxes"),
+                                "fam": im_fam or ("serif" if b.get("serif") else ""),
+                                "src": (seg.get("source") or "").strip()}])
         if not items:
             continue
         part = parts.get(name)
@@ -34512,6 +34720,7 @@ def _print_by_id(project: dict, stats: "dict | None" = None) -> dict:
                 # и у переводов, сделанных до этих правил.
                 nt = _decimal_fix(src, _strip_markdown(src, nt), project.get("src") or "",
                                   project.get("tgt") or "")
+                nt = _lang_normalize(nt, project.get("tgt") or "", src)     # Ш12
             if nt != t:
                 s = dict(s, target=nt, _printFix=True)
         out[s["id"]] = s
@@ -35022,6 +35231,15 @@ def _same_text(a: str, b: str) -> bool:
 IMG_HAND_SHARE = float(os.environ.get("IMG_HAND_SHARE", "0.5"))
 
 
+def _blk_fam(page_fam: str, b: dict) -> str:
+    """Ш8: рукопись — свойство страницы (Ф1), но ПЕЧАТНЫЙ блок на рукописной
+    странице (шапка бланка рецепта, «РЕЦЕПТ») остаётся печатным: чтение
+    отметило его `hand: false`, и рукописный шрифт на нём — подмена вида."""
+    if page_fam == "hand" and b.get("text") and not b.get("hand"):
+        return ""
+    return page_fam
+
+
 def _hand_image(im: dict) -> bool:
     tot = hand = 0.0
     for b in im.get("blocks") or []:
@@ -35144,7 +35362,9 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
             if b.get("skip"):
                 continue
             seg = _image_seg_of(by_id, b, im.get("part"), i)
-            text = ((seg or {}).get("target") or "").strip()
+            # Ш7: разрывы строк чтения (перевод строки) слой PDF не раскладывает —
+            # пробелом, как было до них.
+            text = " ".join(((seg or {}).get("target") or "").split())
             if not text:
                 continue
             rect_pt = None
@@ -35270,7 +35490,7 @@ def _pdf_image_boxes(project: dict, data: dict, erase: "set | None" = None,
             # отсеянная ниже (вложенный повтор) его перевод уже не несёт.
             out.append({"text": text, "_erase": er_cand, "sid": (seg or {}).get("id"), "boxes": [{
                 "page": page, "frac": 1, "image": 1, "style": "", "indent": 0.0,
-                "fam": im_fam if im_fam == "hand" else ("" if b.get("serif") else "sans"),
+                "fam": "hand" if _blk_fam(im_fam, b) == "hand" else ("" if b.get("serif") else "sans"),
                 "onFig": 1 if on_fig else 0,
                 # Исходный текст, число строк и выключка надписи — по ним печать
                 # меряет кегль букв и ставит перевод как стоял оригинал
@@ -36798,7 +37018,68 @@ def _export_images_file(project: dict, out: Path, tmp: Path, ext: str) -> dict:
             pass
     page_w = _orig_page_width(project) if ext == ".pdf" else None
     tmp.write_bytes(importers.images_to_file(imgs, ext, page_w_pt=page_w))
-    return dict(stats, original=kind, images=len(imgs))
+    out_stats = dict(stats, original=kind, images=len(imgs))
+    # Ш6: картинка — это страница. Приёмка по пикселям, а не по счётчикам:
+    # оригинал и выгрузка — листами PDF (по картинке на лист), места —
+    # рамки надписей долями листа.
+    try:
+        if EXPORT_QA_ON and export_qa_mod is not None:
+            inp = _image_qa_inputs(project, page_w)
+            if inp is not None:
+                with _QA_INPUTS_LOCK:
+                    _QA_INPUTS[int(project["id"])] = inp
+                    while len(_QA_INPUTS) > 3:
+                        _QA_INPUTS.pop(min(_QA_INPUTS, key=lambda k: _QA_INPUTS[k].get("at") or 0), None)
+                out_stats["qaImages"] = True
+    except Exception as e:
+        print("[backend] приёмка картинок не подготовлена: %s" % e, file=sys.stderr)
+    return out_stats
+
+
+def _image_qa_inputs(project: dict, page_w) -> "dict | None":
+    """Ш6: вход приёмки для картинки и скана: оригинальные картинки пакета
+    листами PDF (`work`) и надписи с переводом — рамками долями листа
+    (`extra`, как у страниц-картинок PDF), лист — номер картинки в пакете."""
+    data = _load_source_map(int(project["id"])) if project.get("sourceDocx") else None
+    if not data or not data.get("images") or image_text is None:
+        return None
+    blob = Path(data["path"]).read_bytes()
+    imgs = importers.images_from_docx(blob)
+    if not imgs:
+        return None
+    page_of = {n: k for k, (n, _b) in enumerate(imgs)}
+    by_id = _print_by_id(project)
+    extra: list = []
+    sources: dict = {}
+    for im in data.get("images") or []:
+        k = page_of.get(im.get("part"))
+        w, h = float(im.get("w") or 0), float(im.get("h") or 0)
+        if k is None or not w or not h:
+            continue
+        for i, b in enumerate(im.get("blocks") or []):
+            if b.get("skip") or not b.get("box"):
+                continue
+            seg = _image_seg_of(by_id, b, im.get("part"), i)
+            text = ((seg or {}).get("target") or "").strip()
+            if not text:
+                continue
+            x0, y0, x1, y1 = (float(v) for v in b["box"][:4])
+            extra.append({"text": text, "sid": (seg or {}).get("id"), "boxes": [{
+                "page": k, "frac": 1, "image": 1,
+                "src": ((seg or {}).get("source") or "").strip(),
+                "x0": x0 / w, "x1": x1 / w, "top": y0 / h, "bottom": y1 / h,
+                "lines": [[lb[0] / w, lb[1] / h, lb[2] / w, lb[3] / h]
+                          for lb in (b.get("lineBoxes") or []) if lb and len(lb) >= 4],
+                "size": float(b.get("lineH") or (y1 - y0)) / h}]})
+    if not extra:
+        return None
+    # Листы оригинала собираются В ПОТОКЕ приёмки (`workSrc`), а не здесь:
+    # здесь — запрос выгрузки на единственном воркере, и PDF двухсот страниц
+    # скана держал бы его секунды и сотни мегабайт до запуска проверки.
+    return {"layout": {}, "texts": {}, "overlay": None, "order": None, "extra": extra,
+            "sources": sources, "work": None, "workSrc": (data["path"], page_w),
+            "pairs": [], "images": True,
+            "pageW": page_w, "at": time.time()}
 
 
 def _export_original(project: dict, out: Path, tmp: Path, sheets: str = "pages") -> dict:
@@ -36872,7 +37153,8 @@ def _export_original(project: dict, out: Path, tmp: Path, sheets: str = "pages")
         else:
             untranslated += 1
     tmp.write_bytes(importers.write_back(project.get("fileName") or orig.name, orig.read_bytes(), tr,
-                                         rule=rule))
+                                         rule=rule, split=_split_target,
+                                         lang=project.get("tgt") or ""))
     return {"original": kind, "written": len(tr), "untranslated": max(0, untranslated)}
 
 
@@ -37342,7 +37624,7 @@ def _export_qa_kick(project: dict, fmt: str, path: Path, stats: dict) -> None:
         pid = int(project["id"])
         sig = _qa_file_sig(path)
         inp = None
-        if stats.get("layout"):
+        if stats.get("layout") or stats.get("qaImages"):
             with _QA_INPUTS_LOCK:
                 inp = _QA_INPUTS.pop(pid, None)
             if inp is None:
@@ -37379,6 +37661,25 @@ def _export_qa_run(pid: int, fmt: str, path: Path, sig: list, inp: dict, lang,
             out_bytes = path.read_bytes()
             if _qa_file_sig(path) != sig:
                 return                  # перевыгрузили, пока читали
+            if inp.get("work") is None and inp.get("workSrc"):
+                wp_, pw_ = inp["workSrc"]
+                inp["work"] = importers.images_to_file(
+                    importers.images_from_docx(Path(wp_).read_bytes()), ".pdf", page_w_pt=pw_)
+            if inp.get("images") and out_bytes[:4] != b"%PDF":
+                # Ш6: выгрузка — сама картинка (png/jpg/tiff): тем же листом PDF,
+                # что и оригинал, иначе сравнивать нечего.
+                from PIL import Image as _PI
+                frames = []
+                try:
+                    im_ = _PI.open(io.BytesIO(out_bytes))
+                    for k_ in range(getattr(im_, "n_frames", 1)):
+                        im_.seek(k_)
+                        b_ = io.BytesIO()
+                        im_.convert("RGB").save(b_, "PNG")
+                        frames.append(("p%d" % k_, b_.getvalue()))
+                except Exception:
+                    frames = [("p0", out_bytes)]
+                out_bytes = importers.images_to_file(frames, ".pdf", page_w_pt=inp.get("pageW"))
             det = None
             try:
                 if image_text is not None and image_text.engine_ready()[0]:

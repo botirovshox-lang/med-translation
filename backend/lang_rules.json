@@ -36,7 +36,17 @@
         "Spatial pairs come in register-matched couples: everyday tepa — past (ust — ost) for speech, interviews and popular texts; bookish yuqori — quyi for formal and technical texts. Never mix them in one phrase: Tepa ham yoʻq, past ham yoʻq — not Yuqori ham yoʻq, past ham yoʻq."
       ],
       "script_check": true,
-      "decimal": ","
+      "decimal": ",",
+      "normalize": [
+        [
+          "(?<=[OoGg])[‘’'`ʼ]",
+          "ʻ"
+        ],
+        [
+          "(?<=[^\\W\\d_])[’'`](?=[^\\W\\d_])",
+          "ʼ"
+        ]
+      ]
     },
     "KK": {
       "name": "Kazakh",

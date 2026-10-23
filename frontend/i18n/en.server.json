@@ -495,5 +495,13 @@
   "Вы уже зарегистрированы": "You are already signed up",
   "Сначала укажите почту": "Enter your email first",
   "Сейчас много бесплатных видео — повторите позже или зарегистрируйтесь": "Many free videos right now — try again later or sign up",
-  "PDF не читается — проверьте, что файл не повреждён и без пароля": "The PDF can't be read — check that the file is not damaged and has no password"
+  "PDF не читается — проверьте, что файл не повреждён и без пароля": "The PDF can't be read — check that the file is not damaged and has no password",
+  "пояснений в скобках сверх оригинала больше": "more explanations in brackets beyond the source",
+  "в переводе варианты через «/» вместо одного: «": "the translation has alternatives separated by «/» instead of one: «",
+  "в переводе пояснение в скобках, которого нет в оригинале: «(": "the translation adds an explanation in brackets that is not in the source: «(",
+  ")» — убери его, переведи только то, что написано": ")» — remove it, translate only what is written",
+  "в оригинале строк: ": "lines in the source: ",
+  ", в переводе: ": ", in the translation: ",
+  " — сохрани разбивку на строки, как в оригинале": " — keep the line breaks as in the source",
+  "строк перевода не столько, сколько в оригинале": "the translation has a different number of lines than the source"
 }

@@ -118,6 +118,25 @@ check("приёмка по местам: правки только перечи�
 check("«цвет» из слов модели", P._code_from_words("heading colour black instead of blue") == "COLOR")
 check("«пятно» не стало цветом", P._code_from_words("colour patch behind the text") == "PATCH")
 
+print("=== сравнение «до/после» ===")
+shown = [({"key": "p1"}, False), ({"key": "p2"}, True), ({"key": "p3"}, False), ({"key": "p4"}, False)]
+ans = json.dumps({"places": [{"place": 1, "better": "2", "confidence": 0.9},
+                             {"place": 2, "better": "1", "confidence": 0.9},
+                             {"place": 3, "better": "1", "new2": "OVERLAP", "confidence": 0.8},
+                             {"place": 4, "better": "2", "new2": "OVERFLOW", "confidence": 0.8},
+                             {"place": 9, "better": "2"}]})
+ab = P.ab_parse(ans, shown)
+check("порядок вариантов возвращён: 2 у обычного — «после»", ab["p1"]["better"] == "B", ab)
+check("перемешанное место: 1 — «после»", ab["p2"]["better"] == "B", ab)
+check("номер места вне показанного — отброшен", len(ab) == 4, ab)
+dec = P.ab_decide(ab)
+check("лучше — p1, p2; хуже — p3 и новый брак у «после» (p4)",
+      dec["good"] == {"p1", "p2"} and dec["bad"] == {"p3", "p4"}, dec)
+low = P.ab_parse(json.dumps({"places": [{"place": 1, "better": "2", "confidence": 0.2}]}), shown[:1])
+check("неуверенный ответ — «нет разницы»", low["p1"]["better"] == "same", low)
+sw = [P.ab_swap("p%d" % i, 0) for i in range(40)]
+check("перемешивание — примерно поровну", 10 <= sum(sw) <= 30, sum(sw))
+
 print("=== вопрос и разбор ответа ===")
 places = [{"n": 1, "key": "p3", "label": "Итого"}, {"n": 2, "key": "x0", "label": "Подпись"}]
 pr = P.prompt("RU", "EN", places)

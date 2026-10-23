@@ -482,6 +482,228 @@ def zoom_images(orig: bytes, out: bytes, page: int, suspects: list) -> list:
     return res
 
 
+# ─── Сравнение «до / после» одним вопросом (Ы5, этап 5) ─────────────
+# Два независимых взгляда на страницу расходятся сами по себе на 1–2
+# замечания (замер 23.10.2026), и «оценка после строго меньше» отвергала
+# верные правки. Сравнение рядом устойчивее: модель видит оригинал и оба
+# варианта одного места и говорит, какой ближе. Порядок вариантов на месте
+# перемешан (`ab_swap`): модели склонны выбирать по позиции.
+AB_MAX = int(os.environ.get("PREPRESS_AB_MAX", "8"))         # мест на страницу в одном вопросе
+AB_CROP_W = int(os.environ.get("PREPRESS_AB_W", "500"))      # ширина одной вырезки, точек
+AB_DIFF = float(os.environ.get("PREPRESS_AB_DIFF", "0.002"))  # доля точек, изменившихся > 32, — «место изменилось»
+AB_REST = float(os.environ.get("PREPRESS_AB_REST", "0.0005"))  # доля изменившихся точек ВНЕ показанных мест — показать «остальное»
+
+
+def ab_swap(key: str, rnd: int) -> bool:
+    """Показывать ли «после» первым — детерминированно по месту и кругу."""
+    return int(hashlib.sha1(("%s|%d" % (key, rnd)).encode()).hexdigest()[:2], 16) % 2 == 1
+
+
+def _changed(a, b) -> float:
+    """Доля точек, разошедшихся больше чем на 32 (тонкий разрыв линии на
+    большой вырезке не тонет в среднем по бумаге)."""
+    import numpy as np
+    d = np.abs(np.asarray(a.convert("L"), dtype=np.int16) - np.asarray(b.convert("L"), dtype=np.int16))
+    return float((d > 32).mean()) if d.size else 0.0
+
+
+def page_triple(orig: bytes, a_pdf: bytes, b_pdf: bytes, page: int, width: int = 1500) -> bytes:
+    """Вся страница «оригинал | 1 | 2» уменьшенной — первым кадром сравнения:
+    сдвинутые соседи и задетое вне вырезок видно хотя бы общим планом."""
+    import io
+    import export_qa
+    from PIL import Image
+    O, A, B = export_qa._Doc(orig), export_qa._Doc(a_pdf), export_qa._Doc(b_pdf)
+    try:
+        w, h, _r = O.info(page)
+        sc = min(2.0, (width / 3.0 - 8) / max(1.0, w))
+        ims = [Image.fromarray(D.raster(page, sc)).convert("RGB") for D in (O, A, B)]
+    finally:
+        O.close()
+        A.close()
+        B.close()
+    ims[1] = ims[1].resize(ims[0].size)
+    ims[2] = ims[2].resize(ims[0].size)
+    cw, ch = ims[0].size
+    im = Image.new("RGB", (3 * cw + 16, ch), (230, 30, 80))
+    for i, x in enumerate((0, cw + 8, 2 * cw + 16)):
+        im.paste(ims[i], (x, 0))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=80)
+    return buf.getvalue()
+
+
+def triple_images(orig: bytes, a_pdf: bytes, b_pdf: bytes, page: int, places: list, rnd: int = 0) -> list:
+    """[(JPEG «оригинал | 1 | 2», место, swap)] — ВСЕ места, где вариант «до»
+    и «после» различаются по точкам (сперва самые изменившиеся; вызывающий
+    режет их на вопросы по `AB_MAX`), плюс место «_rest» — рамка изменений
+    ВНЕ показанных мест (линии, плашки, сдвинутые соседи), если они есть.
+    `places` — [{n, key, box (доли листа; объединение рамок обоих
+    вариантов), size (пункты)}]."""
+    import io
+    import export_qa
+    import numpy as np
+    from PIL import Image, ImageDraw
+    if not places:
+        return []
+    O, A, B = export_qa._Doc(orig), export_qa._Doc(a_pdf), export_qa._Doc(b_pdf)
+    cands = []
+    covered = []
+    rest_box = None
+    try:
+        w, h, _r = O.info(page)
+        # Изменения всей страницы — мелко: что останется вне вырезок мест.
+        sc0 = min(1.5, 900.0 / max(1.0, w))
+        fa = np.asarray(Image.fromarray(A.raster(page, sc0)).convert("L"), dtype=np.int16)
+        fb = np.asarray(Image.fromarray(B.raster(page, sc0)).resize((fa.shape[1], fa.shape[0])).convert("L"),
+                        dtype=np.int16)
+        chg = np.abs(fa - fb) > 32
+        for p in places:
+            bx = p["box"]
+            size = float(p.get("size") or 10.0)
+            bw, bh = max(0.02, bx[2] - bx[0]), max(0.015, bx[3] - bx[1])
+            # поле — и в долях места, и не меньше полутора кеглей: у узкой
+            # подписи иначе не видно соседа, плашки и линии рядом
+            mx, my = max(0.25 * bw, 1.5 * size / max(1.0, w)), max(0.6 * bh, 1.5 * size / max(1.0, h))
+            x0, y0 = max(0.0, bx[0] - mx), max(0.0, bx[1] - my)
+            x1, y1 = min(1.0, bx[2] + mx), min(1.0, bx[3] + my)
+            sc = min(6.0, AB_CROP_W / max(1.0, (x1 - x0) * w), 600.0 / max(1.0, (y1 - y0) * h),
+                     max(1.0, TEXT_PX_MIN / max(1.0, float(p.get("size") or 10.0))))
+            ims = []
+            for D in (O, A, B):
+                im = Image.fromarray(D.raster(page, sc))
+                W, H = im.size
+                ims.append(im.crop((int(x0 * W), int(y0 * H), max(int(x0 * W) + 2, int(x1 * W)),
+                                    max(int(y0 * H) + 2, int(y1 * H)))).convert("RGB"))
+            ims[2] = ims[2].resize(ims[1].size)
+            ims[0] = ims[0].resize(ims[1].size)
+            diff = _changed(ims[1], ims[2])
+            if diff < AB_DIFF:
+                continue
+            cands.append((diff, p, ims))
+            covered.append((x0, y0, x1, y1))
+        H0, W0 = chg.shape
+        for (x0, y0, x1, y1) in covered:
+            chg[int(y0 * H0):int(y1 * H0) + 1, int(x0 * W0):int(x1 * W0) + 1] = False
+        if chg.mean() > AB_REST:
+            ys, xs = np.nonzero(chg)
+            rest_box = [float(xs.min()) / W0, float(ys.min()) / H0, float(xs.max() + 1) / W0, float(ys.max() + 1) / H0]
+    finally:
+        O.close()
+        A.close()
+        B.close()
+    cands.sort(key=lambda t: -t[0])
+    if rest_box is not None:
+        # Изменения вне мест — отдельным «местом»: хуже там — круг не берётся.
+        O, A, B = export_qa._Doc(orig), export_qa._Doc(a_pdf), export_qa._Doc(b_pdf)
+        try:
+            x0, y0, x1, y1 = rest_box
+            x0, y0 = max(0.0, x0 - 0.02), max(0.0, y0 - 0.02)
+            x1, y1 = min(1.0, x1 + 0.02), min(1.0, y1 + 0.02)
+            sc = min(4.0, AB_CROP_W / max(1.0, (x1 - x0) * w), 600.0 / max(1.0, (y1 - y0) * h))
+            ims = []
+            for D in (O, A, B):
+                im = Image.fromarray(D.raster(page, sc))
+                W, H = im.size
+                ims.append(im.crop((int(x0 * W), int(y0 * H), max(int(x0 * W) + 2, int(x1 * W)),
+                                    max(int(y0 * H) + 2, int(y1 * H)))).convert("RGB"))
+            ims[0], ims[2] = ims[0].resize(ims[1].size), ims[2].resize(ims[1].size)
+            cands.insert(0, (1.0, {"n": 0, "key": "_rest", "box": rest_box}, ims))
+        finally:
+            O.close()
+            A.close()
+            B.close()
+    res = []
+    for diff, p, (io_, ia, ib) in cands:
+        sw = ab_swap(p["key"], rnd)
+        first, second = (ib, ia) if sw else (ia, ib)
+        cw, ch = io_.size
+        im = Image.new("RGB", (3 * cw + 24, ch + 16), (255, 255, 255))
+        d = ImageDraw.Draw(im)
+        for i, (lab, x) in enumerate((("ORIGINAL", 0), ("1", cw + 12), ("2", 2 * cw + 24))):
+            im.paste((io_, first, second)[i], (x, 16))
+            d.text((x + 2, 2), lab, fill=(200, 0, 0))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=90)
+        res.append((buf.getvalue(), p, sw))
+    return res
+
+
+def ab_prompt(src: str, tgt: str) -> str:
+    return "\n".join([
+        "You compare two versions of the SAME translated places against the ORIGINAL (source %s, "
+        "target %s). Each image is one place: ORIGINAL | version 1 | version 2." % (src or "?", tgt or "?"),
+        "For each place decide which version is closer to the original as a typeset page: text inside "
+        "its box/cell/plate, nothing overlapping or cut, no leftovers of the original glyphs, lines, "
+        "frames, stamps intact, same style class, colour, alignment, readable size, items not merged. "
+        "Do NOT judge the wording of the translation, but the text may differ on purpose (shortened "
+        "or translated): if a version visibly drops words or a line that the other keeps, that is a "
+        "MISSING defect of that version. The first image, if present, is the whole page "
+        "ORIGINAL | 1 | 2 for overview (version order on the overview is always: 1 = before, "
+        "2 = after; the places below may be shown in either order). If the difference does not "
+        "matter, say same.",
+        "In new1 name a visible defect that version 1 has and version 2 does not; in new2 — one "
+        "that version 2 has and version 1 does not; empty if none (codes: OVERFLOW, OVERLAP, MISSING, "
+        "UNTRANSLATED, RULE_CUT, MARK_LOST, GHOST, PATCH, CONTRAST, MERGED, FRAGMENT, COLOR).",
+        'Answer ONLY JSON: {"places": [{"place": 1, "better": "1"|"2"|"same", "new1": "", "new2": "", '
+        '"confidence": 0.8}]}.',
+    ])
+
+
+def ab_parse(text: str, shown: list) -> dict:
+    """Ответ сравнения → {ключ места: {"better": "A"|"B"|"same", "newA": код|"",
+    "newB": код|""}}; `shown` — [(место, swap)] в порядке картинок (place = номер
+    картинки с 1). A — вариант «до», B — «после»."""
+    t = (text or "").strip()
+    a, b = t.find("{"), t.rfind("}")
+    try:
+        d = json.loads(t[a:b + 1]) if a >= 0 and b > a else {}
+    except Exception:
+        d = {}
+    out = {}
+    for e in d.get("places") or []:
+        try:
+            n = int(e.get("place") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not (1 <= n <= len(shown)):
+            continue
+        p, sw = shown[n - 1]
+        try:
+            conf = float(e.get("confidence"))
+        except (TypeError, ValueError):
+            conf = 0.6
+        bet = str(e.get("better") or "same").strip().lower()
+        n1, n2 = str(e.get("new1") or "").strip().upper()[:20], str(e.get("new2") or "").strip().upper()[:20]
+        if sw:                                   # 1 = «после», 2 = «до»
+            bet = {"1": "B", "2": "A"}.get(bet, "same")
+            newA, newB = n2, n1
+        else:
+            bet = {"1": "A", "2": "B"}.get(bet, "same")
+            newA, newB = n1, n2
+        if conf < MIN_CONF:
+            bet = "same"
+        out[p["key"]] = {"better": bet, "newA": newA if newA in USER_CODES else "",
+                         "newB": newB if newB in USER_CODES else ""}
+    return out
+
+
+def ab_decide(res: dict) -> dict:
+    """Итог сравнения по местам: B — лучше «после» и нового брака в нём нет;
+    A — «до» лучше либо у «после» новый видимый брак; same — разницы нет."""
+    good, bad, same = set(), set(), set()
+    for k, r in (res or {}).items():
+        if r.get("newB") and r.get("newB") != r.get("newA"):
+            bad.add(k)
+        elif r.get("better") == "B":
+            good.add(k)
+        elif r.get("better") == "A":
+            bad.add(k)
+        else:
+            same.add(k)
+    return {"good": good, "bad": bad, "same": same}
+
+
 # Вес вида дефекта для решения «стало лучше» (критик-верстальщик 23.10.2026).
 WEIGHT = {"OVERFLOW": 3, "OVERLAP": 3, "MISSING": 3, "UNTRANSLATED": 3, "RULE_CUT": 3,
           "MARK_LOST": 3, "GHOST": 2, "PATCH": 2, "CONTRAST": 2, "FONT": 2, "MERGED": 2,

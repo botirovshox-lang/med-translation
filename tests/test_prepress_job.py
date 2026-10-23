@@ -197,6 +197,10 @@ STEP = [0]
 class _Comp2:
     def create(self, **kw):
         CALLS.append(kw)
+        if "compare two versions" in kw["messages"][0]["content"]:
+            n_ = sum(1 for x in kw["messages"][1]["content"] if x.get("type") == "image_url")
+            return _Resp(json.dumps({"places": [{"place": i + 1, "better": "2", "confidence": 0.9}
+                                                for i in range(n_)]}))
         STEP[0] += 1
         # первый взгляд — дефект с действием, второй (после правки) — чисто
         if STEP[0] <= j1["counters"].get("pages", 1):
@@ -211,6 +215,8 @@ class _Client2:
 
 
 main._llm_client = lambda mdl, timeout=None, step=None, max_retries=None: _Client2()
+import prepress as _PPM
+_PPM.ab_swap = lambda k, r: False        # в тесте «2» — всегда «после»
 j5 = {"id": 2, "kind": "prepress", "project": pid, "status": "running", "params": {"mode": "fix"},
       "counters": {}, "tenant": "default", "low": True, "total": 0, "done": 0}
 main._JOB_TENANT.id = "default"
@@ -230,8 +236,13 @@ print("=== короткий перевод только в файл: беспл�
 ANS = ["Total 12 kg paid"]
 
 
+MEANING = ['{"same": true, "lost": ""}']
+
+
 class _Comp3:
     def create(self, **kw):
+        if kw["messages"][0]["content"].startswith("You check a"):
+            return _Resp(MEANING[0])
         return _Resp(ANS[0])
 
 
@@ -325,6 +336,15 @@ check("перевод места с теми же числами — берём"
 ANS[0] = "Total 13 kg"
 got = main._prepress_translate_place(project, "Итого 12 кг", mdls, cc, sp)
 check("число другое — не берём", got is None, got)
+MEANING[0] = '{"same": false, "lost": "only"}'
+ANS[0] = "Total 12 kg paid"
+got = main._prepress_shorten(project, "Итого 12 кг оплачено полностью", "Total of 12 kg has been paid in full",
+                             mdls, cc, sp)
+check("смысловая сверка сказала «потеряно» — не берём", got is None, got)
+MEANING[0] = '{"same": true, "lost": ""}'
+check("части — куски перевода подряд", main._pp_runs_of(["c d", "a b"], "a b c d"))
+check("слова внутри части переставлены — нельзя", not main._pp_runs_of(["d c", "a b"], "a b c d"))
+check("слово потеряно — нельзя", not main._pp_runs_of(["c", "a b"], "a b c d"))
 check("в проекте перевод не тронут", all("Total 12 kg paid" != s_.get("target") for s_ in segs))
 main._llm_client = lambda mdl, timeout=None, step=None, max_retries=None: _Client2()
 

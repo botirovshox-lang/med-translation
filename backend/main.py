@@ -37957,6 +37957,8 @@ def _prepress_shorten(project: dict, src_text: str, cur: str, models: list, c: d
             break
         except Exception:
             continue
+    if new is None:
+        return None
     if new.startswith("```"):
         new = new.strip("`").strip()
     if (not new or "\n" in new or len(new) > limit * 1.1 or len(new) >= len(cur) * 0.95
@@ -37986,6 +37988,8 @@ def _prepress_shorten(project: dict, src_text: str, cur: str, models: list, c: d
     except Exception as e:
         print("[backend] проверка короткого перевода: %s" % e, file=sys.stderr)
         return None
+    if not _pp_meaning_ok(project, src_text, cur, new, models, c, spent):
+        return None                      # смысл ушёл (оговорка, субъект, единица)
     return new
 
 
@@ -38055,11 +38059,62 @@ def _prepress_split(project: dict, inp: dict, idx: int, cur: str, models: list, 
         parts = None
     if not isinstance(parts, list) or len(parts) != len(slots) or not all(isinstance(x, str) and x.strip() for x in parts):
         return None
-    if _pp_cjk(cur):
-        same = sorted("".join(parts).replace(" ", "")) == sorted(cur.replace(" ", ""))
-    else:
-        same = sorted(" ".join(parts).split()) == sorted(cur.split())
-    return [x.strip() for x in parts] if same else None
+    return [x.strip() for x in parts] if _pp_runs_of(parts, cur) else None
+
+
+def _pp_runs_of(parts: list, cur: str) -> bool:
+    """Каждая часть — кусок перевода ПОДРЯД (слова в своём порядке), куски
+    не пересекаются и вместе дают весь перевод: менять можно только порядок
+    строк, а не порядок слов внутри фразы (у глагола в конце смысл держит
+    именно он)."""
+    cjk = _pp_cjk(cur)
+    seq = list(cur.replace(" ", "")) if cjk else cur.split()
+    used = [False] * len(seq)
+    total = 0
+    for part in parts:
+        ws = list(part.replace(" ", "")) if cjk else part.split()
+        if not ws:
+            return False
+        found = False
+        for i in range(len(seq) - len(ws) + 1):
+            if seq[i:i + len(ws)] == ws and not any(used[i:i + len(ws)]):
+                for j in range(i, i + len(ws)):
+                    used[j] = True
+                found = True
+                break
+        if not found:
+            return False
+        total += len(ws)
+    return total == len(seq)
+
+
+def _pp_meaning_ok(project: dict, src_text: str, old: str, new: str, models: list, c: dict,
+                   spent: list) -> bool:
+    """Смысловая сверка текстового действия (критик-переводчик): тот, кто
+    сравнивает вёрстку, текста не судит, а короче/перевод меняют слова.
+    Один короткий вопрос: сохранён ли весь смысл оригинала (оговорки,
+    отрицание, кто что делает, единицы). Нет ответа — не берём."""
+    tgt = _lang_prompt(project.get("tgt"))
+    system = ("You check a %s translation used on a printed page. Compare NEW with the SOURCE%s. "
+              "Answer ONLY JSON {\"same\": true|false, \"lost\": \"short note\"}: same=true only if "
+              "NEW keeps all information of the source — qualifiers (only, possibly, at least), "
+              "negation, who does what, numbers and units, names; shorter wording and common "
+              "abbreviations are fine." % (tgt, " and with the CURRENT translation" if old else ""))
+    user = "SOURCE (%s): %s\n%sNEW: %s" % (_lang_prompt(project.get("src")), src_text,
+                                          ("CURRENT: %s\n" % old) if old else "", new)
+    ans = _pp_ask(models, system, user, c, spent, tokens=300)
+    if not ans:
+        return False
+    a, b = ans.find("{"), ans.rfind("}")
+    try:
+        d = json.loads(ans[a:b + 1]) if a >= 0 and b > a else {}
+    except Exception:
+        d = {}
+    c["meaningAsked"] = int(c.get("meaningAsked") or 0) + 1
+    ok = d.get("same") is True
+    if not ok:
+        c["meaningRejected"] = int(c.get("meaningRejected") or 0) + 1
+    return ok
 
 
 def _prepress_translate_place(project: dict, src_text: str, models: list, c: dict,
@@ -38090,7 +38145,101 @@ def _prepress_translate_place(project: dict, src_text: str, models: list, c: dic
     except Exception as e:
         print("[backend] проверка перевода места: %s" % e, file=sys.stderr)
         return None
+    if not _pp_meaning_ok(project, src_text, "", new, models, c, spent):
+        return None
     return new
+
+
+def _prepress_ab(project: dict, inp: dict, res_a: tuple, res_b: tuple, texts_a: dict, texts_b: dict,
+                 rnd: int, models: list, c: dict, spent: list) -> dict:
+    """Сравнение «до/после» (Ы5, этап 5): по каждой изменившейся странице —
+    один вопрос модели с вырезками изменившихся мест «оригинал | 1 | 2».
+    {ключ места: {better, newA, newB}}. Потолок денег — общий с проверкой."""
+    pdf_a, _st_a, lay_a, ext_a = res_a
+    pdf_b, _st_b, lay_b, ext_b = res_b
+    items_a = export_qa_mod.printed_items(lay_a, texts_a, ext_a, inp["sources"])
+    items_b = export_qa_mod.printed_items(lay_b, texts_b, ext_b, inp["sources"])
+    from pypdf import PdfReader as _PR
+    rd = _PR(io.BytesIO(pdf_b))
+    out: dict = {}
+    for pg in range(len(rd.pages)):
+        if spent[0] >= PREPRESS_MAX_USD:
+            c["capped"] = True
+            break
+        if prepress_mod.page_raster(pdf_a, pg) == prepress_mod.page_raster(pdf_b, pg):
+            continue
+        mb = rd.pages[pg].mediabox
+        pw, ph = float(mb.width), float(mb.height)
+        pa = {p["key"]: p for p in prepress_mod.page_places(items_a, pg, pw, ph)}
+        pb = {p["key"]: p for p in prepress_mod.page_places(items_b, pg, pw, ph)}
+        places = []
+        for k in list(pa) + [k for k in pb if k not in pa]:
+            boxes = [x["box"] for x in (pa.get(k), pb.get(k)) if x]
+            box = [min(b_[0] for b_ in boxes), min(b_[1] for b_ in boxes),
+                   max(b_[2] for b_ in boxes), max(b_[3] for b_ in boxes)]
+            size = min(x.get("size") or 10.0 for x in (pa.get(k), pb.get(k)) if x)
+            places.append({"n": len(places) + 1, "key": k, "box": box, "size": size})
+        try:
+            shown = prepress_mod.triple_images(inp["work"], pdf_a, pdf_b, pg, places, rnd)
+        except Exception as e:
+            print("[backend] вырезки сравнения: %s" % e, file=sys.stderr)
+            continue
+        if not shown:
+            continue
+        try:
+            overview = prepress_mod.page_triple(inp["work"], pdf_a, pdf_b, pg)
+        except Exception:
+            overview = None
+        system = prepress_mod.ab_prompt(project.get("src"), project.get("tgt"))
+        for ch in range(0, len(shown), prepress_mod.AB_MAX):
+            if spent[0] >= PREPRESS_MAX_USD:
+                c["capped"] = True
+                # Не показанное модели «хуже» по умолчанию: вслепую не берём.
+                for _j, p, _sw in shown[ch:]:
+                    out[p["key"]] = {"better": "A", "newA": "", "newB": ""}
+                break
+            _pp_ab_ask(project, models, system, shown[ch:ch + prepress_mod.AB_MAX], overview, pg, c, spent, out)
+    return out
+
+
+def _pp_ab_ask(project: dict, models: list, system: str, shown: list, overview, pg: int, c: dict,
+               spent: list, out: dict) -> None:
+    content = [{"type": "text", "text": "Page %d, %d place(s)." % (pg + 1, len(shown))}]
+    if overview:
+        content.append({"type": "text", "text": "Whole page overview: ORIGINAL | 1 (before) | 2 (after)"})
+        content.append({"type": "image_url", "image_url": {
+            "url": "data:image/jpeg;base64," + base64.b64encode(overview).decode(), "detail": "high"}})
+    for i, (jpeg, p, _sw) in enumerate(shown):
+        content.append({"type": "text", "text": "Place %d%s" % (i + 1, " (changes outside the places)"
+                                                               if p["key"] == "_rest" else "")})
+        content.append({"type": "image_url", "image_url": {
+            "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(), "detail": "high"}})
+    got = False
+    if True:
+        for mdl in models:
+            try:
+                client = _llm_client(mdl, timeout=180, step="exportqa", max_retries=1)
+                extra = ({"max_completion_tokens": 2000} if mdl["api"] == "modern"
+                         else {"max_tokens": 1500} if mdl["api"] == "anthropic"
+                         else {"max_tokens": 1500, "temperature": 0})
+                resp = client.chat.completions.create(
+                    model=mdl["id"], messages=[{"role": "system", "content": system},
+                                               {"role": "user", "content": content}], **extra)
+                _note_usage("exportqa", mdl["id"], resp)
+                spent[0] += float(_resp_cost(mdl["id"], resp) or 0.0)
+                c["cost"] = round(spent[0], 4)
+                c["abCalls"] = int(c.get("abCalls") or 0) + 1
+                out.update(prepress_mod.ab_parse(resp.choices[0].message.content or "",
+                                                 [(p, sw) for _j, p, sw in shown]))
+                got = True
+                break
+            except Exception as e:
+                print("[backend] сравнение до/после: %s" % _err_public(e), file=sys.stderr)
+                continue
+    if not got:
+        # Модель не ответила — не показанное «хуже»: вслепую круг не берётся.
+        for _j, p, _sw in shown:
+            out.setdefault(p["key"], {"better": "A", "newA": "", "newB": ""})
 
 
 def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: dict, models: list,
@@ -38143,6 +38292,7 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
         return cand, v2, px2
 
     n_start = nconf(v1)
+    fixed_total = 0
     for rnd in range(PREPRESS_ROUNDS):
         if c.get("capped") or not nconf(v_cur):
             break
@@ -38210,37 +38360,28 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
         if tune2 == tune_cur and not plan["leave"] and not new_text:
             continue                     # действия не дали правки — следующий круг
         try:
-            cand, v2, px2 = try_build(tune2, texts2, extra2)
+            cand = _pp_build(project, dict(inp, extra=extra2), texts2, extra2, tune2)
+            px2 = _prepress_pixel(project, dict(inp, extra=extra2), cand, texts2)
             px1 = _prepress_pixel(project, dict(inp, extra=extra_cur), cur,
                                   texts_cur if cur is not base else None)
+            ab = _prepress_ab(project, inp, cur, cand, texts_cur, texts2, rnd, models, c, spent)
         except _PrepressPause:
             raise
         except Exception as e:
             print("[backend] круг правок #%s: %s" % (project.get("id"), e), file=sys.stderr)
             break
-        s1 = sum(prepress_mod.page_score(v) for v in v_cur.values())
         p1 = _loop_score(px1, cur[1])
-
-        def better(v2_, px2_, cand_):
-            s2_ = sum(prepress_mod.page_score(v) for v in v2_.values())
-            p2_ = _loop_score(px2_, cand_[1])
-            # Новый ВИД видимого брака — отказ; новая косметика (мельче,
-            # гарнитура, выключка) уже в весе и круг сама не отменяет.
-            return (s2_ < s1 and p2_[0] <= p1[0]
-                    and not ((codes(v2_) - codes(v_cur)) & prepress_mod.USER_CODES)
-                    and len(v2_) >= len(v_cur)), s2_
-        ok, s2 = better(v2, px2, cand)
-        left_cur, left2 = kc(v_cur), kc(v2)
+        dec = prepress_mod.ab_decide(ab)
+        # Приёмка — сравнением «до/после» по изменившимся местам (этап 5):
+        # ни одного места хуже, хотя бы одно лучше, пиксели не хуже.
+        ok = bool(dec["good"]) and not dec["bad"] and _loop_score(px2, cand[1])[0] <= p1[0]
         used_applied = plan["applied"]
         part = False
-        if not ok and len(plan["applied"]) > 1:
-            # Приёмка по местам: у кого своё место исправилось и нового
-            # не появилось — те действия оставляем, остальные откатываем.
-            newbad = {k for (k, cd) in left2 - left_cur if k}
-            good = [(k, cd, a) for (k, cd, a) in plan["applied"]
-                    if (k, cd) not in left2 and k not in newbad
-                    and (a in prepress_mod.TUNE_ACTIONS or k in done_keys or a == "leave_orig")]
-            if good and len(good) < len(plan["applied"]):
+        if not ok and dec["good"]:
+            # Приёмка по местам: действия мест, ставших лучше, — снова,
+            # без остальных, и ещё одно сравнение.
+            good = [(k, cd, a) for (k, cd, a) in plan["applied"] if k in dec["good"]]
+            if good:
                 gk = {k for k, _cd, _a in good}
                 tune_g = prepress_mod.apply_tune(tune_cur, good)
                 for k in gk:
@@ -38260,17 +38401,20 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                         except (ValueError, IndexError):
                             pass
                 try:
-                    cand_g, v2_g, px2_g = try_build(tune_g, texts_g, extra_g)
+                    cand_g = _pp_build(project, dict(inp, extra=extra_g), texts_g, extra_g, tune_g)
+                    px2_g = _prepress_pixel(project, dict(inp, extra=extra_g), cand_g, texts_g)
+                    ab_g = _prepress_ab(project, inp, cur, cand_g, texts_cur, texts_g, rnd + 100,
+                                        models, c, spent)
                 except _PrepressPause:
                     raise
                 except Exception as e:
                     print("[backend] приёмка по местам #%s: %s" % (project.get("id"), e), file=sys.stderr)
                     cand_g = None
                 if cand_g is not None:
-                    ok_g, s2_g = better(v2_g, px2_g, cand_g)
-                    if ok_g:
-                        ok, part, s2 = True, True, s2_g
-                        cand, v2, px2, left2 = cand_g, v2_g, px2_g, kc(v2_g)
+                    dec_g = prepress_mod.ab_decide(ab_g)
+                    if dec_g["good"] and not dec_g["bad"] and _loop_score(px2_g, cand_g[1])[0] <= p1[0]:
+                        ok, part = True, True
+                        cand, px2, dec = cand_g, px2_g, dec_g
                         tune2, texts2, extra2 = tune_g, texts_g, extra_g
                         new_text = {i: t for i, t in new_text.items() if "p%d" % i in gk}
                         used_applied = good
@@ -38282,9 +38426,9 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                 if act not in prepress_mod.TUNE_ACTIONS or key not in feats:
                     continue
                 sig = prepress_mod.place_signature(code, feats[key])
-                if (key, code) in left2:
-                    rules.note(sig, act, False, doc=doc)     # своё место не исправилось
-                elif ok and (key, code, act) in used_applied:
+                if key in dec["bad"]:
+                    rules.note(sig, act, False, doc=doc)     # место стало хуже
+                elif ok and key in dec["good"] and (key, code, act) in used_applied:
                     rules.note(sig, act, True, doc=doc)
                     # находки по пикселям этого места, ушедшие в принятом круге, —
                     # то же действие станет правилом и ДО модели (`_prepress_rules_first`)
@@ -38293,18 +38437,29 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                             rules.note(prepress_mod.place_signature("px:" + str(pc), feats[key]),
                                        act, True, doc=doc)
             rules.save()
-        rounds.append({"n": rnd + 1, "applied": len(plan["applied"]), "before": s1, "after": s2,
-                       "used": ok, "partial": part,
-                       # почему круг не взят — для разбора владельцем (коды и числа)
+        v2 = v_cur
+        if ok:
+            # Новый взгляд на принятую сборку — для плана следующего круга
+            # и итогового списка (страницы без изменений — из памяти).
+            try:
+                v2 = _prepress_pages(job, project, dict(inp, extra=extra2), cand, texts2, models, mem,
+                                     ver, c, spent)
+            except _PrepressPause:
+                raise
+            except Exception as e:
+                print("[backend] взгляд после круга #%s: %s" % (project.get("id"), e), file=sys.stderr)
+            fixed_total += len(dec["good"])
+        rounds.append({"n": rnd + 1, "applied": len(plan["applied"]), "used": ok, "partial": part,
+                       # почему круг взят или нет — для разбора владельцем (коды и числа)
                        "acts": sorted({a for _k, _c, a in plan["applied"]}),
-                       "newCodes": sorted(codes(v2) - codes(v_cur)),
+                       "better": len(dec["good"]), "worse": len(dec["bad"]), "same": len(dec["same"]),
                        "px": [p1[0], _loop_score(px2, cand[1])[0]]})
         if ok:
             cur, v_cur, tune_cur, texts_cur, extra_cur = cand, v2, tune2, texts2, extra2
             for idx, (frm, to, kd) in new_text.items():
                 changed[idx] = (changed.get(idx, (frm, to, kd))[0], to, kd)
     c["rounds"] = rounds
-    rep = {"fixed": max(0, n_start - nconf(v_cur)), "rounds": len(rounds),
+    rep = {"fixed": fixed_total, "rounds": len(rounds),
            "split": sum(1 for v in tune_cur.values() if v.get("parts"))}
     if changed:
         rep["shortened"] = [{"key": "p%d" % idx, "from": frm, "to": to, "kind": kd,

@@ -349,6 +349,9 @@ def duplicates(items: list, sizes: dict) -> list:
     return out
 
 
+_LEADER_RUN = re.compile(r"^[\s.·…‥]{4,}$")
+
+
 def inspect_pdf(orig: bytes, out: bytes, layout: "dict | None" = None, texts: "dict | None" = None,
                 extra: "list | None" = None, lang: "Lang | None" = None,
                 overlay: "bytes | None" = None, overlay_order: "list | None" = None,
@@ -494,6 +497,11 @@ def _inspect_page(A, B, O, oi, i: int, pw: float, ph: float, items: list, lang, 
               min(W, int(x1 * sc) + 1), min(H, int((ph - y0) * sc) + 1))
         if bx[2] - bx[0] < 2 or bx[3] - bx[1] < 2:
             continue
+        if _LEADER_RUN.match(txt or ""):
+            # Ш40: отточие стирается и рисуется заново от конца перевода —
+            # сменившаяся краска на нём своя, не чужой текст.
+            words_zone[bx[1]:bx[3], bx[0]:bx[2]] = True
+            continue
         words_zone[bx[1]:bx[3], bx[0]:bx[2]] = True
         p_ = max(1, (bx[3] - bx[1]) // 3)
         ry0, ry1, rx0, rx1 = max(0, bx[1] - p_), min(H, bx[3] + p_), max(0, bx[0] - p_), min(W, bx[2] + p_)
@@ -555,7 +563,7 @@ def _inspect_page(A, B, O, oi, i: int, pw: float, ph: float, items: list, lang, 
             # Кегль: краска растёт как квадрат кегля и линейно с длиной
             # текста. Перевод вдвое длиннее при том же кегле — вдвое больше
             # краски; меньше ожидаемого втрое — кегль упал больше чем на 40%.
-            ln = max(0.3, min(3.0, len(it["text"].strip()) / float(max(1, len(it["src"].strip())))))
+            ln = max(0.3, min(3.0, _vlen(it["text"]) / max(1.0, _vlen(it["src"]))))
             k = (ink_out / float(ink_in) / ln) ** 0.5
             it["_scale"] = k
             it["_box"] = _frac(_union(rects), W, H)
@@ -615,6 +623,17 @@ def _raster_lines(a, diff, ink_a, own, lost, words_zone, det, i: int, W: int, H:
             if int(still.sum()) >= 2 * h:
                 rep["issues"].append({"code": "RESIDUE", "page": i, "raster": True,
                                       "box": _frac((x0, y0, x1, y1), W, H), "share": round(1 - ch, 2)})
+
+
+def _vlen(text: str) -> float:
+    """Ш43: длина текста в «узких знаках»: полноширинный знак (иероглиф,
+    кана, хангыль) — два. Мера кегля делит краску на длину, и китайский
+    перевод меню выходил «крупнее» оригинала в 1.7 раза при том же кегле
+    (SIZE_MIX 9 на ровной странице)."""
+    n = 0.0
+    for ch in (text or "").strip():
+        n += 2.0 if unicodedata.east_asian_width(ch) in ("W", "F") else 1.0
+    return n
 
 
 def _size_mix(items: list, rep: dict) -> None:

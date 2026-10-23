@@ -36,6 +36,7 @@ def main_():
     ap.add_argument("--only", default="")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--no-detect", action="store_true")
+    ap.add_argument("--real", default="", help="каталог выгрузок прогона (out/<id>/segments.json): настоящие переводы вместо псевдо")
     a = ap.parse_args()
     cdir, odir = Path(a.corpus).resolve(), Path(a.out).resolve()
     odir.mkdir(parents=True, exist_ok=True)
@@ -75,8 +76,15 @@ def main_():
         lang = {"UZ-CYRL": "uz_cyrl"}.get(tgt, tgt.lower())
         fac = float((sdata.get("expansion") or {}).get(lang, 1.15))
         segs = main._new_segments([t for t, _ in units])
+        real = {}
+        if a.real:
+            rf = Path(a.real) / m["id"] / "segments.json"
+            if rf.exists():
+                real = {" ".join((x.get("src") or "").split()): x.get("tgt") or ""
+                        for x in json.loads(rf.read_text(encoding="utf-8"))}
         for s in segs:
-            s["target"] = synth.pseudo(s["source"], lang, fac, 0, True, sdata)
+            t = real.get(" ".join(s["source"].split()))
+            s["target"] = t if t else synth.pseudo(s["source"], lang, fac, 0, True, sdata)
             s["status"] = "translated"
         project = {"id": pid, "title": m["id"], "src": m["src"], "tgt": tgt, "domain": "general",
                    "tenant": "default", "fileName": m["file"], "importKind": "pdf",

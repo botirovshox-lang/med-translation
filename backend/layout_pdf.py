@@ -59,6 +59,7 @@ Word, а печать этого документа даёт ровный пот
     ради того, чего не видно, — цена выше пользы.
 """
 
+import bisect
 import io
 import os
 import sys
@@ -472,6 +473,37 @@ def _dense_char(ch: str) -> bool:
     o = ord(ch)
     return (0x2E80 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF or 0xF900 <= o <= 0xFAFF
             or 0x3040 <= o <= 0x30FF or 0x20000 <= o <= 0x2FA1F)
+
+
+def _draw_leader(c, L: dict, x_end: float, font: str, sw, ink, paper: float) -> None:
+    """Ш40: отточие заново — от конца перевода до прежнего конца отточия,
+    тем же шагом точек, что у оригинала."""
+    size = max(L["size"], 1.0)
+    pitch = max((L["x1"] - L["x0"]) / max(1, L["n"]), 0.2 * size)
+    x = x_end + 0.6 * size
+    n = int((L["x1"] - x) / pitch)
+    if n < 2:
+        return
+    c.saveState()
+    col = (1, 1, 1) if paper < DARK_PAPER else (ink if ink is not None else (0, 0, 0))
+    c.setFillColorRGB(*col)
+    to = c.beginText(L["x1"] - n * pitch, L["y"])
+    to.setFont(font, size)
+    to.setCharSpace(max(0.0, pitch - sw(".", font, size)))
+    to.textOut("." * n)
+    c.drawText(to)
+    c.restoreState()
+
+
+def _connected_script(text: str) -> bool:
+    """Ш14б: связное письмо (арабское, сирийское, нко, монгольское, индийские)
+    не разряжается: межбуквенный интервал рвёт соединение букв (W3C ALREQ)."""
+    for ch in text:
+        o = ord(ch)
+        if (0x0600 <= o <= 0x08FF or 0x0700 <= o <= 0x074F or 0x07C0 <= o <= 0x07FF
+                or 0x1800 <= o <= 0x18AF or 0x0900 <= o <= 0x0DFF or 0xFB50 <= o <= 0xFEFF):
+            return True
+    return False
 
 
 def _synth_stroke(text: str, size: float) -> float:
@@ -1364,6 +1396,57 @@ def _span_x(sd: dict, w: float, x: float) -> float:
     return min(max(cx - w / 2.0, sp[0]), sp[1] - w)
 
 
+COL_EDGE_MIN = 2          # Ш39: столько ДРУГИХ строк страницы с тем же левым краем — колонка
+COL_EDGE_TOL = 1.0        # пт
+
+
+LEADERS = os.environ.get("LAYOUT_LEADERS", "1") != "0"   # Ш40: выключатель без выката
+LEADER_GAP = 3.0           # Ш40: от конца строки до начала отточия — не дальше стольких кеглей
+
+
+def _attach_leaders(sls: list, leaders: list) -> None:
+    """Ш40: строка, за которой на той же базовой линии стоит отточие, получает
+    его место (`_leader`): растёт поверх отточия, а отточие рисуется заново."""
+    for L in leaders:
+        try:
+            lx0, ly, lx1, ls, ln = (float(v) for v in L[:5])
+        except (TypeError, ValueError):
+            continue
+        best = None
+        for sd in sls:
+            size = max(sd.get("size") or 1.0, 1.0)
+            if abs(sd["y"] - ly) > 0.5 * size or sd["x1"] > lx0 + 0.5 * size:
+                continue
+            gap = lx0 - sd["x1"]
+            if gap <= LEADER_GAP * size and (best is None or gap < best[0]):
+                best = (gap, sd)
+        if best is not None:
+            size = max(best[1].get("size") or 1.0, 1.0)
+            # Конец отточия — перед следующей надписью строки (ценой): конец
+            # строки в слое — оценка и бывает дальше настоящего.
+            nxt = [o["x0"] for o in sls if o is not best[1] and abs(o["y"] - ly) <= 0.5 * size
+                   and o["x0"] > lx0 + size]
+            if nxt:
+                lx1 = min(lx1, min(nxt) - 0.6 * size)
+            if lx1 - lx0 > 2 * size:
+                best[1]["_leader"] = {"x0": lx0, "x1": lx1, "y": ly, "size": ls or size,
+                                      "n": max(1, int(ln))}
+
+
+def _mark_column_edges(sls: list) -> None:
+    """Ш39: строка, чей левый край совпадает с краем ещё `COL_EDGE_MIN` строк
+    страницы, стоит в КОЛОННЕ (пункты меню, список, ячейки одного столбца):
+    влево она не растёт — общий край колонки дороже места. Прежде пункт
+    меню с отточием справа рос в поле страницы слева и выезжал из колонки."""
+    xs = sorted(round(sd["x"], 1) for sd in sls)
+    for sd in sls:
+        x = sd["x"]
+        lo = bisect.bisect_left(xs, x - COL_EDGE_TOL)
+        hi = bisect.bisect_right(xs, x + COL_EDGE_TOL)
+        if hi - lo - 1 >= COL_EDGE_MIN:
+            sd["_colEdge"] = True
+
+
 def _slot_width(sl: dict, align: str, wide: bool) -> float:
     """Ширина места строки: своя — или с запасом свободной бумаги
     (`room0`/`room1`, `_free_room`) в сторону, куда строка растёт по выключке."""
@@ -1479,7 +1562,8 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
         # слева 18 пт бумаги) — строка растёт в свободную сторону, а печать
         # ставит её как можно ближе к центру своего места (`_span_x`).
         if (label and wide and LABEL_SPAN and not sl.get("rot") and not sl.get("_r")
-                and len(slots) == 1 and sl.get("_gapL") is None and sl.get("_gapR") is None):
+                and len(slots) == 1 and sl.get("_gapL") is None and sl.get("_gapR") is None
+                and not (sl.get("_colEdge") and align in ("left", "justify"))):
             lo, hi = sl.get("room0", sl["x0"]), sl.get("room1", sl["x1"])
             if hi - lo > _slot_width(sl, align, True) + 0.5:
                 sl["_span"] = (lo, hi)
@@ -1767,10 +1851,19 @@ def _regrid(slots: list, runs: list, f: float, ls: float = 1.0) -> list:
             pitch = statistics.median(a["y"] - b["y"] for a, b in zip(rs, rs[1:]))
         else:
             pitch = 1.2 * size
+        lift = 0.0
         if len(rs) == 1 and below < pitch * f * ls:
-            out.extend(rs)
-            continue
-        y0 = rs[0]["y"]
+            # Ш37: вторая строка — за счёт бумаги НАД строкой (и под ней):
+            # первая строка поднимается ровно настолько, насколько не хватает.
+            above = max(0.0, float(last.get("above") or 0.0))
+            if above > 0:
+                below = max(below, float(last.get("below_p") or 0.0))
+            if f < 0.999 and above + below >= pitch * f * ls:
+                lift = min(above, pitch * f * ls - below)
+            else:
+                out.extend(rs)
+                continue
+        y0 = rs[0]["y"] + lift
         ybot = last["y"] - below
         n = max(len(rs) if f * ls >= 0.999 and below <= 0 else 1,
                 int((y0 - ybot) / max(0.1, pitch * f * ls) + 1e-6) + 1)
@@ -1809,7 +1902,8 @@ def _regrid(slots: list, runs: list, f: float, ls: float = 1.0) -> list:
             v["_v"] = True
             # Строка на свободной бумаге под колонкой — за пределами своего
             # абзаца: проверка наложений обязана её видеть.
-            v["_grown"] = v["y"] < last["y"] - 0.2 * last["size"]
+            v["_grown"] = (v["y"] < last["y"] - 0.2 * last["size"]
+                           or v["y"] > last["y"] + 0.2 * last["size"])
             v.pop("room0", None)
             v.pop("room1", None)
             out.append(v)
@@ -1893,7 +1987,8 @@ def _fit_flow(text: str, slots: list, sw, font_of, align: str, split_ok: bool = 
     orig_slots = slots
     slots = _merge_line_slots(slots)
     runs = _runs(slots)
-    if not any(len(r) >= 2 or (slots[r[-1]].get("below") or 0) > 0 for r in runs):
+    if not any(len(r) >= 2 or (slots[r[-1]].get("below") or 0) > 0
+               or (slots[r[-1]].get("above") or 0) > 0 for r in runs):
         return orig_slots, lines, f, rest, hs
     floor = MIN_SIZE_SHARE if floor is None else floor
     cap = max(floor, min(1.0, cap))
@@ -2376,7 +2471,9 @@ def _story_link(A: dict, B: dict, page_slots: "dict | None") -> "str | None":
             and 0.5 * min(ra["pitch"], rb["pitch"]) <= dy <= FRAME_LINK_MAX * ra["pitch"]
             and not _blocked(A["runs"][-1], B["runs"][0], page_slots)
             and not _drawn_between(la, fb)
-            and not _cells(A, B, page_slots)):
+            and not _cells(A, B, page_slots)
+            and not (A["nlines"] == 1 and _row_anchor(la, page_slots))
+            and not (B["nlines"] == 1 and _row_anchor(fb, page_slots))):
         return "v"
     wa, wb = ra["x1"] - ra["x0"], rb["x1"] - rb["x0"]
     # Колонка ТЕКСТА: широкая (от 12 кеглей) и в несколько строк с обеих
@@ -2417,6 +2514,26 @@ def _row_mates(sl: dict, page_slots: "dict | None") -> bool:
         if min(o["x1"], sl["x1"]) - max(o["x"], sl["x"]) > 0:
             continue
         if min(abs(o["x"] - sl["x1"]), abs(sl["x"] - o["x1"])) <= 15.0 * s:
+            return True
+    return False
+
+
+ROW_TAIL_MAX = 6.0          # Ш41: «цена» справа — не шире стольких кеглей
+
+
+def _row_anchor(sl: dict, page_slots: "dict | None") -> bool:
+    """Ш41: строка — РЯД таблицы, а не строка текста: за ней отточие (Ш40)
+    либо на той же базовой линии далеко справа стоит короткая надпись
+    (цена, номер страницы). Меню «Зелёный чай ........ 150 ₽»: заголовок
+    раздела, пункт и подпись под ним сцеплялись в одну историю и ужимались
+    общим кеглем до трети (подпись «чайник 0,7 л» — 0.36)."""
+    if sl.get("_leader"):
+        return True
+    s = max(sl["size"], 1.0)
+    for o in (page_slots or {}).get(int(sl.get("page", -1)), []) if isinstance(page_slots, dict) else []:
+        if o is sl or o.get("rot") or abs(o["y"] - sl["y"]) > 0.3 * s:
+            continue
+        if o["x"] > sl["x1"] + 15.0 * s and o["x1"] - o["x"] <= ROW_TAIL_MAX * s:
             return True
     return False
 
@@ -4760,13 +4877,36 @@ def _free_room(sample, sd: dict, paper: float) -> None:
     if y1 - y0 < 2:
         return
     right_cap = cb[2] - margin
+    L_ = sd.get("_leader")
+    if L_:
+        # Ш40: отточие справа — свободная бумага до его конца (его сотрём
+        # и нарисуем заново после перевода); цена правее — уже не наша.
+        to_ = min(right_cap, L_["x1"] - 2.0 * size)
+        if to_ - sd["x1"] >= FREE_MIN * size:
+            sd["room1"] = to_
     # Близкий сосед (ячейка той же строки таблицы, подпись рядом): граница
     # колонки — середина зазора до него, и строка не доходит до неё на
     # `ROOM_GUTTER` кегля (Т4). Сосед растёт навстречу так же, и между ними
     # остаётся промежуток в два кегля; ячейки, съевшие зазор с двух сторон,
     # читались одной фразой («Нейтральный эффект Пероральный», стр. 6).
+    soft = paper * 255.0 - RULE_SOFT_DIFF
+    xs_ = (sd["x1"] - cb[0]) * scale
     for key in ("lim", "lim2"):
         if sd.get(key) is not None:
+            # Ш44: сосед за ЛИНИЕЙ таблицы — уже другая ячейка: граница —
+            # линия (её отступ в полкегля считается ниже), а не середина
+            # зазора и не два кегля от его текста. Ячейка «Ед.» («уп.» →
+            # «қапт.») получала половину зазора до цены соседней колонки
+            # и ужималась до 0.55 при пустой своей.
+            if sd[key] > sd["x1"] and _rule_cols(gray, xs_, (sd[key] - cb[0]) * scale, y0, y1, soft):
+                continue
+            # `lim2` — начало колонки в строках РЯДОМ, для таблиц без линий.
+            # В таблице с линиями ячейку замыкает линия, а «соседом» бывает
+            # число строкой ниже в ТОЙ ЖЕ ячейке (выключка вправо): «Цена» →
+            # «Бағасы» ужималась до 0.78 от «350,00» под ней.
+            if key == "lim2" and _rule_cols(gray, xs_, (sd[key] + 8.0 * size - cb[0]) * scale,
+                                            y0, y1, soft):
+                continue
             right_cap = min(right_cap, sd[key] - margin)
             gap = sd[key] - sd["x1"]
             if ROOM_TAKE > 0 and 0 < gap <= ROOM_NEAR_EM * size:
@@ -4782,14 +4922,21 @@ def _free_room(sample, sd: dict, paper: float) -> None:
     hit = _room_hit(mins, maxs, dark, light, paper)
     # Ш13б: тонкая линия таблицы светлее «краски», но она — граница: рост
     # строки на ней кончается (иначе ячейка вылезала на линию и за неё).
-    soft = paper * 255.0 - RULE_SOFT_DIFF
-    xs_ = (sd["x1"] - cb[0]) * scale
     rc = sorted(_rule_cols(gray, xs_, (right_cap + margin - cb[0]) * scale, y0, y1, soft))
     free_to = sd["x1"] + 0.3 * size + (len(mins) if hit is None else hit) / scale - margin
     if rc:
-        free_to = min(free_to, sd["x1"] + rc[0] / scale - 0.5 * size)
+        rule_to = sd["x1"] + rc[0] / scale - 0.5 * size
+        if hit is not None and abs((start + hit) - (xs_ + rc[0])) <= max(2.0, 0.3 * size * scale):
+            # Ш44: первая «краска» справа — сама линия ячейки таблицы: отступ
+            # от неё полкегля, а не два кегля, как от чужого текста. Ячейка
+            # «Ед.» с переводом «қапт.» не получала места при свободной
+            # колонке и ужималась до 0.55, а за ней — весь класс кегля.
+            free_to = rule_to
+        else:
+            free_to = min(free_to, rule_to)
+
     free_to = min(free_to, right_cap)
-    if free_to - sd["x1"] >= FREE_MIN * size:
+    if free_to - sd["x1"] >= FREE_MIN * size and not L_:
         sd["room1"] = free_to
     left_cap = max(cb[0] + margin, sd["x0"] - grow - margin)
     end = (sd["x0"] - 0.3 * size - cb[0]) * scale
@@ -4911,6 +5058,59 @@ def _chain_lows(sls: list) -> None:
         o["_chainLow"] = best["_chainLow"] if best is not None else o["y"]
 
 
+FREE_ABOVE = os.environ.get("LAYOUT_FREE_ABOVE", "1") != "0"
+PLATE_EDGE_DIFF = 25          # Ш37: отличие тона от плашки, серый 0–255
+PLATE_EDGE_SHARE = 0.6        # доля ряда другого тона — край плашки
+
+
+def _free_above(sample, sl: dict, size: float, pitch: float, paper: float) -> None:
+    """Ш37: свободная бумага НАД одиночной строкой внутри её плашки или ячейки
+    (`above`, пт): предупреждение в жёлтой плашке, кнопка, ячейка шапки — над
+    строкой пусто до края плашки, и перевод вправе встать двумя строками по
+    центру плашки, а не ужиматься до половины кегля. Граница плашки (краска
+    или смена фона) обязана найтись в пределах строки: открытое поле
+    страницы над заголовком не занимаем."""
+    try:
+        import numpy as np
+    except Exception:
+        return
+    im, scale, cb, gray = sample
+    W, H = im.size
+    top = sl["y"] + 0.95 * size
+    reach = 1.2 * pitch
+    px0, px1 = max(0, int((sl["x0"] - cb[0]) * scale)), min(W, int((sl["x1"] - cb[0]) * scale) + 1)
+    py1 = int(max(0, H - (top - cb[1]) * scale))
+    py0 = int(max(0, H - (top + reach - cb[1]) * scale))
+    if py1 - py0 < 2 or px1 - px0 < 2:
+        return
+    a = np.asarray(gray.crop((px0, py0, px1, py1)), dtype=np.int16)[::-1]   # снизу вверх
+    if a.shape[0] < 3:
+        return
+    # Тон плашки — по рядам сразу над текстом (оценка бумаги по цвету
+    # закраски на жёлтой плашке врала: 0.67 против 206 на снимке). Граница —
+    # первый ряд, где БОЛЬШАЯ часть точек другого тона: край плашки, линия
+    # ячейки. Редкая краска (буквы строки выше) границей не считается.
+    plate = float(np.median(a[:2]))
+    off = (np.abs(a - plate) > PLATE_EDGE_DIFF).mean(axis=1) >= PLATE_EDGE_SHARE
+    if not off.any():
+        return                              # над строкой поле страницы, не плашка
+    free = int(np.argmax(off)) / scale - 0.15 * size
+    if free >= 0.25 * pitch:
+        sl["above"] = round(free, 2)
+        # Та же мерка ВНИЗ — до края той же плашки (прежняя `below` требует
+        # полстроки и мелкий запас не считает).
+        bot = sl["y"] - 0.3 * size
+        qy0 = int(max(0, H - (bot - cb[1]) * scale))
+        qy1 = int(min(H, H - (bot - reach - cb[1]) * scale))
+        if qy1 - qy0 >= 3:
+            b_ = np.asarray(gray.crop((px0, qy0, px1, qy1)), dtype=np.int16)
+            off_b = (np.abs(b_ - plate) > PLATE_EDGE_DIFF).mean(axis=1) >= PLATE_EDGE_SHARE
+            if off_b.any():
+                fb = int(np.argmax(off_b)) / scale - 0.15 * size
+                if fb > 0:
+                    sl["below_p"] = round(fb, 2)
+
+
 def _free_below(sample, rs: list, paper: float, page_slots: "list | None" = None) -> None:
     """`below` у последнего места колонки — сколько пунктов ЧИСТОЙ бумаги
     под ней (ни краски, ни смены фона по всей ширине колонки), за вычетом
@@ -4927,6 +5127,8 @@ def _free_below(sample, rs: list, paper: float, page_slots: "list | None" = None
     size = max(max(sl["size"] for sl in rs), 1.0)
     pitch = (statistics.median(a["y"] - b["y"] for a, b in zip(rs, rs[1:]))
              if len(rs) >= 2 else 1.2 * size)
+    if len(rs) == 1 and FREE_ABOVE:
+        _free_above(sample, last, size, pitch, paper)
     x0 = min(sl["x0"] for sl in rs)
     x1 = max(sl["x1"] for sl in rs)
     top = last["y"] - 0.3 * size                     # под нижними выносными
@@ -6065,9 +6267,13 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
             except Exception:
                 pass
             page_slots.setdefault(pg, []).extend(sd for sd in b["_slots"] if not sd.get("rot"))
-    for sls in page_slots.values():
+    leaders_ = (layout or {}).get("leaders") or {}
+    for pg_, sls in page_slots.items():
         _neighbour_limits(sls)
         _chain_lows(sls)
+        _mark_column_edges(sls)
+        if LEADERS:
+            _attach_leaders(sls, leaders_.get(str(pg_)) or leaders_.get(pg_) or [])
 
     sampler = _Sampler(pdf_bytes)
     live_boxes: dict = {}
@@ -6423,13 +6629,24 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
 
     # По готовой раскладке, ДО печати: общий кегль у надписей одного стиля
     # и проверка, не легла ли строка перевода на чужой текст.
+    def _dbg_sizes(tag):
+        if os.environ.get("LAYOUT_DEBUG"):
+            print("[sizes]", tag, [(m["idx"], round(min(p_[2]) if p_[2] else 0, 2),
+                                    [round(sd.get("room1") or 0, 1) for sd in p_[0]][:1],
+                                    [round(sd["x1"], 1) for sd in p_[0]][:1])
+                                   for p_, m in zip(slot_plan, slot_meta)], file=sys.stderr)
+    _dbg_sizes("fit")
     _stories(slot_plan, slot_meta, stats, page_slots)
+    _dbg_sizes("stories")
     _harmonize(slot_plan, slot_meta, stats)
+    _dbg_sizes("harmonize")
     _harmonize_arcs(img_plan, stats)
     _harmonize_paint_rhythm(img_plan, stats)
     _harmonize_layer_arcs(slot_plan, sw_vec, stats)
     _flow_groups(slot_plan, slot_meta, stats, sw_vec, page_slots)
+    _dbg_sizes("flow")
     _resolve_collisions(slot_plan, slot_meta, jobs, reader, skip, stats, img_plan, plan)
+    _dbg_sizes("collisions")
     _size_report(slot_plan, slot_meta, plan, stats)
     stats.pop("_story_relay", None)
 
@@ -6489,6 +6706,13 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
             # а выше лежат хвосты букв строки над этой (у непереведённого
             # абзаца при интерлиньяже 1.15 их срезало бы).
             _fill_box(c, sd, pad, colors, top_pad=min(pad, 0.05 * sd["size"]))
+            L_ = sd.get("_leader")
+            if L_:
+                # Ш40: отточие стирается целиком — его нарисуем от конца перевода.
+                lb = dict(sd, x0=L_["x0"], x1=L_["x1"], top=L_["y"] + 0.5 * L_["size"],
+                          bottom=L_["y"] - 0.2 * L_["size"])
+                lb.pop("_pads", None)
+                _fill_box(c, lb, 0.5, [colors[-1]] if colors else [(1.0, 1.0, 1.0)])
         for ent in img_by.get(i, []):
             _paint_fill(c, ent)
         for b, _lines, _size, _lead, _font, _n in here:
@@ -6576,7 +6800,8 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                 # Ш14: разрядка оригинала — в той же доле кегля, но не шире,
                 # чем позволяет место строки (перевод длиннее — разрядка уже).
                 tce = 0.0
-                if sd.get("tc") and not (jw and k == 0) and len(ln) > 1 and not sd.get("_r"):
+                if (sd.get("tc") and not (jw and k == 0) and len(ln) > 1 and not sd.get("_r")
+                        and not _connected_script(ln)):
                     room_ = (sd["x1"] - sd["x0"]) - w
                     tce = max(0.0, min(sd["tc"] * f, room_ / (len(ln) - 1)))
                     w += tce * (len(ln) - 1)
@@ -6596,6 +6821,12 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                                ((1, 1, 1) if paper < DARK_PAPER else (0, 0, 0)),
                                hsc, sd["style"], sd.get("_rtl"))
                     stats["raster"] += 1
+                    L_ = sd.get("_leader")
+                    if L_ and k == 0 and not sd.get("_rtl"):
+                        # Ш40: и у строки, напечатанной контурами (иероглифы,
+                        # вязь), отточие стёрто — рисуем его заново.
+                        _draw_leader(c, L_, x + w, font_of(dict(sd, style="")), sw, ink, paper)
+                        stats["leaders"] = stats.get("leaders", 0) + 1
                     continue
                 # Tz, Tr, цвет и толщина обводки — состояние, переживающее ET:
                 # без q/Q сужение и «полужирный обводкой» одной строки
@@ -6634,6 +6865,10 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                     to.textOut(ln)
                 c.drawText(to)
                 c.restoreState()
+                L_ = sd.get("_leader")
+                if L_ and k == 0:
+                    _draw_leader(c, L_, x + w, font_of(dict(sd, style="")), sw, ink, paper)
+                    stats["leaders"] = stats.get("leaders", 0) + 1
         order.append(drawn)
         drawn += 1
         c.showPage()

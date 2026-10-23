@@ -148,6 +148,9 @@ def _sfnt_info(data: bytes) -> dict:
     return out
 
 
+SLANT_MIN, SLANT_MAX = 0.1, 0.5   # Ш42: наклон буквы, читаемый как курсив (≈6°–30°)
+
+
 def _program_info(fd) -> dict:
     """Вес, курсив, гарнитура — из описания шрифта и встроенной программы.
     Описание: FontWeight, ItalicAngle, флаги Italic/ForceBold, StemV
@@ -603,6 +606,15 @@ def page_lines(page) -> tuple:
                                               and box[1] - 1 <= y <= box[3] + 1)
             state["seq"] += 1
             st_, fam_ = style_family(fd)
+            # Ш42: синтетический курсив — «вертикаль» буквы наклонена вправо
+            # (`Tm 1 0 0.2 1`): шрифт прямой, а читатель видит курсив, и
+            # перевод подписи под блюдом выходил прямым.
+            if "i" not in (st_ or "") and not rot:
+                nb, nv = math.hypot(ba, bb), math.hypot(vx, vy)
+                if nb > 0 and nv > 0:
+                    sh_ = (vx * ba + vy * bb) / (nb * nv)
+                    if SLANT_MIN <= sh_ <= SLANT_MAX:
+                        st_ = (st_ or "") + "i"
             tr = state["tr"] % 8
             chunks.append((text or "", x, y, float(fs or 0) * sy, rot, st_, fam_,
                            hidden, state["seq"], font_key(fd) if fd is not None else None,

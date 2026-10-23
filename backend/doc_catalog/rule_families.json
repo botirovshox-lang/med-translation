@@ -441,7 +441,8 @@
     "Г3",
     "Н1",
     "Ф7",
-    "Х13"
+    "Х13",
+    "Ш42"
    ],
    "scope": "in",
    "why": "layout_pdf._synth; полужирный обводкой контура"
@@ -632,7 +633,9 @@
     "https://www.w3.org/TR/css-text-4/",
     "https://www.w3.org/TR/alreq/"
    ],
-   "handled_by": [],
+   "handled_by": [
+    "Ш14"
+   ],
    "scope": "in",
    "why": "перевод не разряжается вовсе, правила не требует"
   },
@@ -779,7 +782,8 @@
     "https://www.w3.org/TR/css-text-4/"
    ],
    "handled_by": [
-    "Т10"
+    "Т10",
+    "Ш40"
    ],
    "scope": "in",
    "why": "цифры оглавления клеятся; табуляция не даёт разрыва строки слоя (П1)"
@@ -1464,7 +1468,9 @@
    "sources": [
     "https://cldr.unicode.org/"
    ],
-   "handled_by": [],
+   "handled_by": [
+    "Ш12"
+   ],
    "scope": "in",
    "why": "lang_rules.json apostrophe_in_word, main._alphabet_misses; media не считает ʻ ʼ письменностью"
   },

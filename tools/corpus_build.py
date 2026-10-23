@@ -43,6 +43,7 @@ F = {
     "oldb": FONTS / "OldStandard-Bold.ttf",
     "dejavu": FONTS / "DejaVuSans.ttf",
     "dejavub": FONTS / "DejaVuSans-Bold.ttf",
+    "cjk": FONTS / "NotoSansSC-Regular.otf",
 }
 
 # ─── тексты ─────────────────────────────────────────────────────────────
@@ -362,6 +363,8 @@ def _rl_fonts():
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
     for k, p in F.items():
+        if str(p).endswith(".otf"):
+            continue                    # CFF-шрифт reportlab не берёт; он только для картинок
         try:
             pdfmetrics.getFont(k)
         except KeyError:
@@ -840,6 +843,87 @@ def pdf_en_guide(path):
     c.setFont("sansb", 10.5)
     c.drawString(60, y - 38, EN_GUIDE["warn"])
     c.save()
+
+
+DE_NOTICE = {
+    "title": "Mitteilung an alle Mieterinnen und Mieter",
+    "lead": ("Sehr geehrte Damen und Herren, wegen der Erneuerung der Heizungsanlage wird die "
+             "Warmwasserversorgung im Gebäude Lindenstraße 14 vorübergehend unterbrochen. "
+             "Wir bitten um Ihr Verständnis."),
+    "table": [("Datum", "Uhrzeit", "Betroffene Wohnungen"),
+              ("Mo., 3. November", "8:00–16:00", "1–12"),
+              ("Di., 4. November", "8:00–12:00", "13–24"),
+              ("Mi., 5. November", "9:00–18:00", "alle")],
+    "note": ("Bei Fragen wenden Sie sich bitte an die Hausverwaltung: "
+             "Tel. 030 245 67 80, Montag bis Freitag von 9 bis 17 Uhr."),
+    "sign": "Ihre Hausverwaltung Grünwald GmbH",
+}
+
+ZH_NOTICE = {
+    "title": "停水通知",
+    "body": ["因供水管道维修，本小区将于11月8日（星期六）",
+             "上午9:00至下午5:00暂停供水。",
+             "请各位居民提前做好储水准备。",
+             "给您带来的不便，敬请谅解。"],
+    "rows": [("受影响楼栋", "1号楼至6号楼"), ("咨询电话", "010-8765 4321")],
+    "sign": "阳光花园物业管理处",
+    "date": "2026年11月3日",
+}
+
+
+def pdf_de_notice(path):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    _rl_fonts()
+    c = canvas.Canvas(str(path), pagesize=A4)
+    W, H = A4
+    c.setFont("serifb", 17)
+    c.drawString(60, H - 80, DE_NOTICE["title"])
+    c.setLineWidth(1.2)
+    c.line(60, H - 92, W - 60, H - 92)
+    y = _para(c, DE_NOTICE["lead"], 60, H - 120, W - 120, "serif", 11, 15, align="justify") - 18
+    cw = [160, 120, 195]
+    for r, row in enumerate(DE_NOTICE["table"]):
+        x = 60
+        for k, v in enumerate(row):
+            c.setLineWidth(0.6)
+            c.rect(x, y - 7, cw[k], 22, fill=0, stroke=1)
+            c.setFont("sansb" if r == 0 else "sans", 10.5)
+            c.drawString(x + 6, y, v)
+            x += cw[k]
+        y -= 22
+    y = _para(c, DE_NOTICE["note"], 60, y - 24, W - 120, "serif", 11, 15) - 26
+    c.setFont("serif", 11)
+    c.drawRightString(W - 60, y, DE_NOTICE["sign"])
+    c.save()
+
+
+def png_zh_notice(path):
+    from PIL import Image, ImageDraw
+    W, H = 900, 1100
+    im = Image.new("RGB", (W, H), (252, 250, 244))
+    d = ImageDraw.Draw(im)
+    d.rectangle((30, 30, W - 30, H - 30), outline=(170, 30, 30), width=4)
+    f = _font("cjk", 64)
+    tw = d.textlength(ZH_NOTICE["title"], font=f)
+    d.text(((W - tw) / 2, 90), ZH_NOTICE["title"], font=f, fill=(180, 20, 20))
+    y = 240
+    for ln in ZH_NOTICE["body"]:
+        d.text((90, y), ln, font=_font("cjk", 32), fill=(30, 30, 30))
+        y += 62
+    y += 30
+    for a, b in ZH_NOTICE["rows"]:
+        d.rectangle((90, y - 8, 380, y + 46), outline=(120, 120, 120), width=2)
+        d.rectangle((380, y - 8, W - 90, y + 46), outline=(120, 120, 120), width=2)
+        d.text((104, y), a, font=_font("cjk", 28), fill=(30, 30, 30))
+        d.text((394, y), b, font=_font("cjk", 28), fill=(30, 30, 30))
+        y += 54
+    fs = _font("cjk", 30)
+    for k, t in enumerate((ZH_NOTICE["sign"], ZH_NOTICE["date"])):
+        tw = d.textlength(t, font=fs)
+        d.text((W - 90 - tw, H - 230 + k * 56), t, font=fs, fill=(30, 30, 30))
+    d.ellipse((W - 330, H - 290, W - 150, H - 110), outline=(200, 40, 40), width=5)
+    im.save(str(path))
 
 
 def pdf_cert(path):
@@ -1433,11 +1517,57 @@ RECIPES = [
     ("28_sign_photo", "jpg", hard_sign_photo, "RU", "EN", "original", "ТРУДНО: табличка под углом, тени"),
     ("29_fax", "png", hard_fax, "EN", "RU", "original", "ТРУДНО: факс 1 бит, перекос, полосы"),
     ("30_water", "jpg", hard_water_damaged, "RU", "EN", "original", "ТРУДНО: страница залита водой, расплывшиеся чернила"),
+    ("31_de_notice", "pdf", pdf_de_notice, "DE", "RU", "pdf", "DE→: уведомление, таблица, составные слова, ß/умлауты"),
+    ("32_zh_notice", "png", png_zh_notice, "ZH", "RU", "original", "ZH→: объявление-картинка, иероглифы, таблица, печать"),
 ]
+
+
+# Языковая матрица: частые в СНГ пары на тех же файлах. Один файл — разные
+# письменности и длины перевода (кириллица ↔ латиница, иероглифы, справа
+# налево, длинные немецкие слова). `python tools/corpus_build.py OUT --langs`.
+LANG_MATRIX = [
+    ("02_article", "RU", "DE"), ("02_article", "RU", "ZH"),
+    ("03_invoice", "RU", "EN"), ("03_invoice", "RU", "KK"), ("03_invoice", "RU", "TR"),
+    ("04_infographic", "RU", "UZ-CYRL"), ("04_infographic", "RU", "AR"), ("04_infographic", "RU", "KO"),
+    ("08_menu", "RU", "ZH"), ("08_menu", "RU", "KY"),
+    ("09_prose", "RU", "TG"), ("09_prose", "RU", "AZ"), ("09_prose", "RU", "UK"),
+    ("12_report", "RU", "DE"), ("12_report", "RU", "KK"),
+    ("15_slides", "RU", "ZH"),
+    ("19_ui", "RU", "DE"), ("19_ui", "RU", "ZH"), ("19_ui", "RU", "KK"),
+    ("20_poster", "RU", "TR"), ("20_poster", "RU", "FR"),
+    ("24_typewriter_scan", "RU", "EN"),
+    ("10_en_guide_zh", "EN", "RU"), ("10_en_guide_zh", "EN", "UZ"),
+    ("31_de_notice", "DE", "RU"), ("31_de_notice", "DE", "EN"),
+    ("32_zh_notice", "ZH", "RU"), ("32_zh_notice", "ZH", "EN"),
+]
+
+
+def main_langs(out: Path):
+    import shutil
+    base = {r[0]: r for r in RECIPES}
+    tmp = out / "_base"
+    tmp.mkdir(parents=True, exist_ok=True)
+    manifest = []
+    for rid, src, tgt in LANG_MATRIX:
+        _r, ext, fn, _s, _t, fmt, what = base[rid]
+        bp = tmp / ("%s.%s" % (rid, ext))
+        if not bp.exists():
+            random.seed(rid)
+            fn(bp)
+        lid = "L%s_%s" % (rid, tgt.lower().replace("-", ""))
+        shutil.copyfile(bp, out / ("%s.%s" % (lid, ext)))
+        manifest.append({"id": lid, "file": "%s.%s" % (lid, ext), "src": src, "tgt": tgt, "export": fmt,
+                         "hard": what.startswith("ТРУДНО"), "what": "%s → %s: %s" % (src, tgt, what)})
+    shutil.rmtree(tmp)
+    (out / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    print("матрица:", len(manifest), "файлов")
 
 
 def main(argv):
     out = Path(argv[1])
+    if "--langs" in argv:
+        out.mkdir(parents=True, exist_ok=True)
+        return main_langs(out)
     out.mkdir(parents=True, exist_ok=True)
     only = None
     if "--only" in argv:

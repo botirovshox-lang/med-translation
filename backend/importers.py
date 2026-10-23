@@ -1327,7 +1327,8 @@ def pdf_to_docx(content: bytes) -> tuple:
              "собранный из документа Word.")
     return (docx_bytes, "pdf", note, n_img,
             {"boxes": built["layout"], "pages": res.get("pageBoxes") or [],
-             "unplaced": res.get("unplaced") or [], "virt": virt})
+             "unplaced": res.get("unplaced") or [], "virt": virt,
+             "leaders": res.get("leaders") or {}})
 
 
 def _virt_note(virt) -> str:

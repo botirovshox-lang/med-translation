@@ -4459,10 +4459,14 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         # «Shimoliy shamol»), копейки становились тийинами, а строки адреса
         # и подписи сливались в одну. Правила про любой язык и пару.
         "12. Proper names — people, companies and brands in quotes, monograms, logos — are\n"
-        f"   TRANSLITERATED into {tgt} script, never translated word by word.\n"
+        f"   TRANSLITERATED into {tgt} script, never translated word by word. A name, brand or\n"
+        "   model code already written in Latin letters in the source (BANK·ONE, T200) is copied\n"
+        "   exactly as written.\n"
         "13. Keep the currency, units and measures of the SOURCE (kopecks stay kopecks, roubles\n"
-        "   stay roubles); never convert them into the target country's units. Use one currency\n"
-        "   notation throughout the text.\n"
+        "   stay roubles); never convert them into the target country's units. A currency SIGN\n"
+        "   (₽ $ € ₸ £ ¥) is copied as the sign, never replaced by a word or another currency.\n"
+        "   Use one currency notation throughout the text. Write numbers by the conventions of\n"
+        f"   {tgt} (thousands separator, decimal mark), keeping exactly the same digits.\n"
         "14. If the source has line breaks, the translation has the SAME number of lines, broken\n"
         "   at the same places.\n"
         )
@@ -4641,7 +4645,8 @@ def _openai_translate(text: str, src: str, tgt: str,
     # своими буквами («хттпс://дои.орг/…», проект 14): ссылка в переводе
     # обязана работать. Обратный перевод (`literal`) не трогаем — он мера.
     return out if literal else _lang_normalize(
-        _decimal_fix(text, _keep_verbatim(text, _strip_markdown(text, out)), src, tgt), tgt, text)
+        _decimal_fix(text, _homoglyph_fix(text, _keep_verbatim(text, _strip_markdown(text, out))), src, tgt),
+        tgt, text)
 
 # ─────────────────────────────────────────────────────────────────────
 # Аутентификация
@@ -13210,6 +13215,8 @@ def _store_source_docx(project: dict, content: bytes, filename: str,
                              # Видимые строки без места (повёрнутые, по дуге): их
                              # оригинал на листе останется — выгрузка их называет.
                              "unplaced": layout.get("unplaced") or [],
+                             # Ш40: места отточий — перевод встаёт поверх них.
+                             "leaders": {str(k): v for k, v in (layout.get("leaders") or {}).items()},
                              "rules": getattr(importers.pdftext, "RULES_VERSION", None)}
         # План «ленты» (`pdf_panels`): номера страниц и рамки раскладки —
         # это номера и координаты ВИРТУАЛЬНЫХ страниц, и собрать их заново
@@ -18278,7 +18285,7 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
     # надписей документа (`system` не задан): у кадра видео свой промпт.
     tails: dict = {}
     arr = None
-    if system is None and getattr(image_text, "IMG_READ_SIZE_BREAK", False):
+    if system is None:
         try:
             arr = image_text._np.asarray(image_text._open(img_bytes).convert("RGB"))
         except Exception:
@@ -18286,7 +18293,7 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
     for i, b in enumerate(blocks):
         box_i = b["box"]
         lbs = b.get("lineBoxes") or []
-        if arr is not None and image_text.size_break(arr, b):
+        if arr is not None and getattr(image_text, "IMG_READ_SIZE_BREAK", False) and image_text.size_break(arr, b):
             v = len(blocks) + len(tails)
             tails[v] = i
             hb = lbs[:-1]
@@ -18367,6 +18374,9 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
             lbs_i = lbs_i[:-1]
         if system is None and hasattr(image_text, "read_lines"):
             txt_i, brk_i = image_text.read_lines(item.get("text") or "", lbs_i,
+                                                inks=(image_text.line_inks(arr, lbs_i) if arr is not None
+                                                      and hasattr(image_text, "line_inks") else None),
+                                                align=
                                                 image_text.block_align(blocks[i]))
         else:
             txt_i, brk_i = image_text.read_clean(item.get("text") or ""), []
@@ -25077,6 +25087,40 @@ def _name_like(word: str, every: frozenset, mid: frozenset) -> bool:
 # `IDENT_CHECK=0` — выключить.
 IDENT_CHECK = os.environ.get("IDENT_CHECK", "1") != "0"
 _IDENT_RE = re.compile(r"(?<![\w-])(?:[A-Z]{3,}\d+[A-Z0-9]*|rs\d{3,})(?![\w-])")
+_CURRENCY_SIGNS = "₽$€₸£¥₴₼₾₺₩"
+_MODEL_CODE_RE = re.compile(r"(?<![\w-])[A-Z]{1,4}-?\d{2,}[A-Z0-9]*(?![\w-])")
+_LATIN_NAME_RE = re.compile(r"(?<![\w-])[A-Z][A-Za-z0-9]*(?:[·&.\-][A-Z0-9][A-Za-z0-9]*)*(?![\w-])")
+
+
+def _latin_share(text: str) -> float:
+    """Доля латинских букв среди всех букв текста."""
+    n = c = 0
+    for ch in text:
+        if ch.isalpha():
+            n += 1
+            if ch.isascii():
+                c += 1
+    return c / n if n else 1.0
+
+
+_HOMO_CYR_LAT = str.maketrans("АВЕКМНОРСТХаеорсух", "ABEKMHOPCTXaeopcyx")
+
+
+def _homoglyph_fix(src: str, out: str) -> str:
+    """Ш36: код или название латиницей из оригинала, в переводе набранные
+    буквами-двойниками другого письма («Т200», «РС02»), — назад латиницей,
+    буква в букву, без вызова модели: на экране их не отличить, а поиск
+    и проверки считают их разными строками."""
+    if not src or not out:
+        return out
+    for m in list(_MODEL_CODE_RE.finditer(src)) + list(_IDENT_RE.finditer(src)):
+        t = m.group(0)
+        if t in out:
+            continue
+        for w in set(re.findall(r"[\w·.-]+", out)):
+            if w != t and w.translate(_HOMO_CYR_LAT) == t:
+                out = re.sub(r"(?<![\w-])" + re.escape(w) + r"(?![\w-])", t, out)
+    return out
 
 
 def _ident_misses(seg: dict) -> list:
@@ -25092,7 +25136,29 @@ def _ident_misses(seg: dict) -> list:
         t = m.group(0)
         if len(t) >= 3 and t not in want:
             want.append(t)
+    # Ш36: код модели с цифрой («T200») и название латиницей в оригинале на
+    # другом письме («BANK·ONE» в русском интерфейсе) — неприкосновенны:
+    # критик матрицы нашёл «БАНК·УАН», «银行·一号» и «Т200» с кириллической Т.
+    for m in _MODEL_CODE_RE.finditer(src):
+        t = m.group(0)
+        if len(t) >= 3 and t not in want:
+            want.append(t)
+    whole = _LATIN_NAME_RE.fullmatch(src)
+    if _latin_share(src) < 0.5 or (whole and any(ch in "·&." or ch.isdigit() for ch in src)):
+        # Строка-название целиком («BANK·ONE», «Smart&Co») — тоже имя.
+        for m in _LATIN_NAME_RE.finditer(src):
+            t = m.group(0)
+            if sum(ch.isalpha() for ch in t) >= 2 and t not in want:
+                want.append(t)
+    # Ш36: знак валюты оригинала — в переводе тот же знак (не «сом» вместо ₽,
+    # не «卢布» рядом с суммой).
+    for ch in _CURRENCY_SIGNS:
+        if ch in src and ch not in want:
+            want.append(ch)
     bad = [t for t in want if t not in tgt]
+    # Ш38: поле бланка «______» из оригинала — в переводе тоже поле.
+    if "___" in src and "___" not in tgt:
+        bad.append("______")
     # Ц11б: символ на месте, но рядом — своя «расшифровка» в скобках, которой
     # в оригинале нет: «GATA3（鸟嘌呤—腺嘌呤—胸腺嘧啶—腺嘌呤结合蛋白3）» и
     # «…结合蛋白3（GATA3）» (боевой RU→ZH, после первого ремонта). Признак —
@@ -27758,6 +27824,15 @@ def _run_segment_repair(seg: dict, project: dict, model: Optional[str] = None,
         better = False
         why.append("символов оригинала не перенесено больше "
                    + str(before.get("ident", 0)) + " → " + str(after.get("ident", 0)))
+    # Ш36б: правка не вправе ВНЕСТИ вариант через «/», пояснение в скобках или
+    # слить строки: ремонт подставил совет проверки «Параметрлер/Баптаулар»,
+    # и правку приняли — бесплатные счётчики такой рост не запрещали.
+    for k_, label_ in (("variants", "вариантов через косую черту больше "),
+                       ("addon", "пояснений в скобках сверх оригинала больше "),
+                       ("lines", "строк перевода не столько, сколько в оригинале ")):
+        if after.get(k_, 0) > before.get(k_, 0):
+            better = False
+            why.append(label_ + str(before.get(k_, 0)) + " → " + str(after.get(k_, 0)))
     if after.get("doc", 0) > before.get("doc", 0):
         better = False
         why.append("пар терм-листа документа нарушено больше "

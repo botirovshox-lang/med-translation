@@ -435,7 +435,30 @@ def row_boxes(line_boxes) -> list:
     return out
 
 
-def read_lines(text: str, line_boxes, align: "str | None" = None) -> tuple:
+IMG_BREAK_INK = float(os.environ.get("IMG_BREAK_INK", "90"))   # Ш34: разница цвета краски строк
+
+
+def line_inks(arr, line_boxes) -> list:
+    """Ш34: цвет краски каждой видимой строки (медиана самых тёмных — или
+    самых далёких от фона — точек рамки). None — мерить нечем."""
+    if _np is None or arr is None:
+        return []
+    out = []
+    H, W = arr.shape[:2]
+    for b in row_boxes(line_boxes):
+        x0, y0, x1, y1 = (int(v) for v in b)
+        reg = arr[max(0, y0):min(H, y1), max(0, x0):min(W, x1), :3].reshape(-1, 3).astype(_np.float32)
+        if reg.shape[0] < 20:
+            out.append(None)
+            continue
+        bg = _np.median(reg, axis=0)
+        d = _np.abs(reg - bg).max(axis=1)
+        far = reg[d >= _np.percentile(d, 90)]
+        out.append(tuple(float(v) for v in _np.median(far, axis=0)) if far.shape[0] else None)
+    return out
+
+
+def read_lines(text: str, line_boxes, align: "str | None" = None, inks: "list | None" = None) -> tuple:
     """(текст блока, номера строк, после которых разрыв) — Ш7.
 
     Строки чтения сопоставляются с рамками строк ПО ЧИСЛУ: разошлось — как
@@ -479,7 +502,13 @@ def read_lines(text: str, line_boxes, align: "str | None" = None) -> tuple:
         hyph = a[-1:] in _HYPHENS and b[:1].islower()
         brk = False
         if not hyph:
+            ia = inks[i] if inks and i < len(inks) else None
+            ib = inks[i + 1] if inks and i + 1 < len(inks) else None
             if max(ha, hb) / min(ha, hb) >= IMG_BREAK_SIZE or i in in_run:
+                brk = True
+            elif ia is not None and ib is not None and max(abs(p - q) for p, q in zip(ia, ib)) >= IMG_BREAK_INK:
+                # Ш34: другой цвет краски — другая надпись («ВНИМАНИЕ!» красным над
+                # чёрным текстом таблички): иначе перевод обеих строк брал один цвет.
                 brk = True
             elif " " in a or " " in b:
                 cw = (bb[2] - bb[0]) / max(1, len(b))
@@ -992,6 +1021,19 @@ def _extend_by_ink(arr, out: list) -> None:
             l["box"] = [x0, y0, x1, y1]
             l["extended"] = 1
             boxes[n_] = l["box"]
+
+
+def _cjk_share(text: str) -> float:
+    """Доля знаков иероглифов, каны и хангыля среди букв текста."""
+    n = c = 0
+    for ch in text:
+        if ch.isalpha():
+            n += 1
+            o = ord(ch)
+            if (0x3040 <= o <= 0x30FF or 0x3400 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF
+                    or 0xF900 <= o <= 0xFAFF or 0x20000 <= o <= 0x2FA1F):
+                c += 1
+    return c / n if n else 0.0
 
 
 def _uneven_background(arr) -> bool:
@@ -2409,14 +2451,18 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
     fam = it.get("fam") or ""
     text = it.get("text") or ""
     lbs = it.get("lineBoxes") or []
-    if fam != "hand" and len(lbs) >= 2 and not m["angle"] and not m.get("arc"):
+    cjk_src = _cjk_share(it.get("src") or "") >= 0.3
+    if fam != "hand" and len(lbs) >= 2 and not m["angle"] and not m.get("arc") and not cjk_src:
         # Х1: машинопись — машинописным шрифтом (шаг знака постоянный).
+        # Ш35б: у иероглифов, каны и хангыля шаг постоянный по природе
+        # письма — машинописью их не объявляем.
         sc = tp.mono_score(m["mask"], [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0]
                                        for lb in lbs], len(" ".join((it.get("src") or "").split())))
         if sc is not None and sc >= tp.MONO_COH:
             fam = "type"
-    if fam != "hand" and not m["angle"] and not m.get("arc"):
+    if fam != "hand" and not m["angle"] and not m.get("arc") and not cjk_src:
         # Х9: засечки — по буквам; одна строка без рамок — вся вырезка.
+        # (Ш35б: у иероглифов концевые штрихи — не засечки шрифта.)
         loc = ([[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs]
                if lbs else [[0, 0, rgb.shape[1], rgb.shape[0]]] if rows == 1 else [])
         fam = tp.serif_fam(m["mask"], loc, fam, "")
@@ -2822,8 +2868,27 @@ def _free_rows(pm: dict, others: list, arr, w: int, h: int, step: Optional[float
         reg = arr[max(0, int(t_)):min(h, int(math.ceil(b_))), max(0, int(L)):min(w, int(math.ceil(R)))]
         if tp is None or tp.has_letters(_np.ascontiguousarray(_visible(reg)[..., :3].astype(_np.uint8)), em):
             break
+        # Ш35: линия между текстом и новой строкой (граница ячейки таблицы,
+        # рамка листа) — строки там нет: перевод ушёл бы через линию.
+        gap = arr[max(0, int(last + 0.2 * em)):min(h, int(math.ceil(b_))), max(0, int(L)):min(w, int(math.ceil(R)))]
+        if _hline_in(gap):
+            break
         n += 1
     return n
+
+
+IMG_HLINE_SHARE = 0.6       # Ш35: доля ширины, которую тёмный ряд точек обязан пройти
+
+
+def _hline_in(reg) -> bool:
+    """Есть ли в области горизонтальная линия: ряд точек, тёмный (или
+    светлый на тёмном) поперёк большей части ширины."""
+    if _np is None or reg is None or reg.size == 0 or reg.shape[1] < 8:
+        return False
+    g = _visible(reg)[..., :3].astype(_np.float32).mean(axis=2)
+    med = float(_np.median(g))
+    ink = _np.abs(g - med) > 50
+    return bool((ink.mean(axis=1) >= IMG_HLINE_SHARE).any())
 
 
 def _one_line_grow(pm: dict, pp, draw, others: list, arr, w: int, h: int):

@@ -112,7 +112,7 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # картинкой (`textcount.layer_fragment_pages`);
 # 21 — Ш1–Ш3: куски одной базовой линии — одна строка; конец абзаца —
 # по тому, влезло бы первое слово следующей строки (а не по точке).
-RULES_VERSION = 21
+RULES_VERSION = 22
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -125,6 +125,7 @@ _NUM_LINE_RE = re.compile(
 # Орнамент и мусор распознавания: «* * *», «к к к», «■ ■», «•к к *», «Л ) . — 1 «■».
 _ORNAMENT_CHARS = set("*■□▪▫♦◆●○•◦✦✧✶✷※~^|<>#$&@\\{}¥±§©®")
 _UNDERSCORE_RE = re.compile(r"_{3,}")
+UNDERSCORE_KEEP = os.environ.get("PDF_UNDERSCORE_KEEP", "1") != "0"
 _WS_RE = re.compile(r"[ \t ]+")
 # Имя глифа вместо буквы: у шрифта без таблицы ToUnicode pypdf отдаёт
 # «/uni0056/uni0069…» — «Vi…». Боевой проект 14: «View Online Article»
@@ -370,6 +371,20 @@ def _is_border_line(line: str) -> bool:
     return True
 
 
+def _form_field_after(before: str) -> bool:
+    """Ш38: ряд подчёркиваний — поле бланка, только если перед ним подпись
+    поля: слово от двух букв («Подпись», «Руководитель»), двоеточие или
+    кавычка даты («« »»). После конца фразы («…яд. ______») или одиночной
+    буквы («умаления.Ч ___ У») это мусор распознавателя скана (книга 8)."""
+    b = before.rstrip()
+    if not b:
+        return False
+    if b[-1] in ":«»\"":
+        return True
+    m = re.search(r"(\w+)$", b)
+    return bool(m) and sum(ch.isalpha() for ch in m.group(1)) >= 2
+
+
 def _strip_border_edges(line: str, report: dict) -> str:
     """Кусок рамки, приклеенный распознавателем к строке текста на той же
     высоте: «На заметку ---— хххх» → «На заметку». Снимается только с краёв
@@ -379,6 +394,8 @@ def _strip_border_edges(line: str, report: dict) -> str:
         return line
 
     def rule(t):
+        if UNDERSCORE_KEEP and side == -1 and _form_field_after(" ".join(toks[:-1])) and t                 and len(t) >= 3 and set(t) == {"_"}:
+            return False            # Ш38: «Подпись ______» — поле бланка, не рамка
         return bool(t) and all(c in _RULE_CHARS for c in t) and bool(_RULE_RUN_RE.search(t))
 
     def pattern(t):
@@ -670,6 +687,32 @@ def _math_token(t: str) -> bool:
 _LEADER_LINE_RE = re.compile(r"^[\s.·•…‥_\-–—]{4,}$")
 
 
+def _leader_places(pages: list, geom) -> dict:
+    """Ш40: место отточия на странице ({номер страницы: [[x0, y, x1, кегль, знаков]]}).
+    Текстом оно не идёт (Ш5), но выгрузке нужно: перевод, длиннее
+    оригинала, вправе встать поверх отточия, а отточие рисуется заново от
+    конца перевода до цены. Только из рядов точек и многоточий (черта бланка
+    отточием не считается — её место у поля)."""
+    out: dict = {}
+    for i, lines in enumerate(pages or []):
+        g = (geom[i] if geom and i < len(geom) else None) or {}
+        gl = g.get("lines") if isinstance(g, dict) else None
+        if not gl:
+            continue
+        for t, ln in zip(lines, gl):
+            tt = (t or "").strip()
+            if (not ln or len(tt) < 4 or not _LEADER_LINE_RE.match(tt)
+                    or sum(ch in ".·…‥" for ch in tt) < 0.6 * len(tt.replace(" ", ""))):
+                continue
+            try:
+                out.setdefault(i, []).append([round(float(ln[0]), 2), round(float(ln[1]), 2),
+                                              round(float(ln[3]), 2), round(float(ln[2] or 0), 2),
+                                              len(tt.replace(" ", ""))])
+            except (TypeError, ValueError, IndexError):
+                continue
+    return out
+
+
 def _clean_line(line: str, report: dict):
     """Строка без мусора распознавания либо None, если она вся мусор."""
     # Имена глифов и разрядка — ЗДЕСЬ, после раскладки: части строки
@@ -693,7 +736,16 @@ def _clean_line(line: str, report: dict):
     # «межребер- -»: за переносом слова распознаватель поставил лишнюю
     # черточку, и перенос не склеивался («межребер- ная»).
     line = _HYPHEN_DUP_RE.sub(r"\1", line)
-    s = _UNDERSCORE_RE.sub(" ", line)
+    # Ш38: ряд подчёркиваний ВНУТРИ строки — поле бланка («Руководитель ______
+    # / Орлов /», «Дата « » ____ г.»): оно часть текста и обязано доехать до
+    # перевода — прежде заменялось пробелом, и поле пропадало и из строки,
+    # и с листа (закраска стирала его). Длина — одна на все поля (её задаёт
+    # место на листе, а не число знаков). Строка из одних черт — разметка (Ш5).
+    if UNDERSCORE_KEEP:
+        s = _UNDERSCORE_RE.sub(lambda m: " ______ " if _form_field_after(line[:m.start()]) else " ",
+                               line)
+    else:
+        s = _UNDERSCORE_RE.sub(" ", line)
     if not any(c in _ORNAMENT_CHARS for c in s):
         return s.strip() or None       # нечего снимать — строка как есть (с двойными пробелами)
     # Одиночные знаки мусора между словами («^лучше», ««■») — снимаем
@@ -4410,6 +4462,7 @@ def clean(pages: list, geom: "list | None" = None, force_images: "set | None" = 
     report["imagePages"] = len(unreliable)
     report["paragraphs"] = sum(1 for it in items if it[0] == "p")
     return {"items": items, "imagePages": sorted(unreliable), "report": dict(report),
+            "leaders": _leader_places(pages, geom),
             "layout": layout, "unplaced": unplaced, "pageBoxes": [((g or {}).get("box") if isinstance(g, dict) else None)
                                             for g in geom],
             "heads": sorted(heads | feet | geo_heads | geo_feet)}

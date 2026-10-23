@@ -432,5 +432,10 @@
   "Места из проверки готового файла": "Places from the finished-file check",
   "Файл слишком большой для автоматической проверки — просмотрите его глазами.": "The file is too large for the automatic check — please look through it yourself.",
   "Проверить готовый файл автоматически не удалось — просмотрите его глазами.": "The finished file could not be checked automatically — please look through it yourself.",
-  " Надписи внутри картинок не проверялись.": " Text inside pictures was not checked."
+  " Надписи внутри картинок не проверялись.": " Text inside pictures was not checked.",
+  "перерезана линия, рамка или таблица": "a line, frame or table rule is cut",
+  "стёрта печать, подпись или логотип": "a stamp, signature or logo was erased",
+  "над или под переводом остались следы оригинала": "traces of the original remain above or below the translation",
+  "видна заплатка другого цвета": "a patch of a different colour is visible",
+  "перевод плохо виден на фоне": "the translation is hard to see against the background"
 }

@@ -1529,7 +1529,8 @@
     "https://unicode.org/reports/tr9/"
    ],
    "handled_by": [
-    "Г2"
+    "Г2",
+    "Ш48"
    ],
    "scope": "in",
    "why": "основа — от абзаца (`_bidi_levels`)"
@@ -2433,7 +2434,8 @@
    "handled_by": [
     "Х8",
     "С2",
-    "Ф1"
+    "Ф1",
+    "Ш50"
    ],
    "scope": "in",
    "why": "continuation_mask"

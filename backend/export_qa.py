@@ -31,6 +31,17 @@
   * DUPLICATE — два перевода в одно место (строка слоя и надпись
     с картинки про один и тот же текст);
   * PAGES — число листов разошлось с оригиналом (дальше не сравниваем).
+  Раздел Ы (петля «проверил — переверстал», 23.10.2026):
+  * OVERFLOW — краска перевода на чистой бумаге ВЫШЕ или НИЖЕ ряда своего
+    места (за рамку листа, ячейки, плашки); рост вбок по своей строке —
+    законный (`_free_room`) и сюда не идёт;
+  * RULE_CUT — прямая линия оригинала (таблица, рамка) в выгрузке прервана;
+  * MARK_LOST — цветная краска оригинала вне строк текста (печать, подпись,
+    логотип) исчезла под закраской;
+  * GHOST — над/под стёртой строкой осталась её краска (точки «Ё»,
+    ударения, хвосты букв);
+  * LOW_CONTRAST — перевод почти не отличается от фона под ним, а оригинал
+    отличался (белое на светлом, серое на сером).
 
 Модуль не пишет ни в STATE, ни на диск и не зовёт модель. Всё, что трогает
 pdfium, — под общим замком (`pdfium_gate`), страницы закрываются явно.
@@ -74,7 +85,12 @@ QA_MIX = float(os.environ.get("EXPORT_QA_MIX", "0.2"))          # отклоне
 # друг на друге); 2 — видно с первого взгляда; 1 — заметит верстальщик.
 SEVERITY = {"UNTRANSLATED": 3, "SILENT": 3, "BLANK": 2, "DUPLICATE": 3, "PAGES": 3,
             "OVERPRINT": 2, "SPILL": 2, "RESIDUE": 2, "SMALL": 2, "SIZE_MIX": 1,
-            "NOT_TRANSLATED": 1}
+            "NOT_TRANSLATED": 1, "OVERFLOW": 2, "RULE_CUT": 2, "MARK_LOST": 2,
+            "GHOST": 2, "LOW_CONTRAST": 2}
+QA_RULE_LEN = float(os.environ.get("EXPORT_QA_RULE_LEN", "4"))     # линия — от стольких строк длиной
+QA_CHROMA = int(os.environ.get("EXPORT_QA_CHROMA", "70"))          # «цветная краска»: разброс каналов
+QA_CONTRAST = float(os.environ.get("EXPORT_QA_CONTRAST", "45"))    # перевод против фона, из 255
+QA_NEW_CHECKS = os.environ.get("EXPORT_QA_NEW", "1") != "0"        # раздел Ы — выключатель
 CODES = tuple(SEVERITY)
 
 _WORD_RE = re.compile(r"[^\W\d_][\w'’\-]*[^\W\d_]|[^\W\d_]", re.UNICODE)
@@ -523,8 +539,13 @@ def _inspect_page(A, B, O, oi, i: int, pw: float, ph: float, items: list, lang, 
             txt = " ".join(g[0].strip() for g in group
                            if g[1][0] >= x0 - 3 and g[1][2] <= x1 + 3
                            and g[1][1] >= y0 - 3 and g[1][3] <= y1 + 3)
-            rep["issues"].append({"code": code, "page": i, "box": _frac((x0, y0, x1, y1), W, H),
-                                  "text": " ".join(txt.split())[:120]})
+            row = {"code": code, "page": i, "box": _frac((x0, y0, x1, y1), W, H),
+                   "text": " ".join(txt.split())[:120]}
+            if code == "OVERPRINT":
+                # Чья печать легла на чужой текст — ближайшее место с переводом:
+                # по нему петля (`main._layout_loop`) правит вёрстку.
+                row["near"] = _nearest(item_px, (x0, y0, x1, y1))
+            rep["issues"].append(row)
     # 2. Печать на рисунке, линии, плашке — вне своего места.
     if printed is not None and not dark:
         spill = printed & diff & nonpaper & ~own & ~words_zone & ~lost
@@ -532,6 +553,12 @@ def _inspect_page(A, B, O, oi, i: int, pw: float, ph: float, items: list, lang, 
             rep["issues"].append({"code": "SPILL", "page": i, "box": _frac((x0, y0, x1, y1), W, H),
                                   "area": round(area / max(1.0, lh_med * lh_med), 2),
                                   "near": _nearest(item_px, (x0, y0, x1, y1))})
+    if QA_NEW_CHECKS and not dark:
+        try:
+            _new_checks(a, b, diff, ink_a, printed, own, lost, words_zone, runs, item_px,
+                        lh_med, i, W, H, ph, sc, paper, rep)
+        except Exception as e:          # проверка не роняет приёмку
+            rep.setdefault("skipped", {})["newChecks:%s" % type(e).__name__] = 1
     # 2б. Растровый текст: строки, которых нет в слое (скан, надпись кривыми).
     det = state.get("detect")
     if det is not None and state["detected"] < QA_DETECT_PAGES and not dark:
@@ -623,6 +650,157 @@ def _raster_lines(a, diff, ink_a, own, lost, words_zone, det, i: int, W: int, H:
             if int(still.sum()) >= 2 * h:
                 rep["issues"].append({"code": "RESIDUE", "page": i, "raster": True,
                                       "box": _frac((x0, y0, x1, y1), W, H), "share": round(1 - ch, 2)})
+
+
+def _new_checks(a, b, diff, ink_a, printed, own, lost, words_zone, runs, item_px,
+                lh_med: float, i: int, W: int, H: int, ph: float, sc: float, paper: float,
+                rep: dict) -> None:
+    """Раздел Ы: виды, которых прежняя приёмка не видела — перерезанная
+    линия, стёртая печать, остаток знаков над стёртой строкой, текст
+    за рамкой, перевод цветом фона. Каждая находка — с ключом места
+    (`key`), ближайшего к ней: по ключу петля (`main._layout_loop`) правит
+    вёрстку именно этого места."""
+    import cv2
+    ga = a.astype(np.int16).mean(axis=2)
+    gb = b.astype(np.int16).mean(axis=2)
+    lh = max(2.0, lh_med)
+    area_min = max(6, int(0.15 * lh * lh))
+    # Ядро строк текста оригинала — рамки слов слоя и рамки мест (без поля).
+    core = words_zone.copy()
+    for _it, rects in item_px:
+        for r in rects:
+            core[r[1]:r[3], r[0]:r[2]] = True
+
+    def add(code, mask, min_area, extra=None):
+        for x0, y0, x1, y1, area in _cc(mask, min_area):
+            row = {"code": code, "page": i, "box": _frac((x0, y0, x1, y1), W, H),
+                   "key": _nearest(item_px, (x0, y0, x1, y1))}
+            if extra:
+                row.update(extra)
+            rep["issues"].append(row)
+
+    # RULE_CUT: длинная прямая оригинала, прерванная в выгрузке.
+    L = max(9, int(QA_RULE_LEN * lh))
+    k_h = cv2.getStructuringElement(cv2.MORPH_RECT, (L, 1))
+    k_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, L))
+    ink_b = gb < paper - QA_INK
+    la = cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, k_h) | \
+        cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, k_v)
+    # Линия — ТОНКИЙ штрих: сплошная плашка (белый текст на цветном) тоже
+    # «краска», и её края открытием длинным ядром читались линиями, а белые
+    # буквы перевода — разрывами в ней (36 ложных находок на инфографике).
+    t = max(3, int(0.4 * lh)) | 1
+    fat = cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN,
+                           cv2.getStructuringElement(cv2.MORPH_RECT, (t, t)))
+    fat = cv2.dilate(fat, np.ones((3, 3), np.uint8))
+    la = la & (1 - fat)
+    # И по обе стороны от линии — БУМАГА (не меньше 70% вдоль неё): полоска
+    # плашки между двумя строками белого текста тонкая и длинная, но рядом
+    # с ней буквы, а не бумага (ложные разрывы в заголовке на плашке).
+    pap = (~ink_a).astype(np.float32)
+    d = max(2, t)
+    kh = cv2.getStructuringElement(cv2.MORPH_RECT, (L, 1)).astype(np.float32) / L
+    kv = cv2.getStructuringElement(cv2.MORPH_RECT, (1, L)).astype(np.float32) / L
+    ph_ = cv2.filter2D(pap, -1, kh)
+    pv_ = cv2.filter2D(pap, -1, kv)
+    side_h = (np.roll(ph_, d, axis=0) >= 0.7) & (np.roll(ph_, -d, axis=0) >= 0.7)
+    side_v = (np.roll(pv_, d, axis=1) >= 0.7) & (np.roll(pv_, -d, axis=1) >= 0.7)
+    lh_ = cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, k_h) > 0
+    lv_ = cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, k_v) > 0
+    la = (la > 0) & ((lh_ & side_h) | (lv_ & side_v))
+    # Линия «на месте», если в выгрузке рядом (±1 точка) есть краска.
+    near_b = cv2.dilate(ink_b.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    cut = la & ~near_b & diff
+    if printed is not None:
+        cut &= cv2.dilate(printed.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    add("RULE_CUT", cut, max(4, int(0.5 * lh)))
+    # MARK_LOST: цветная краска вне строк текста исчезла.
+    ai, bi = a.astype(np.int16), b.astype(np.int16)
+    chroma_a = ai.max(axis=2) - ai.min(axis=2)
+    chroma_b = bi.max(axis=2) - bi.min(axis=2)
+    core_g = cv2.dilate(core.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+    # Печать и подпись — ШТРИХИ; сплошная цветная плашка (жёлтая полоса
+    # предупреждения, синяя шапка таблицы) под напечатанным переводом теряет
+    # цвет законно — это буквы перевода, а не стёртая печать.
+    col_a = (chroma_a > QA_CHROMA).astype(np.uint8)
+    fat_c = cv2.dilate(cv2.morphologyEx(col_a, cv2.MORPH_OPEN,
+                                        cv2.getStructuringElement(cv2.MORPH_RECT, (t, t))),
+                       np.ones((3, 3), np.uint8)) > 0
+    lost_mark = (col_a > 0) & ~fat_c & (chroma_b < QA_CHROMA // 3) & diff & ~core_g
+    if printed is not None:
+        lost_mark &= printed
+    # Пороги не замерены на боевых выгрузках — находка «требует
+    # подтверждения» (`verify`): видна в отчёте и платному взгляду, но петлю
+    # и итог приёмки не решает.
+    add("MARK_LOST", lost_mark, area_min, {"verify": True})
+    # OVERFLOW: печать ЗА ПРЕДЕЛАМИ занятого на листе — за рамкой, за полем.
+    # Рост в свободную бумагу внутри листа законен (строка вбок, `_free_room`;
+    # абзац третьей строкой вниз, `below`), а перечёркнутую рамку или линию
+    # называет RULE_CUT. Занятое — рамка всей краски оригинала с запасом
+    # в полстроки (крошки шума — не краска: от площади в четверть строки).
+    if printed is not None:
+        cont = cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        ys, xs = np.nonzero(cont)
+        if len(ys):
+            pad = int(0.5 * lh)
+            inside = np.zeros((H, W), bool)
+            inside[max(0, ys.min() - pad):ys.max() + pad + 1, max(0, xs.min() - pad):xs.max() + pad + 1] = True
+            paper_a = np.abs(ga - paper) < 20
+            spill = printed & diff & paper_a & (np.abs(gb - paper) > QA_INK) & ~inside
+            add("OVERFLOW", spill, max(area_min, int(0.3 * lh * lh)))
+    # GHOST: над/под стёртой строкой осталась её краска.
+    la_any = cv2.dilate((cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, k_h)
+                         | cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, k_v)),
+                        np.ones((3, 3), np.uint8)) > 0
+    g_rows: list = []
+    for txt, x0, y0, x1, y1 in runs:
+        bx = (max(0, int(x0 * sc)), max(0, int((ph - y1) * sc)),
+              min(W, int(x1 * sc) + 1), min(H, int((ph - y0) * sc) + 1))
+        h = bx[3] - bx[1]
+        if h < 3 or bx[2] - bx[0] < 3:
+            continue
+        inner = diff[bx[1]:bx[3], bx[0]:bx[2]] & ink_a[bx[1]:bx[3], bx[0]:bx[2]]
+        n_ink = int(ink_a[bx[1]:bx[3], bx[0]:bx[2]].sum())
+        if n_ink < 6 or float(inner.sum()) / n_ink < 0.5:
+            continue                    # строку не стирали — её знаки на месте законно
+        reach = max(2, int(0.4 * h))
+        for ya, yb, ca, cb in ((max(0, bx[1] - reach), bx[1], max(0, bx[1] - 2 * reach), max(0, bx[1] - reach)),
+                               (bx[3], min(H, bx[3] + reach), min(H, bx[3] + reach), min(H, bx[3] + 2 * reach))):
+            if yb - ya < 1:
+                continue
+            band_a = ink_a[ya:yb, bx[0]:bx[2]]
+            # Линия таблицы под строкой — не остаток буквы.
+            same = (band_a & ~diff[ya:yb, bx[0]:bx[2]] & ink_b[ya:yb, bx[0]:bx[2]]
+                    & ~(la_any[ya:yb, bx[0]:bx[2]]))
+            if int(same.sum()) < 3 or float(band_a.mean()) > 0.2:
+                continue
+            if cb > ca and ink_a[ca:cb, bx[0]:bx[2]].any():
+                continue                # над «знаками» ещё краска — это соседняя строка
+            # Своя печать перевода в полосе — не остаток.
+            if printed is not None and float(printed[ya:yb, bx[0]:bx[2]][same].mean()) > 0.5:
+                continue
+            g_rows.append((bx[0], ya, bx[2], yb))
+    for x0, y0, x1, y1 in g_rows:
+        rep["issues"].append({"code": "GHOST", "page": i, "box": _frac((x0, y0, x1, y1), W, H),
+                              "key": _nearest(item_px, (x0, y0, x1, y1)), "verify": True})
+    # LOW_CONTRAST: перевод цветом фона.
+    for it, rects in item_px:
+        r = _union(rects)
+        if (r[2] - r[0]) * (r[3] - r[1]) < 20:
+            continue
+        def contrast(px):
+            # По самой краске, а не по процентилям рамки: у короткой строки
+            # в крупной рамке краски меньше 5% площади.
+            med = float(np.median(px))
+            far = np.abs(px - med)
+            ink = far[far > 12]
+            return float(np.median(ink)) if ink.size >= 8 else None
+        ca = contrast(ga[r[1]:r[3], r[0]:r[2]])
+        cb_ = contrast(gb[r[1]:r[3], r[0]:r[2]])
+        if (ca is not None and cb_ is not None and ca >= 2 * QA_CONTRAST and cb_ < QA_CONTRAST
+                and int(diff[r[1]:r[3], r[0]:r[2]].sum()) > 0):
+            rep["issues"].append({"code": "LOW_CONTRAST", "page": i, "key": it["key"],
+                                  "box": _frac(r, W, H), "contrast": round(cb_, 1), "verify": True})
 
 
 def _vlen(text: str) -> float:
@@ -729,7 +907,14 @@ def summary(rep: dict) -> dict:
 QA_VISION_PAGES = int(os.environ.get("EXPORT_QA_VISION_PAGES", "6"))
 QA_VISION_PX = int(os.environ.get("EXPORT_QA_VISION_PX", "1600"))    # длинная сторона пары
 VISION_CODES = ("UNTRANSLATED", "MISSING", "FRAGMENT", "DUPLICATE", "OVERLAP", "OVERFLOW",
-                "SIZE", "FONT", "ALIGN", "MERGED", "ERASE", "SYMBOL", "BLUR", "READ")
+                "SIZE", "FONT", "ALIGN", "MERGED", "ERASE", "SYMBOL", "BLUR", "READ",
+                # Раздел Ы: то, что правила видят не всегда, — модели словами.
+                "RULE_CUT", "MARK_LOST", "GHOST", "PATCH", "CONTRAST")
+# Код модели → правка места для следующей сборки (`main._layout_loop`):
+# модель ПОДСКАЗЫВАЕТ, а решает пиксельная приёмка — сборка с подсказками
+# берётся, только если она не хуже сборки без них.
+VISION_TUNE = {"OVERFLOW": "tight", "OVERLAP": "tight", "MERGED": "solo",
+               "FRAGMENT": "solo", "ERASE": "erase", "GHOST": "erase"}
 
 
 def vision_pages(rep: dict, limit: int = 0) -> list:
@@ -772,7 +957,7 @@ def vision_pair(orig: bytes, out: bytes, page: int, issues: list) -> "tuple | No
         if it.get("page") != page or not bx:
             continue
         n = len(marks) + 1
-        marks.append({"n": n, "code": it["code"], "box": bx})
+        marks.append({"n": n, "code": it["code"], "box": bx, "key": it.get("key") or it.get("near")})
         for off in (0, W + 12):
             r = (off + bx[0] * W - 3, bx[1] * H - 3, off + bx[2] * W + 3, bx[3] * H + 3)
             d.rectangle(r, outline=(255, 0, 0), width=2)
@@ -790,7 +975,11 @@ def vision_prompt(src: str, tgt: str, marks: list) -> str:
              "(source language %s, target language %s). The translation must replace the original "
              "text 1:1: same place, size, typeface, weight, colour, alignment, nothing outside its "
              "box, plate or page, nothing overlapping, nothing left in the source language "
-             "(except names, numbers, formulas, references), nothing lost, no erase stains, sharp."
+             "(except names, numbers, formulas, references), nothing lost, no erase stains, sharp. "
+             "Lines, frames, table rules, stamps, signatures and logos of the original must stay "
+             "intact (RULE_CUT, MARK_LOST); no leftovers of the original glyphs such as dots or "
+             "accents (GHOST); no visible background patch of a different colour (PATCH); the "
+             "translation must contrast with its background like the original (CONTRAST)."
              % (src or "?", tgt or "?")]
     if marks:
         lines.append("Red numbered boxes mark places that automatic checks flagged:")
@@ -803,6 +992,35 @@ def vision_prompt(src: str, tgt: str, marks: list) -> str:
                  '"extra": [{"code": "SIZE", "box": [x0, y0, x1, y1], "what": "short note"}]} '
                  "where box is in fractions (0..1) of the RIGHT half page. No other text.")
     return "\n".join(lines)
+
+
+def nearest_key(orig: bytes, layout: dict, texts: dict, extra: "list | None",
+                sources: "dict | None", page: int, box: list) -> "str | None":
+    """Ключ места с переводом, ближайшего к рамке (доли листа) — у находок
+    модели ключа нет, а правке нужно место."""
+    if not box:
+        return None
+    try:
+        A = _Doc(orig)
+        try:
+            pw, ph, _r = A.info(page)
+        finally:
+            A.close()
+    except Exception:
+        return None
+    cx, cy = (box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0
+    best, bd = None, None
+    for it in printed_items(layout or {}, texts or {}, extra, sources):
+        if it["page"] != page or not (it["text"] or "").strip():
+            continue
+        for b in it["boxes"]:
+            for r in _line_rects(b, pw, ph):
+                dx = max(r[0] - cx, 0, cx - r[2])
+                dy = max(r[1] - cy, 0, cy - r[3])
+                d = dx * dx + dy * dy
+                if bd is None or d < bd:
+                    best, bd = it["key"], d
+    return best
 
 
 def vision_parse(text: str, marks: list) -> dict:

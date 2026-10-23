@@ -272,6 +272,404 @@
    "export": "pdf",
    "hard": false,
    "what": "RU → KY: меню: отточия, цены, наклонный текст, цветной фон"
+  },
+  {
+   "id": "L04_infographic_ar",
+   "file": "L04_infographic_ar.pdf",
+   "src": "RU",
+   "tgt": "AR",
+   "export": "pdf",
+   "hard": false,
+   "what": "RU → AR: белый текст на цветных плашках, стрелки, значок"
+  },
+  {
+   "id": "L03_invoice_kk",
+   "file": "L03_invoice_kk.pdf",
+   "src": "RU",
+   "tgt": "KK",
+   "export": "pdf",
+   "hard": false,
+   "what": "RU → KK: счёт: таблица с линиями, цифры вправо, логотип, печать"
+  },
+  {
+   "id": "L31_de_notice_ru",
+   "file": "L31_de_notice_ru.pdf",
+   "src": "DE",
+   "tgt": "RU",
+   "export": "pdf",
+   "hard": false,
+   "what": "DE → RU: DE→: уведомление, таблица, составные слова, ß/умлауты"
+  },
+  {
+   "id": "07_form",
+   "file": "07_form.pdf",
+   "src": "RU",
+   "tgt": "EN",
+   "export": "pdf",
+   "hard": false,
+   "what": "бланк: подписи полей, линии, флажки"
+  },
+  {
+   "id": "01_newspaper",
+   "file": "01_newspaper.pdf",
+   "src": "RU",
+   "tgt": "EN",
+   "export": "pdf",
+   "hard": false,
+   "what": "3 колонки, буквица, цитата, подпись к фото"
+  },
+  {
+   "id": "10_en_guide_zh",
+   "file": "10_en_guide_zh.pdf",
+   "src": "EN",
+   "tgt": "ZH",
+   "export": "pdf",
+   "hard": false,
+   "what": "EN→ZH: шаги с кружками, таблица, плашка"
+  }
+ ],
+ "L04_infographic_ar": [
+  {
+   "src": "Как правильно мыть руки",
+   "tgt": "كيفية غسل اليدين بشكل صحيح"
+  },
+  {
+   "src": "Смочите руки тёплой водой",
+   "tgt": "بلّلوا أيديكم بالماء الدافئ"
+  },
+  {
+   "src": "Нанесите мыло на ладони",
+   "tgt": "ضع الصابون على راحتي يديك"
+  },
+  {
+   "src": "Трите не меньше",
+   "tgt": "افركوا لمدة لا تقل عن"
+  },
+  {
+   "src": "20 секунд",
+   "tgt": "20 ثانية"
+  },
+  {
+   "src": "Промойте между пальцами",
+   "tgt": "اغسلوا ما بين الأصابع"
+  },
+  {
+   "src": "Смойте пену проточной водой",
+   "tgt": "اشطفوا الرغوة بالماء الجاري"
+  },
+  {
+   "src": "Вытрите руки чистым полотенцем",
+   "tgt": "جففوا أيديكم بمنشفة نظيفة"
+  },
+  {
+   "src": "20 сек",
+   "tgt": "20 ثانية"
+  },
+  {
+   "src": "Мойте руки перед едой, после улицы и после контакта с животными.",
+   "tgt": "اغسلوا أيديكم قبل الأكل، وبعد الخروج إلى الخارج وبعد ملامسة الحيوانات."
+  }
+ ],
+ "L03_invoice_kk": [
+  {
+   "src": "ООО «Северный ветер»",
+   "tgt": "ЖШС «Северный ветер»"
+  },
+  {
+   "src": "СВ",
+   "tgt": "СВ"
+  },
+  {
+   "src": "ИНН 7701234567 · г. Москва, Ленинский пр., 42",
+   "tgt": "СТН 7701234567 · Мәскеу қ., Ленин даңғ., 42"
+  },
+  {
+   "src": "СЧЁТ № 148 от 12 октября 2026 г.",
+   "tgt": "2026 ж. 12 қазандағы № 148 ШОТ"
+  },
+  {
+   "src": "Покупатель: ИП Каримов А. Б., г. Ташкент, ул. Навои, 15",
+   "tgt": "Сатып алушы: ЖК Кәрімов А. Б., Ташкент қ., Науаи көшесі, 15"
+  },
+  {
+   "src": "Наименование товара",
+   "tgt": "Тауар атауы"
+  },
+  {
+   "src": "Кол-во",
+   "tgt": "Саны"
+  },
+  {
+   "src": "Ед.",
+   "tgt": "Өлш. бірл."
+  },
+  {
+   "src": "Цена",
+   "tgt": "Бағасы"
+  },
+  {
+   "src": "Сумма",
+   "tgt": "Сомасы"
+  },
+  {
+   "src": "Бумага офисная А4, 500 листов",
+   "tgt": "Кеңселік А4 қағазы, 500 парақ"
+  },
+  {
+   "src": "уп.",
+   "tgt": "қапт."
+  },
+  {
+   "src": "Картридж для принтера, чёрный",
+   "tgt": "Принтерге арналған картридж, қара түсті"
+  },
+  {
+   "src": "шт.",
+   "tgt": "дана"
+  },
+  {
+   "src": "Папка-регистратор, 75 мм",
+   "tgt": "Тіркеуіш бума, 75 мм"
+  },
+  {
+   "src": "шт.",
+   "tgt": "дана"
+  },
+  {
+   "src": "Доставка по городу",
+   "tgt": "Қала бойынша жеткізу"
+  },
+  {
+   "src": "усл.",
+   "tgt": "шартты"
+  },
+  {
+   "src": "Итого к оплате: 18 380,00 руб.",
+   "tgt": "Төлеуге барлығы: 18 380,00 руб."
+  },
+  {
+   "src": "Восемнадцать тысяч триста восемьдесят рублей 00 копеек",
+   "tgt": "Он сегіз мың үш жүз сексен рубль 00 тиын"
+  },
+  {
+   "src": "ДЛЯ СЧЕТОВ",
+   "tgt": "ШОТТАР ҮШІН"
+  },
+  {
+   "src": "Руководитель / Орлов В. С. /",
+   "tgt": "Басшы / Орлов В. С. /"
+  }
+ ],
+ "L31_de_notice_ru": [
+  {
+   "src": "Mitteilung an alle Mieterinnen und Mieter",
+   "tgt": "Уведомление для всех жильцов"
+  },
+  {
+   "src": "Sehr geehrte Damen und Herren, wegen der Erneuerung der Heizungsanlage wird die Warmwasserversorgung im Gebäude Lindenstraße 14 vorübergehend unterbrochen. Wir bitten um Ihr Verständnis.",
+   "tgt": "Уважаемые дамы и господа, в связи с обновлением системы отопления подача горячей воды в здании по адресу Линденштрассе 14 будет временно прекращена. Просим отнестись с пониманием."
+  },
+  {
+   "src": "Datum",
+   "tgt": "Дата"
+  },
+  {
+   "src": "Uhrzeit",
+   "tgt": "Время"
+  },
+  {
+   "src": "Betroffene Wohnungen",
+   "tgt": "Затронутые квартиры"
+  },
+  {
+   "src": "Mo., 3. November",
+   "tgt": "Пн., 3 ноября"
+  },
+  {
+   "src": "Di., 4. November",
+   "tgt": "Вт., 4 ноября"
+  },
+  {
+   "src": "Mi., 5. November",
+   "tgt": "Ср., 5 ноября"
+  },
+  {
+   "src": "alle",
+   "tgt": "все"
+  },
+  {
+   "src": "Bei Fragen wenden Sie sich bitte an die Hausverwaltung: Tel. 030 245 67 80, Montag bis Freitag von 9 bis 17 Uhr.",
+   "tgt": "По вопросам обращайтесь, пожалуйста, в управляющую компанию: тел. 030 245 67 80, с понедельника по пятницу с 9 до 17 часов."
+  },
+  {
+   "src": "Ihre Hausverwaltung Grünwald GmbH",
+   "tgt": "С уважением, ваша управляющая компания ООО «Грюнвальд»"
+  }
+ ],
+ "07_form": [
+  {
+   "src": "ЗАЯВЛЕНИЕ НА ПОЛУЧЕНИЕ ПРОПУСКА",
+   "tgt": "APPLICATION FOR A PASS"
+  },
+  {
+   "src": "Фамилия, имя, отчество:",
+   "tgt": "Last name, first name, patronymic:"
+  },
+  {
+   "src": "Дата рождения:",
+   "tgt": "Date of birth:"
+  },
+  {
+   "src": "Должность:",
+   "tgt": "Position:"
+  },
+  {
+   "src": "Отдел:",
+   "tgt": "Department:"
+  },
+  {
+   "src": "Номер телефона:",
+   "tgt": "Telephone number:"
+  },
+  {
+   "src": "Срок действия пропуска:",
+   "tgt": "Pass validity period:"
+  },
+  {
+   "src": "Вид пропуска (отметьте):",
+   "tgt": "Pass type (tick):"
+  },
+  {
+   "src": "Постоянный пропуск",
+   "tgt": "Permanent pass"
+  },
+  {
+   "src": "Временный пропуск",
+   "tgt": "Temporary pass"
+  },
+  {
+   "src": "Пропуск для автомобиля",
+   "tgt": "Vehicle pass"
+  },
+  {
+   "src": "Подпись заявителя Дата « » 20__ г.",
+   "tgt": "Applicant’s signature Date “ ” 20__"
+  },
+  {
+   "src": "Форма П-2 · утверждена приказом от 01.02.2025 № 14",
+   "tgt": "Form P-2 · approved by Order No. 14 dated 01.02.2025"
+  }
+ ],
+ "01_newspaper": [
+  {
+   "src": "ГОРОДСКИЕ НОВОСТИ",
+   "tgt": "CITY NEWS"
+  },
+  {
+   "src": "Пятница, 23 октября 2026 · № 204",
+   "tgt": "Friday, 23 October 2026 · No. 204"
+  },
+  {
+   "src": "Город переходит на электробусы",
+   "tgt": "City switches to electric buses"
+  },
+  {
+   "src": "С первого марта на маршруты выйдут сорок новых электробусов. Мэрия обещает, что стоимость проезда не изменится.",
+   "tgt": "From the first of March, forty new electric buses will enter service. The city administration promises that fares will not change."
+  },
+  {
+   "src": "Первые машины уже прошли испытания на северных линиях. Водители отмечают, что электробус разгоняется плавнее дизельного автобуса, а в салоне заметно тише. Зарядные станции построены на трёх конечных остановках, полная зарядка занимает около четырёх часов.",
+   "tgt": "The first vehicles have already undergone testing on the northern routes. Drivers note that the electric bus accelerates more smoothly than a diesel bus, and the interior is noticeably quieter. Charging stations have been built at three terminus stops, and a full charge takes about four hours."
+  },
+  {
+   "src": "По расчётам транспортного управления, город сэкономит на топливе до двенадцати миллионов рублей в год. Часть средств пойдёт на ремонт остановочных павильонов и установку электронных табло с расписанием.",
+   "tgt": "According to the transport authority's estimates, the city will save up to twelve million roubles a year on fuel. Part of the funds will go towards repairing bus shelters and installing electronic timetable displays."
+  },
+  {
+   "src": "«Тишина в салоне — первое, что замечают пассажиры»",
+   "tgt": "“The quiet inside the vehicle is the first thing passengers notice”"
+  },
+  {
+   "src": "Жители спальных районов просят продлить работу ночных маршрутов. В управлении ответили, что вопрос рассмотрят после первого квартала, когда будут готовы данные о пассажиропотоке.",
+   "tgt": "Residents of outlying neighbourhoods are asking for night routes to operate longer. The department replied that the issue would be considered after the first quarter, when passenger traffic data are available."
+  },
+  {
+   "src": "Новый электробус на испытаниях. Фото пресс-службы мэрии.",
+   "tgt": "New electric bus undergoing testing. Photo courtesy of the mayor’s press office."
+  }
+ ],
+ "10_en_guide_zh": [
+  {
+   "src": "Quick Start Guide: Smart Thermostat T200",
+   "tgt": "快速入门指南：智能恒温器 T200"
+  },
+  {
+   "src": "Turn off the power at the circuit breaker before installation.",
+   "tgt": "安装前，请在断路器处关闭电源。"
+  },
+  {
+   "src": "Remove the old thermostat and label each wire with the stickers provided.",
+   "tgt": "拆下旧恒温器，并用随附的标签贴纸标记每根电线。"
+  },
+  {
+   "src": "Mount the base plate and connect the wires to the matching terminals.",
+   "tgt": "安装底板，并将电线连接到相应的端子。"
+  },
+  {
+   "src": "Attach the display, restore power and follow the on-screen setup.",
+   "tgt": "安装显示屏，恢复供电并按照屏幕上的设置步骤操作。"
+  },
+  {
+   "src": "Mode",
+   "tgt": "模式"
+  },
+  {
+   "src": "Range",
+   "tgt": "范围(温度调节范围)"
+  },
+  {
+   "src": "Default",
+   "tgt": "默认"
+  },
+  {
+   "src": "Heating",
+   "tgt": "供暖"
+  },
+  {
+   "src": "5–30 °C",
+   "tgt": "5–30 °C"
+  },
+  {
+   "src": "21 °C",
+   "tgt": "21 °C"
+  },
+  {
+   "src": "Cooling",
+   "tgt": "制冷"
+  },
+  {
+   "src": "16–32 °C",
+   "tgt": "16–32 °C"
+  },
+  {
+   "src": "24 °C",
+   "tgt": "24 °C"
+  },
+  {
+   "src": "Eco",
+   "tgt": "节能模式"
+  },
+  {
+   "src": "10–28 °C",
+   "tgt": "10–28 °C"
+  },
+  {
+   "src": "18 °C",
+   "tgt": "18 °C"
+  },
+  {
+   "src": "Warning: do not install near a heat source or in direct sunlight.",
+   "tgt": "警告：请勿安装在热源附近或阳光直射处。"
   }
  ]
 }

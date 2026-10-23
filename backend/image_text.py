@@ -3352,6 +3352,86 @@ def _plate_bg(arr, box, lh: float, k: int):
     return Image.fromarray(bg)
 
 
+IMG_RESTORE = os.environ.get("IMG_RESTORE", "1") != "0"   # Ш45 у картинок
+IMG_RESTORE_DIFF = 40           # «изменилось»: разница каналов, из 255
+IMG_RESTORE_FILL = 50           # «не цвет заплатки»: разница с её цветом
+
+
+def _restore_structures(big, orig_big, regions: list) -> int:
+    """Ш45 у картинок: то, что стирание и заплатка задели ЗРЯ, — обратно,
+    ДО печати перевода. Прежде заплатка таблички стирала её чёрную рамку
+    и выезжала за край плашки на зелёный фон (выщербина), а стирание
+    подписи уведомления уносило полкольца красной печати.
+
+    В области блока (рамка с полем) пиксель возвращается из оригинала, если
+    он ИЗМЕНИЛСЯ, лежит ВНЕ строк текста (ядро — рамки строк, с запасом),
+    его цвет в оригинале НЕ похож на цвет заплатки — и он часть фигуры,
+    уходящей ЗА край области (линия рамки, кольцо печати, фон за краем
+    плашки). Точка «Ё» и хвост буквы целиком лежат внутри — не возвращаются,
+    буквы ядра не возвращаются никогда. `regions` — [(область, [рамки
+    строк], высота строки)] в точках увеличенной картинки. Возвращает число
+    возвращённых точек."""
+    if not IMG_RESTORE or _np is None or not regions:
+        return 0
+    try:
+        import cv2
+    except Exception:
+        return 0
+    A = _np.asarray(orig_big.convert("RGB")).astype(_np.int16)
+    B = _np.asarray(big.convert("RGB")).copy()
+    Bi = B.astype(_np.int16)
+    H, W = A.shape[:2]
+    total = 0
+    for R, cores, lh in regions:
+        x0, y0, x1, y1 = [int(round(v)) for v in R]
+        m = max(4, int(0.6 * lh))
+        X0, Y0, X1, Y1 = max(0, x0 - m), max(0, y0 - m), min(W, x1 + m), min(H, y1 + m)
+        x0, y0, x1, y1 = max(X0, x0), max(Y0, y0), min(X1, x1), min(Y1, y1)
+        if x1 - x0 < 3 or y1 - y0 < 3:
+            continue
+        a, b = A[Y0:Y1, X0:X1], Bi[Y0:Y1, X0:X1]
+        inside = _np.zeros(a.shape[:2], bool)
+        inside[y0 - Y0:y1 - Y0, x0 - X0:x1 - X0] = True
+        core = _np.zeros(a.shape[:2], bool)
+        g = max(1, int(0.15 * lh))
+        for c_ in cores or []:
+            cx0, cy0, cx1, cy1 = [int(round(v)) for v in c_[:4]]
+            core[max(0, cy0 - g - Y0):max(0, cy1 + g - Y0), max(0, cx0 - g - X0):max(0, cx1 + g - X0)] = True
+        changed = _np.abs(a - b).max(axis=2) > IMG_RESTORE_DIFF
+        ring = inside & ~core
+        if not (changed & ring).any():
+            continue
+        fill = _np.median(b[ring & changed], axis=0)
+        foreign = _np.abs(a - fill[None, None, :]).max(axis=2) > IMG_RESTORE_FILL
+        n, lab = cv2.connectedComponents(foreign.astype(_np.uint8), connectivity=8)
+        if n <= 1:
+            continue
+        out_lab = set(_np.unique(lab[foreign & ~inside]).tolist()) - {0}
+        if not out_lab:
+            continue
+        keep = _np.isin(lab, list(out_lab))
+        rest = keep & ring & changed
+        # Прямая линия (черта рамки, линия таблицы) возвращается и ВНУТРИ
+        # строк: детектор берёт черту рядом с текстом в рамку строки, а буква
+        # прямым штрихом длиннее строки не бывает. Перевод ляжет поверх.
+        L = max(9, int(lh))
+        fu = foreign.astype(_np.uint8)
+        line = (cv2.morphologyEx(fu, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (L, 1)))
+                | cv2.morphologyEx(fu, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, L)))) > 0
+        rest |= keep & line & inside & core & changed
+        cnt = int(rest.sum())
+        if cnt:
+            sub = B[Y0:Y1, X0:X1]
+            sub[rest] = a[rest].astype(_np.uint8)
+            total += cnt
+    if total:
+        im2 = Image.fromarray(B)
+        if big.mode == "RGBA":
+            im2 = im2.convert("RGBA")
+        big.paste(im2, (0, 0))
+    return total
+
+
 def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = None) -> tuple:
     """Стереть исходные надписи и написать перевод — см. `_render_target`.
     Стирание нейросетью (Ф9) идёт под потолком времени на всю картинку:
@@ -3409,6 +3489,7 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
     if any(_pf().pre_reform(x.get("src") or "") for x in items):
         items = [dict(x, era="old") for x in items]
     big = im.resize((w * k, h * k), Image.LANCZOS) if k > 1 else im.copy()
+    orig_big = big.copy() if IMG_RESTORE else None         # Ш45: что было до стирания
     draw = ImageDraw.Draw(big)
     n = len(items)
     report: list = [None] * n
@@ -3653,6 +3734,21 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
             big.paste(bg, (int(p["sbox"][0]), int(p["sbox"][1])))
         else:
             draw.rectangle(p["sbox"], fill=p["fill"])
+    if orig_big is not None:
+        regs = []
+        for p in plan:
+            it_ = items[p["i"]]
+            lb_ = [[v * k for v in lb[:4]] for lb in (it_.get("lineBoxes") or []) if lb and len(lb) >= 4]
+            regs.append((p["sbox"], lb_ or [p["sbox"]], float(it_.get("lineH") or 0) * k or 12.0))
+        for p in paint:
+            it_ = items[p["i"]]
+            pb_ = [v * k for v in p["pbox"]]
+            lb_ = [[v * k for v in lb[:4]] for lb in (it_.get("lineBoxes") or []) if lb and len(lb) >= 4]
+            regs.append((pb_, lb_ or [[v * k for v in (it_.get("box") or p["pbox"])]],
+                         float(it_.get("lineH") or 0) * k or 12.0))
+        n_back = _restore_structures(big, orig_big, regs)
+        if n_back and report:
+            report[0]["restored"] = n_back
     for p in plan:
         sbox, bw = p["sbox"], p["sbox"][2] - p["sbox"][0]
         ink = p["ink"] + (255,) if big.mode == "RGBA" else p["ink"]

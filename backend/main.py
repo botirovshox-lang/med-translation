@@ -909,7 +909,7 @@ def _delete_project_record(pid: int) -> None:
     if gone is not None and gone.get("media"):
         shutil.rmtree(str(MEDIA_DIR / str(int(pid))), ignore_errors=True)
     for path in (list(_source_paths(pid)) + list(SOURCE_DIR.glob("%d.orig.*" % pid))
-                 + list(SOURCE_DIR.glob("%d.full.*" % pid))):
+                 + list(SOURCE_DIR.glob("%d.full.*" % pid)) + [_tune_path(pid)]):
         try:
             path.unlink(missing_ok=True)
         except OSError as e:
@@ -4406,6 +4406,11 @@ def _translate_system(src: str, tgt: str, gloss_hits: list, tm_context: dict,
         "   actually uses for that term; keep it unchanged only if both languages write it\n"
         f"   the same way; if {tgt} has no accepted abbreviation, spell the term out. NEVER\n"
         "   render a source abbreviation letter by letter in the target script.\n"
+        # Ш51: сокращение с точкой («Ед.», «усл.», «шт.», «тел.») стоит в узкой
+        # ячейке или подписи; развёрнутое в слова («conventional units») оно
+        # ужимается кеглем вдвое (живая проверка 23.10.2026).
+        f"   A word shortened with a period (unit, label, table header) stays SHORT: use the\n"
+        f"   shortened form {tgt} uses (or the shortest natural word), never spell it out.\n"
         # Ц11: символ гена, белка, варианта, кода (латиница с цифрой) —
         # не аббревиатура для перевода: китайский перевод статьи расшифровал
         # «GATA3» нуклеотидами («鸟嘌呤—腺嘌呤—胸腺嘧啶—腺嘌呤结合蛋白3»),
@@ -37000,10 +37005,7 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     sources = {int(idx): " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
                for idx, sids in _para_groups(data)}
     try:
-        pdf, stats = layout_pdf_mod.build(work, layout, texts,
-                                          extra=extra,
-                                          lang=project.get("tgt"), sources=sources,
-                                          keep_overlay=export_qa_mod is not None)
+        pdf, stats, layout, extra = _layout_loop(project, work, layout, texts, extra, sources)
     except layout_pdf_mod.NotAvailable as e:
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "
                                  "Доступен Word-документ и PDF из него" % e)
@@ -37061,6 +37063,260 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     except Exception as e:
         print("[backend] проверка остатков оригинала не прошла: %s" % e, file=sys.stderr)
     return dict(stats, original="pdf", layout=True)
+
+
+# ─── Петля «проверил — переверстал» (раздел Ы, docs/rules/pdf-reading.md) ──
+# Сборка PDF «как в оригинале» — одна раскладка по правилам, а приёмка
+# (`export_qa`) видит, что вышло на листе. Петля связывает их: собрал →
+# посмотрел по пикселям → у мест с находками правка («шире», «теснее»,
+# «отдельно», «стирать шире») → собрал снова → взял лучшее. Законы (критик
+# 23.10.2026):
+#  * ДЕТЕРМИНИЗМ: бюджет — в страницах и попытках, а не в секундах; приёмка
+#    в петле без детектора строк и без потолка времени. Секунды — только
+#    аварийный выход: превысили — отдаём ПЕРВУЮ сборку (`aborted`);
+#  * пересборка принимается, только если тяжёлых находок СТРОГО меньше
+#    и не появилось новых видов (размен OVERFLOW на SMALL — не работа);
+#  * у места правки взаимоисключающие: «теснее» после «шире» не назначается;
+#  * только короткие документы (`LAYOUT_LOOP_MAX_PAGES`): книга на единственном
+#    воркере — минуты, там работают правила;
+#  * денег не тратит: вызовов модели в петле нет.
+LAYOUT_LOOP = os.environ.get("LAYOUT_LOOP", "1") != "0"
+LAYOUT_LOOP_TRIES = int(os.environ.get("LAYOUT_LOOP_TRIES", "2"))
+LAYOUT_LOOP_MAX_PAGES = int(os.environ.get("LAYOUT_LOOP_MAX_PAGES", "12"))
+LAYOUT_LOOP_TIME = float(os.environ.get("LAYOUT_LOOP_TIME", "90"))
+# Код находки → правка места: сперва первая, не помогла — вторая.
+LOOP_ACTIONS = {"OVERFLOW": ("tight", "solo"), "SMALL": ("wide", "solo"),
+                "SPILL": ("tight", "solo"), "OVERPRINT": ("tight", "solo"),
+                "BLANK": ("solo",), "SILENT": ("solo",), "GHOST": ("erase",),
+                "RESIDUE": ("erase",)}
+_LOOP_EXCLUSIVE = {"wide": "tight", "tight": "wide"}
+
+
+def _tune_path(pid: int) -> Path:
+    """Подсказки модели к вёрстке (Ы3): свой файл рядом с исходником, а не
+    карта: её пишут импорт и разбор картинок, а подсказки — фоновый поток
+    приёмки; два писателя одного файла теряли бы работу друг друга."""
+    return SOURCE_DIR / ("%d.tune.json" % int(pid))
+
+
+def _tune_hash(text: str) -> str:
+    return hashlib.sha1((text or "").encode("utf-8")).hexdigest()[:12]
+
+
+def _tune_hints(pid: int, texts: dict, extra: list) -> dict:
+    """Подсказки модели, ещё верные: текст места тот же, что при взгляде."""
+    try:
+        data = json.loads(_tune_path(pid).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    out = {}
+    for key, h in (data.get("places") or {}).items():
+        if key.startswith("p"):
+            try:
+                t = texts.get(int(key[1:]))
+            except ValueError:
+                continue
+        else:
+            try:
+                t = (extra[int(key[1:])] or {}).get("text")
+            except (ValueError, IndexError):
+                continue
+        if t is not None and _tune_hash(t) == h.get("h") and h.get("tune"):
+            out[key] = dict(h["tune"])
+    return out
+
+
+def _tune_hints_save(pid: int, inp: dict, vis: dict) -> int:
+    """Ы3: находки модели → правки мест для следующей выгрузки. Пишет
+    только то, что можно привязать к месту и у чего есть правка."""
+    texts, extra = inp.get("texts") or {}, inp.get("extra") or []
+    places: dict = {}
+    for it in (vis or {}).get("issues") or []:
+        act = export_qa_mod.VISION_TUNE.get(it.get("code"))
+        if not act or not it.get("real") or it.get("page") is None:
+            continue
+        key = it.get("key") or export_qa_mod.nearest_key(
+            inp["work"], inp.get("layout") or {}, texts, extra, inp.get("sources"),
+            int(it["page"]), it.get("box"))
+        if not key:
+            continue
+        if key.startswith("p"):
+            try:
+                t = texts.get(int(key[1:]))
+            except ValueError:
+                continue
+        else:
+            try:
+                t = (extra[int(key[1:])] or {}).get("text")
+            except (ValueError, IndexError):
+                continue
+        if t is None:
+            continue
+        cur = places.setdefault(key, {"h": _tune_hash(t), "tune": {}})
+        if not cur["tune"].get(_LOOP_EXCLUSIVE.get(act, "")):
+            cur["tune"][act] = 1
+    if not places:
+        return 0
+    try:
+        tmp = _tune_path(pid).with_suffix(".%d.tmp" % threading.get_ident())
+        tmp.write_text(json.dumps({"at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                                   "places": places}, ensure_ascii=False), encoding="utf-8")
+        os.replace(str(tmp), str(_tune_path(pid)))
+    except OSError as e:
+        print("[backend] подсказки вёрстки не записаны: %s" % e, file=sys.stderr)
+        return 0
+    return len(places)
+
+
+def _loop_score(rep: dict, st: "dict | None" = None) -> tuple:
+    """(тяжёлых, лёгких) находок — меньше лучше. Невлезшие слова и наложения,
+    которые насчитала сама сборка, — тоже тяжёлые: «теснее» снимает SPILL
+    ценой слов за рамкой, и это не работа."""
+    hi = int((st or {}).get("overflow") or 0) + int((st or {}).get("collisions") or 0)
+    lo = 0
+    for it in rep.get("issues") or []:
+        if export_qa_mod.SEVERITY.get(it.get("code"), 1) >= 2 and not it.get("verify"):
+            hi += 1
+        else:
+            lo += 1
+    return hi, lo
+
+
+def _hard_codes(rep: dict) -> set:
+    """Виды тяжёлых подтверждённых находок — «новый вид» считается по ним."""
+    return {it.get("code") for it in rep.get("issues") or []
+            if export_qa_mod.SEVERITY.get(it.get("code"), 1) >= 2 and not it.get("verify")}
+
+
+def _loop_tune(rep: dict, tune: dict, tried: "dict | None" = None) -> dict:
+    """Следующие правки мест по находкам приёмки (копия `tune`). `tried` —
+    правки, уже отвергнутые приёмкой ({место: {правка}}): их не повторяем.
+    Находки «требует подтверждения» (`verify`) правок не заказывают: их
+    пороги не замерены, и решать по ним вёрстку нельзя."""
+    out = {k: dict(v) for k, v in tune.items()}
+    tried = tried or {}
+    done: set = set()                   # за проход — одна правка на место
+    for it in rep.get("issues") or []:
+        if it.get("verify"):
+            continue
+        acts = LOOP_ACTIONS.get(it.get("code"))
+        k1 = it.get("key") or it.get("near")
+        keys = [k1] if k1 else list(it.get("keys") or [])
+        if not acts or not keys:
+            continue
+        for key in keys:
+            if key in done:
+                continue
+            cur = out.setdefault(key, {})
+            for a in acts:
+                if cur.get(a) or a in tried.get(key, ()):
+                    continue
+                if cur.get(_LOOP_EXCLUSIVE.get(a, "")):
+                    continue
+                cur[a] = 1
+                done.add(key)
+                break
+    return {k: v for k, v in out.items() if v}
+
+
+def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: list,
+                 sources: dict) -> tuple:
+    """(pdf, отчёт, раскладка, extra) — сборка, проверенная и при нужде
+    переверстанная. Раскладка и `extra` — те копии, по которым собран
+    отданный файл (сборка правит рамки на месте: раздвигает по краске,
+    раскрывает доли листа), — их и проверяет приёмка после экспорта."""
+    import copy
+    keep = export_qa_mod is not None
+
+    def one(tune):
+        lay_, ext_ = copy.deepcopy(layout), copy.deepcopy(extra)
+        pdf_, st_ = layout_pdf_mod.build(work, lay_, texts, extra=ext_, lang=project.get("tgt"),
+                                         sources=sources, keep_overlay=keep, tune=tune or None)
+        return pdf_, st_, lay_, ext_
+
+    t0 = time.time()
+    try:
+        from pypdf import PdfReader as _PR
+        n_pages = len(_PR(io.BytesIO(work)).pages)
+    except Exception:
+        n_pages = 0
+    if not (LAYOUT_LOOP and keep) or not n_pages or n_pages > LAYOUT_LOOP_MAX_PAGES:
+        # Книга — без петли и без копий раскладки: сборка на оригиналах, как
+        # прежде (копия на 378 страниц — память и секунды единственного воркера).
+        pdf_, st_ = layout_pdf_mod.build(work, layout, texts, extra=extra, lang=project.get("tgt"),
+                                         sources=sources, keep_overlay=keep)
+        if LAYOUT_LOOP and keep and n_pages > LAYOUT_LOOP_MAX_PAGES:
+            st_["loop"] = {"skipped": "pages"}
+        return pdf_, st_, layout, extra
+    first = one(None)
+    pdf, st, lay_, ext_ = first
+    tries_max = max(0, LAYOUT_LOOP_TRIES)
+    if st.get("eraseLama"):
+        tries_max = min(tries_max, 1)   # стирание сетью — дорогая сборка: одна попытка
+    segs = project.get("segments") or []
+    lang = export_qa_mod.Lang([x.get("source") or "" for x in segs],
+                              [x.get("target") or "" for x in segs])
+
+    def look(res):
+        pdf_, st_, l_, e_ = res
+        return export_qa_mod.inspect_pdf(work, pdf_, l_, texts, e_, lang,
+                                         overlay=st_.get("_overlay"),
+                                         overlay_order=st_.get("_overlayOrder"),
+                                         time_budget=1e9, detect=None, sources=sources)
+    try:
+        rep = look(first)
+    except Exception as e:
+        print("[backend] петля вёрстки: приёмка не прошла: %s" % e, file=sys.stderr)
+        return first
+    best, best_rep, tune = first, rep, {}
+    before = dict(rep.get("counts") or {})
+    tries = 0
+    hints = _tune_hints(int(project["id"]), texts, extra)
+    hinted = False
+    if hints:
+        # Ы3: подсказки модели с прошлой выгрузки — отдельной попыткой; берутся,
+        # только если пиксельная приёмка не хуже (модель подсказывает, решают пиксели).
+        tries += 1
+        cand = one(hints)
+        try:
+            crep = look(cand)
+            new_codes = _hard_codes(crep) - _hard_codes(rep)
+            if _loop_score(crep, cand[1]) < _loop_score(rep, first[1]) and not new_codes:
+                best, best_rep, tune, hinted = cand, crep, hints, True
+        except Exception:
+            pass
+    tried: dict = {}
+    for _ in range(tries_max):
+        nxt = _loop_tune(best_rep, tune, tried)
+        if nxt == tune:
+            break
+        if time.time() - t0 > LAYOUT_LOOP_TIME:
+            first[1]["loop"] = {"aborted": True, "before": before}
+            return first
+        tries += 1
+        cand = one(nxt)
+        try:
+            crep = look(cand)
+        except Exception:
+            break
+        new_codes = _hard_codes(crep) - _hard_codes(best_rep)
+        if _loop_score(crep, cand[1]) < _loop_score(best_rep, best[1]) and not new_codes:
+            best, best_rep, tune = cand, crep, nxt
+        else:
+            # Отвергнутое помним и не повторяем; следующая попытка — от принятого.
+            for k_, acts_ in nxt.items():
+                for a_ in acts_:
+                    if not (tune.get(k_) or {}).get(a_):
+                        tried.setdefault(k_, set()).add(a_)
+    if time.time() - t0 > LAYOUT_LOOP_TIME:
+        first[1]["loop"] = {"aborted": True, "before": before}
+        return first
+    after = dict(best_rep.get("counts") or {})
+    fixed = {c: n - after.get(c, 0) for c, n in before.items() if n - after.get(c, 0) > 0}
+    best[1]["loop"] = {"tries": tries, "before": before, "after": after, "fixed": fixed,
+                       "used": best is not first, "hints": len(hints), "hinted": hinted,
+                       "seconds": round(time.time() - t0, 1)}
+    return best
 
 
 def _orig_page_width(project: dict) -> Optional[float]:
@@ -37785,6 +38041,9 @@ def _export_qa_run(pid: int, fmt: str, path: Path, sig: list, inp: dict, lang,
                     vis = _export_qa_vision(pid, fmt, path, inp["work"], src, tgt)
                     if vis:
                         rep["vision"] = vis
+                        if not inp.get("images"):
+                            # Ы3: что увидела модель — подсказки следующей сборке.
+                            vis["tuned"] = _tune_hints_save(pid, inp, vis)
                 except Exception as e:
                     print("[backend] взгляд на выгрузку: %s" % e, file=sys.stderr)
             _export_qa_tell(pid, tenant, title, fmt, rep)
@@ -37951,7 +38210,7 @@ def _export_qa_vision(pid: int, fmt: str, path: Path, orig: bytes, src: str, tgt
             for n in got["confirmed"]:
                 out["confirmed"] += 1
                 out["issues"].append({"code": byn[n]["code"], "page": pg, "box": byn[n]["box"],
-                                      "mark": n, "real": True})
+                                      "mark": n, "real": True, "key": byn[n].get("key")})
             for n in got["dismissed"]:
                 out["dismissed"] += 1
                 out["issues"].append({"code": byn[n]["code"], "page": pg, "box": byn[n]["box"],

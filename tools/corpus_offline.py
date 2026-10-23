@@ -29,6 +29,10 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 
+def _rkey(t) -> str:
+    return " ".join((t or "").replace("_", " ").split())
+
+
 def main_():
     ap = argparse.ArgumentParser()
     ap.add_argument("corpus")
@@ -80,10 +84,13 @@ def main_():
         if a.real:
             rf = Path(a.real) / m["id"] / "segments.json"
             if rf.exists():
-                real = {" ".join((x.get("src") or "").split()): x.get("tgt") or ""
+                # Ключ — без подчёркиваний: поле бланка «______» (Ш38) появилось
+                # в разборе позже прогона, и строка иначе не находила перевода
+                # и получала псевдослова («Нзлпцылнщшрпяз»).
+                real = {_rkey(x.get("src")): x.get("tgt") or ""
                         for x in json.loads(rf.read_text(encoding="utf-8"))}
         for s in segs:
-            t = real.get(" ".join(s["source"].split()))
+            t = real.get(_rkey(s["source"]))
             s["target"] = t if t else synth.pseudo(s["source"], lang, fac, 0, True, sdata)
             s["status"] = "translated"
         project = {"id": pid, "title": m["id"], "src": m["src"], "tgt": tgt, "domain": "general",
@@ -125,11 +132,15 @@ def main_():
         bad = {c: n for c, n in counts.items() if export_qa.SEVERITY.get(c, 1) >= 2}
         bad_any = bad_any or bool(bad)
         row = {"id": m["id"], "segments": len(segs), "counts": counts,
-               "collisions": stats.get("collisions"), "overflow": stats.get("overflow")}
+               "collisions": stats.get("collisions"), "overflow": stats.get("overflow"),
+               "loop": stats.get("loop")}
         summary.append(row)
-        print("%-18s строк %3d  наложений %s  вылетов %s  приёмка %s" % (
+        lp = stats.get("loop") or {}
+        print("%-18s строк %3d  наложений %s  вылетов %s  приёмка %s%s" % (
             m["id"], len(segs), stats.get("collisions"), stats.get("overflow"),
-            json.dumps(counts, ensure_ascii=False)))
+            json.dumps(counts, ensure_ascii=False),
+            ("  петля %s→%s" % (json.dumps(lp.get("before"), ensure_ascii=False),
+                                json.dumps(lp.get("after"), ensure_ascii=False)) if lp.get("used") else "")))
     (odir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     shutil.rmtree(work, ignore_errors=True)
     sys.exit(1 if bad_any else 0)

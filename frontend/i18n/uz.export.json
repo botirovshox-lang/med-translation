@@ -432,5 +432,10 @@
   "Места из проверки готового файла": "Tayyor faylni tekshirishdagi joylar",
   "Файл слишком большой для автоматической проверки — просмотрите его глазами.": "Fayl avtomatik tekshirish uchun juda katta — uni ko‘z bilan ko‘rib chiqing.",
   "Проверить готовый файл автоматически не удалось — просмотрите его глазами.": "Tayyor faylni avtomatik tekshirib bo‘lmadi — uni ko‘z bilan ko‘rib chiqing.",
-  " Надписи внутри картинок не проверялись.": " Rasmlar ichidagi yozuvlar tekshirilmadi."
+  " Надписи внутри картинок не проверялись.": " Rasmlar ichidagi yozuvlar tekshirilmadi.",
+  "перерезана линия, рамка или таблица": "chiziq, ramka yoki jadval kesilgan",
+  "стёрта печать, подпись или логотип": "muhr, imzo yoki logotip oʻchib ketgan",
+  "над или под переводом остались следы оригинала": "tarjima ustida yoki ostida asl matn izlari qolgan",
+  "видна заплатка другого цвета": "boshqa rangdagi yamoq koʻrinib turibdi",
+  "перевод плохо виден на фоне": "tarjima fonda yaxshi koʻrinmaydi"
 }

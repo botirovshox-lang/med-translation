@@ -53,13 +53,14 @@ CORP, OUT, REAL = TMP / "c", TMP / "o", TMP / "r"
 for d in (CORP, OUT, REAL):
     d.mkdir()
 RECIPE = {"L08": C.pdf_menu, "L03": C.pdf_invoice}
-for m in FIX["_manifest"]:
+MAN = [m for m in FIX["_manifest"] if m["id"][:3] in RECIPE]   # свои файлы фикстуры
+for m in MAN:
     random.seed(m["id"][1:3])
     RECIPE[m["id"][:3]](CORP / m["file"])
     (REAL / m["id"]).mkdir()
     (REAL / m["id"] / "segments.json").write_text(json.dumps(FIX[m["id"]], ensure_ascii=False),
                                                    encoding="utf-8")
-(CORP / "manifest.json").write_text(json.dumps(FIX["_manifest"], ensure_ascii=False), encoding="utf-8")
+(CORP / "manifest.json").write_text(json.dumps(MAN, ensure_ascii=False), encoding="utf-8")
 
 print("=== 0. разбор: отточие (Ш40) и синтетический курсив (Ш42) ===")
 r = importers.to_docx("menu.pdf", (CORP / "L08_menu_ky.pdf").read_bytes())

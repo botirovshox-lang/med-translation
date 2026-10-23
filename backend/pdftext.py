@@ -1294,7 +1294,7 @@ def _addr_cut(buf: str, nxt: str) -> bool:
 _DROPCAP_RE = re.compile(r"^([^\W\d_]{2,})  (\S)")
 
 
-def restore_dropcaps(paras: list, words: Counter, report: dict) -> list:
+def restore_dropcaps(paras: list, words: Counter, report: dict, marks: "list | None" = None) -> list:
     """«стрый  ларингит» → «Острый ларингит»: буквица потеряна, на её месте
     двойной пробел. Буква берётся из словаря документа: слово с одной
     заглавной впереди должно в нём встречаться, а обрубок — нет."""
@@ -1317,6 +1317,8 @@ def restore_dropcaps(paras: list, words: Counter, report: dict) -> list:
                     ch = cands.most_common(1)[0][0].upper()
                     p = ch + stub + " " + p[m.end(1) + 2:]
                     report["dropCaps"] += 1
+                    if marks is not None:
+                        marks.append(len(out))          # Ш50: номер абзаца с буквицей
         out.append(_WS_RE.sub(" ", p).strip())
     return out
 
@@ -3667,6 +3669,11 @@ def _dropcap_join(d: dict, recs: list, words: Counter) -> bool:
         first["t"] = t + " " + first["t"]
     else:
         first["t"] = t + first["t"]
+    # Ш50: место буквицы — раскладке: выгрузка стирает её и ставит первую
+    # букву перевода (иначе «П» оставалась поверх английской строки).
+    first["dropcap"] = [round(d["x0"], 1), round(d["y"], 1),
+                        round(max(d.get("x1") or 0.0, d["x0"] + 0.6 * d["s"]), 1),
+                        round(d["s"], 2), t]
     return True
 
 
@@ -3886,6 +3893,8 @@ def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | No
         b["st"][st or ""] += max(1, len((e.get("t") or "").strip()))
         if fam:
             b["fam"][fam] += max(1, len((e.get("t") or "").strip()))
+        if e.get("dropcap") and "dropcap" not in b:
+            b["dropcap"] = e["dropcap"]             # Ш50
         b["x0"], b["x1"] = min(b["x0"], x0), max(b["x1"], x1)
         b["y0"], b["y1"] = min(b["y0"], y), max(b["y1"], y)
         b["sizes"].append(sz or 0.0)
@@ -3935,6 +3944,8 @@ def _para_boxes(entries: list, base: str = "", base_fam: str = "") -> "list | No
                     "slots": b.get("slots") or []})
         if bullet and pg == bullet_pg:
             out[-1]["bullet"] = bullet
+        if b.get("dropcap"):
+            out[-1]["dropcap"] = b["dropcap"]
     return out
 
 
@@ -4240,8 +4251,17 @@ def clean(pages: list, geom: "list | None" = None, force_images: "set | None" = 
             spans: list = []
             buf_lines, src, cont = _geo_breaks(buf_lines, src)
             paras = join_lines(buf_lines, hyphenated, median_len, report, spans=spans, cont=cont)
-            paras = restore_dropcaps(paras, words, report)
+            dc_marks: list = []
+            paras = restore_dropcaps(paras, words, report, dc_marks)
             groups = [src[a:b + 1] if a is not None else None for a, b in spans]
+            for k_ in dc_marks:
+                # Ш50: буквицы в слое нет — место узнает выгрузка по отступу
+                # первых строк («ink»: стереть то, что там напечатано).
+                g_ = groups[k_] if k_ < len(groups) else None
+                for e_ in (g_ or []):
+                    if e_ and e_.get("geo"):
+                        e_["dropcap"] = ["ink"]
+                        break
             paras, groups = _merge_label_lines(paras, groups, [e for e in src if e], words, report)
             boxes = [_para_boxes(g_, base_style, base_fam) if g_ is not None else None
                      for g_ in groups]
@@ -4417,7 +4437,9 @@ def clean(pages: list, geom: "list | None" = None, force_images: "set | None" = 
                             "plead": _lead_for(pg, r["s"]),
                             # Пункт списка со значком-картинкой — начало абзаца.
                             "bul": bool(r.get("bul")),
-                            "bulch": r.get("bulch")})
+                            "bulch": r.get("bulch"),
+                            # Ш50: место буквицы, вклеенной в эту строку.
+                            "dropcap": r.get("dropcap")})
             for t_ in r.get("after") or []:
                 c_ = _clean_line(_tidy(t_), report)
                 if c_:

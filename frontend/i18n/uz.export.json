@@ -455,5 +455,6 @@
   "Не применено": "Qo‘llanmadi",
   "Поправили текст только в файле: ": "Matnni faqat faylda tuzatdik: ",
   "перевели": "tarjima qildik",
-  "сократили, чтобы влезло": "sig‘ishi uchun qisqartirdik"
+  "сократили, чтобы влезло": "sig‘ishi uchun qisqartirdik",
+  "перевели по строкам оригинала": "asl satrlari bo‘yicha tarjima qildik"
 }

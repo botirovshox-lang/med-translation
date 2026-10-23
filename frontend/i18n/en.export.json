@@ -455,5 +455,6 @@
   "Не применено": "Not applied",
   "Поправили текст только в файле: ": "Text changed in the file only: ",
   "перевели": "translated",
-  "сократили, чтобы влезло": "shortened to fit"
+  "сократили, чтобы влезло": "shortened to fit",
+  "перевели по строкам оригинала": "translated line by line as in the original"
 }

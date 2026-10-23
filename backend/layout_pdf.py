@@ -5755,6 +5755,7 @@ RULE_KEEP = os.environ.get("LAYOUT_RULE_KEEP", "1") != "0"
 RULE_KEEP_COVER = 0.92       # доля длины заплатки, на которой полоса тёмная
 RULE_KEEP_MAX = 0.18         # толщина линии не больше доли кегля
 RULE_KEEP_DIFF = 0.55        # тёмная — темнее бумаги на эту долю
+RULE_DARK_BG = 0.45          # Ш52: «тёмного» в окне больше этой доли — фон тёмный, линий не ищем
 RULE_SOFT_DIFF = 40.0        # линия-граница роста строки: темнее бумаги на столько (из 255)
 
 
@@ -5847,6 +5848,13 @@ def _rules_in(sample, box: dict, pad: float, top_pad=None) -> list:
         paper = float(np.percentile(g, 90))
         dark = g < paper * (1.0 - RULE_KEEP_DIFF)
         inner = dark[(r0 - R0):(r1 - R0), (c0 - C0):(c1 - C0)]
+        if inner.mean() > RULE_DARK_BG:
+            # Ш52: светлые буквы на тёмной плашке. «Бумагой» тут вышли сами
+            # буквы, а тёмной — плашка, и узкие просветы плашки между
+            # белыми штрихами читались вертикальными линиями ячейки:
+            # закраска останавливалась на них, и русские хвосты строк
+            # оставались под переводом (боевой проект 112, CDC).
+            return []
         size = max(float(box.get("size") or 10.0), 1.0)
         thick = max(2, int(round(RULE_KEEP_MAX * size * scale)))
         rgb = np.asarray(im.crop((C0, R0, C1, R1)), dtype=np.float32)

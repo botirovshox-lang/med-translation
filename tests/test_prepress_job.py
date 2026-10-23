@@ -237,12 +237,15 @@ ANS = ["Total 12 kg paid"]
 
 
 MEANING = ['{"same": true, "lost": ""}']
+RET = ["[]"]
 
 
 class _Comp3:
     def create(self, **kw):
         if kw["messages"][0]["content"].startswith("You check a"):
             return _Resp(MEANING[0])
+        if "Split the SOURCE" in kw["messages"][0]["content"]:
+            return _Resp(RET[0])
         return _Resp(ANS[0])
 
 
@@ -309,6 +312,17 @@ if idx2 is not None:
     ANS[0] = '["alpha beta", "gamma epsilon"]'
     got = main._prepress_split(project_m, inp_s, idx2, cur_t, mdls, cc, sp)
     check("модель поменяла слово — не берём", got is None, got)
+    src_m = inp_s["sources"].get(idx2) or ""
+    w_ = src_m.split()
+    RET[0] = json.dumps([{"src": " ".join(w_[:1]), "tgt": "First line"},
+                         {"src": " ".join(w_[1:]), "tgt": "Second line"}], ensure_ascii=False)
+    ANS[0] = '["alpha", "beta gamma delta zeta"]'
+    got = main._prepress_split(project_m, inp_s, idx2, cur_t, mdls, cc, sp)
+    check("перевод не делится — переводим по строкам заново", got == ["First line", "Second line"], (got, src_m))
+    RET[0] = json.dumps([{"src": "чужие слова", "tgt": "x"}, {"src": "ещё", "tgt": "y"}], ensure_ascii=False)
+    got = main._prepress_split(project_m, inp_s, idx2, cur_t, mdls, cc, sp)
+    check("оригинал поделён не своими словами — не берём", got is None, got)
+    RET[0] = "[]"
     ANS[0] = '["alpha beta gamma delta"]'
     got = main._prepress_split(project_m, inp_s, idx2, cur_t, mdls, cc, sp)
     check("частей не столько, сколько строк — не берём", got is None, got)

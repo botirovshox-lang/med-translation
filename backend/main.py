@@ -38059,7 +38059,50 @@ def _prepress_split(project: dict, inp: dict, idx: int, cur: str, models: list, 
         parts = None
     if not isinstance(parts, list) or len(parts) != len(slots) or not all(isinstance(x, str) and x.strip() for x in parts):
         return None
-    return [x.strip() for x in parts] if _pp_runs_of(parts, cur) else None
+    if _pp_runs_of(parts, cur):
+        return [x.strip() for x in parts]
+    return _prepress_split_retranslate(project, src, lines, models, c, spent)
+
+
+def _prepress_split_retranslate(project: dict, src: str, lines: list, models: list, c: dict,
+                                spent: list) -> Optional[list]:
+    """Второй ход раскладки: перевод, сделанный по склеенному оригиналу,
+    не делится на строки («0.7 L teapot of dried fruit compote» — описание
+    чая и название компота стали одной фразой). Модель делит ОРИГИНАЛ на
+    строки (по порядку, слова подряд) и переводит каждую отдельно; у каждой
+    строки — числа как в её оригинале и смысловая сверка. Только в файл."""
+    n = len(lines)
+    system = ("The SOURCE text below was printed as %d separate lines (styles and lengths listed), "
+              "but was joined into one block. Split the SOURCE into exactly %d consecutive pieces, one "
+              "per line, keeping the words in order, and translate EACH piece separately into %s as it "
+              "would stand alone on that line (menu item name, description, label). Answer ONLY a JSON "
+              "array of %d objects {\"src\": \"...\", \"tgt\": \"...\"}." % (
+                  n, n, _lang_prompt(project.get("tgt")), n))
+    user = "SOURCE (%s): %s\nLines:\n%s" % (_lang_prompt(project.get("src")), src, "\n".join(lines))
+    ans = _pp_ask(models, system, user, c, spent, tokens=1500)
+    if not ans:
+        return None
+    a, b = ans.find("["), ans.rfind("]")
+    try:
+        arr = json.loads(ans[a:b + 1]) if a >= 0 and b > a else None
+    except Exception:
+        arr = None
+    if not isinstance(arr, list) or len(arr) != n:
+        return None
+    srcs = [str((x or {}).get("src") or "").strip() for x in arr]
+    tgts = [str((x or {}).get("tgt") or "").strip() for x in arr]
+    if not all(srcs) or not all(tgts) or any("\n" in t for t in tgts):
+        return None
+    if " ".join(" ".join(srcs).split()) != " ".join(src.split()):
+        return None                      # оригинал поделён не подряд или изменён
+    import re as _re
+    for s_, t_ in zip(srcs, tgts):
+        if sorted(_re.findall(r"\d+", s_)) != sorted(_re.findall(r"\d+", t_)):
+            return None
+        if not _pp_meaning_ok(project, s_, "", t_, models, c, spent):
+            return None
+    c["splitRetranslated"] = int(c.get("splitRetranslated") or 0) + 1
+    return tgts
 
 
 def _pp_runs_of(parts: list, cur: str) -> bool:
@@ -38316,6 +38359,7 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                 except (ValueError, IndexError):
                     pass
         new_text = {}                    # абзац → (было, стало, вид)
+        split_text = {}                  # абзац → (было, части через « / », «split»)
         done_keys = set()                # места, где текстовое действие удалось
         for act, keys in (plan.get("text") or {}).items():
             for key in keys:
@@ -38352,6 +38396,9 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                         tune2.setdefault(key, {}).update(
                             {"parts": parts, "partsFor": hashlib.sha1(now.encode("utf-8")).hexdigest()[:12]})
                         done_keys.add(key)
+                        if not _pp_runs_of(parts, now):
+                            # перевели по строкам заново — человек должен это видеть
+                            split_text[idx] = (now, " / ".join(parts), "split")
         for idx in new_text:
             t_ = tune2.get("p%d" % idx)
             if t_ and t_.get("parts"):
@@ -38460,6 +38507,9 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                        "px": [p1[0], _loop_score(px2, cand[1])[0]]})
         if ok:
             cur, v_cur, tune_cur, texts_cur, extra_cur = cand, v2, tune2, texts2, extra2
+            for idx, val in split_text.items():
+                if (tune2.get("p%d" % idx) or {}).get("parts"):
+                    changed[idx] = val
             for idx, (frm, to, kd) in new_text.items():
                 changed[idx] = (changed.get(idx, (frm, to, kd))[0], to, kd)
     c["rounds"] = rounds
@@ -38467,7 +38517,7 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
            "split": sum(1 for v in tune_cur.values() if v.get("parts"))}
     if changed:
         rep["shortened"] = [{"key": "p%d" % idx, "from": frm, "to": to, "kind": kd,
-                             "segs": [groups[idx][0]] if (len(groups.get(idx) or []) == 1
+                             "segs": [groups[idx][0]] if (kd != "split" and len(groups.get(idx) or []) == 1
                                                          and groups[idx][0] in by_id
                                                          and (by_id[groups[idx][0]].get("target") or "").strip()
                                                          == frm.strip()) else []}

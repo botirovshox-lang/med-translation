@@ -3002,6 +3002,7 @@ window.I18N.register("en", {
  "переведено и проверено, открытых вопросов нет": "translated and checked, no open questions",
  "переведён машиной": "translated by the machine",
  "перевели": "translated",
+ "перевели по строкам оригинала": "translated line by line as in the original",
  "перевод": "translation",
  "перевод впишется В САМУ картинку, на место оригинала: исходную надпись ": "the translation is written INTO the image itself, in place of the original: we erase the original label ",
  "перевод заметно мельче оригинала": "the translation is noticeably smaller than the original",

@@ -3002,6 +3002,7 @@ window.I18N.register("uz", {
  "переведено и проверено, открытых вопросов нет": "tarjima qilingan va tekshirilgan, ochiq savol yo'q",
  "переведён машиной": "mashina tarjima qilgan",
  "перевели": "tarjima qildik",
+ "перевели по строкам оригинала": "asl satrlari bo‘yicha tarjima qildik",
  "перевод": "tarjima",
  "перевод впишется В САМУ картинку, на место оригинала: исходную надпись ": "tarjima RASMNING O'ZIGA, asl matn o'rniga yoziladi: asl yozuvni ",
  "перевод заметно мельче оригинала": "tarjima aslidan sezilarli darajada mayda",

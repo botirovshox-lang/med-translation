@@ -840,7 +840,8 @@ function ExpShortReport({ items, pid, store }) {
       TR("Поправили текст только в файле: ") + items.length),
     items.slice(0, 10).map((it, i) => React.createElement("div", { key: i, className: "row between row-wrap", style: { gap: 8 } },
       React.createElement("span", { className: "dim", style: { minWidth: 0, flex: "1 1 260px" } },
-        (it.kind === "translate" ? TR("перевели") : TR("сократили, чтобы влезло")) + ": ",
+        (it.kind === "translate" ? TR("перевели") : it.kind === "split" ? TR("перевели по строкам оригинала")
+          : TR("сократили, чтобы влезло")) + ": ",
         it.from ? React.createElement("s", null, it.from) : null, it.from ? " → " : "", React.createElement("span", { style: { color: "var(--text-1)" } }, it.to)),
       (it.segs || []).length === 1 && (done[i]
         ? React.createElement("span", { className: "dim" }, TR("в переводе"))

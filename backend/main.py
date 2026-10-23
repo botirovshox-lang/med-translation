@@ -38291,7 +38291,11 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                                        act, True, doc=doc)
             rules.save()
         rounds.append({"n": rnd + 1, "applied": len(plan["applied"]), "before": s1, "after": s2,
-                       "used": ok, "partial": part})
+                       "used": ok, "partial": part,
+                       # почему круг не взят — для разбора владельцем (коды и числа)
+                       "acts": sorted({a for _k, _c, a in plan["applied"]}),
+                       "newCodes": sorted(codes(v2) - codes(v_cur)),
+                       "px": [p1[0], _loop_score(px2, cand[1])[0]]})
         if ok:
             cur, v_cur, tune_cur, texts_cur, extra_cur = cand, v2, tune2, texts2, extra2
             for idx, (frm, to, kd) in new_text.items():

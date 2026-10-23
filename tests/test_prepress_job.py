@@ -262,6 +262,69 @@ ANS[0] = "Here is it: Total 12 kg paid"
 got = main._prepress_shorten(project, "Итого 12 кг оплачено полностью", "Total of 12 kg has been paid in full",
                              mdls, cc, sp)
 check("пояснение модели — не берём", got is None, got)
+ANS[0] = "范围"
+got = main._prepress_shorten(project, "Range", "范围(温度范围)", mdls, cc, sp)
+check("иероглифы: короткое место тоже сокращается", got == "范围", got)
+
+print("=== разложить перевод по строкам оригинала ===")
+fm = work / "menu.pdf"
+C.pdf_menu(fm)
+blob_m = fm.read_bytes()
+pm = main._parse_upload(fm.name, blob_m)
+segs_m = main._new_segments([t for t, _ in pm["units"]])
+for s_ in segs_m:
+    s_["target"] = synth.pseudo(s_["source"], "en", 1.1, 0, True, sd)
+    s_["status"] = "translated"
+pid_m = 9302
+project_m = {"id": pid_m, "title": "menu", "src": "RU", "tgt": "EN", "domain": "general",
+             "tenant": "default", "fileName": fm.name, "importKind": "pdf", "segments": segs_m}
+pairs_m = [[i, u + 1] for u, (_t, idxs) in enumerate(pm["units"]) for i in idxs]
+main._store_source_docx(project_m, pm["docx"], fm.name, pairs_m, len(pm["texts"]), layout=pm.get("layout"))
+main._store_original(pid_m, fm.name, blob_m)
+inp_s = main._layout_inputs(project_m)
+# Склеиваем две строки в один абзац, как это делал прежний разбор меню.
+_bx = inp_s["layout"]["boxes"]
+if "4" in _bx and "5" in _bx:
+    _bx["4"][0]["slots"] = list(_bx["4"][0]["slots"]) + list(_bx["5"][0]["slots"])
+    _bx.pop("5")
+    inp_s["texts"].pop(5, None)
+idx2 = next((int(k) for k, bl in (inp_s["layout"].get("boxes") or {}).items()
+             if sum(len(b.get("slots") or []) for b in bl) == 2), None)
+if idx2 is not None:
+    cur_t = "alpha beta gamma delta"
+    ANS[0] = '["gamma delta", "alpha beta"]'
+    got = main._prepress_split(project_m, inp_s, idx2, cur_t, mdls, cc, sp)
+    check("части — те же слова, порядок строк оригинала", got == ["gamma delta", "alpha beta"], got)
+    ANS[0] = '["alpha beta", "gamma epsilon"]'
+    got = main._prepress_split(project_m, inp_s, idx2, cur_t, mdls, cc, sp)
+    check("модель поменяла слово — не берём", got is None, got)
+    ANS[0] = '["alpha beta gamma delta"]'
+    got = main._prepress_split(project_m, inp_s, idx2, cur_t, mdls, cc, sp)
+    check("частей не столько, сколько строк — не берём", got is None, got)
+    import copy as _cp, hashlib as _hl
+    _tx = inp_s["texts"].get(idx2) or ""
+    t_ = {"p%d" % idx2: {"parts": ["X1 first", "X2 second"],
+                         "partsFor": _hl.sha1(_tx.encode("utf-8")).hexdigest()[:12]}}
+    pdf_a, st_a = main.layout_pdf_mod.build(inp_s["work"], _cp.deepcopy(inp_s["layout"]), inp_s["texts"],
+                                            extra=_cp.deepcopy(inp_s["extra"]), lang="EN",
+                                            sources=inp_s["sources"], keep_overlay=True, tune=t_)
+    check("сборка печатает части по строкам", st_a.get("splitParts") == 1, st_a.get("splitParts"))
+    t_["p%d" % idx2]["partsFor"] = "другой текст"
+    _p, st_b = main.layout_pdf_mod.build(inp_s["work"], _cp.deepcopy(inp_s["layout"]), inp_s["texts"],
+                                         extra=_cp.deepcopy(inp_s["extra"]), lang="EN",
+                                         sources=inp_s["sources"], keep_overlay=True, tune=t_)
+    check("части к другому тексту не печатаются", not st_b.get("splitParts") and st_b.get("splitMismatch") == 1,
+          (st_b.get("splitParts"), st_b.get("splitMismatch")))
+else:
+    print("  (нет абзаца из двух строк — проверка частей пропущена)")
+
+print("=== перевести место, оставшееся на языке оригинала ===")
+ANS[0] = "Total 12 kg"
+got = main._prepress_translate_place(project, "Итого 12 кг", mdls, cc, sp)
+check("перевод места с теми же числами — берём", got == "Total 12 kg", got)
+ANS[0] = "Total 13 kg"
+got = main._prepress_translate_place(project, "Итого 12 кг", mdls, cc, sp)
+check("число другое — не берём", got is None, got)
 check("в проекте перевод не тронут", all("Total 12 kg paid" != s_.get("target") for s_ in segs))
 main._llm_client = lambda mdl, timeout=None, step=None, max_retries=None: _Client2()
 

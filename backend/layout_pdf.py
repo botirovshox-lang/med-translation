@@ -1287,6 +1287,25 @@ def _spread(text: str, slots: list, sw, font_of, nospace: bool = False) -> tuple
     return out, fs, hss
 
 
+def _spread_parts(parts: list, slots: list, sw, font_of) -> tuple:
+    """Как `_spread`, но части даны готовыми (по строке оригинала)."""
+    out, fs, hss = [], [], []
+    for sl, line in zip(slots, parts):
+        out.append(line)
+        width = max(1.0, sl["x1"] - sl["x0"])
+        need = sw(line, font_of(sl), sl["size"]) if line else 0.0
+        if need <= width:
+            fs.append(1.0)
+            hss.append(1.0)
+        elif need * HSCALE_MIN <= width:
+            fs.append(1.0)
+            hss.append(width / need)
+        else:
+            hss.append(HSCALE_MIN)
+            fs.append(max(MIN_SIZE_SHARE, width / (need * HSCALE_MIN)))
+    return out, fs, hss
+
+
 def _fit_prefix(word: str, width_of, width: float) -> int:
     """Самая длинная голова слова (≥ 1 знака, < всего слова), что входит
     в `width`, — двоичным поиском: у письма без пробелов «слово» — целая
@@ -6719,7 +6738,8 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                                 sd["x1"] = min(sd["x1"], rx0_ - 0.5 * rw_ - 0.15 * sd["size"])
                         # Цвет букв из самого PDF сильнее замера: на мелком
                         # кегле сглаживание делает чёрный серым.
-                        if sd.get("color") is not None:
+                        if sd.get("color") is not None and not ((sd.get("_tune") or {}).get("color")
+                                                                and ink is not None):
                             ink = sd["color"]
                         sd["_fill"], sd["_ink"] = (colors, paper, pad), ink
                     for run in _runs(sbs):
@@ -6929,7 +6949,26 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                 def font_of(sd, fam=fam):
                     return _font_for(fonts, {"style": sd["style"], "fam": fam})
                 scat = _scattered(sds)
-                if scat:
+                parts_ = tn_.get("parts")
+                if parts_ is not None:
+                    import hashlib as _hl
+                    # Части — только к ТОМУ тексту, который делили: сократили
+                    # или перевели место позже — печатается новый текст целиком.
+                    if (tn_.get("partsFor") != _hl.sha1(text.encode("utf-8")).hexdigest()[:12]
+                            or not isinstance(parts_, list) or len(parts_) != len(sds)
+                            or any(sd.get("rot") for sd in sds)):
+                        stats["splitMismatch"] = stats.get("splitMismatch", 0) + 1
+                        parts_ = None
+                if parts_ is not None:
+                    # Ы5: перевод, разложенный по строкам оригинала (слитые
+                    # пункты меню, подпись и поле формы): у каждой части —
+                    # своя строка и своё начертание.
+                    align = _slot_align(sds)
+                    lines, fs, hss = _spread_parts([str(x) for x in parts_], sds, psw, font_of)
+                    rest = []
+                    scat = True
+                    stats["splitParts"] = stats.get("splitParts", 0) + 1
+                elif scat:
                     # Разбросанные подписи — каждой своё, от начала своей
                     # строки: выключку одной строки по ней не узнать.
                     align = "left"

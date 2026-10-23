@@ -102,6 +102,22 @@ r6 = P.plan_round(V, {}, {}, lr4, {"p1": f4})
 check("выученное правило — раньше модели", r6["applied"][0][2] == "cond", r6)
 check("в вопросе — чем печатаем (без ложного FONT)", "Noto Sans" in P.prompt("RU", "EN", []))
 
+print("=== этап 4: новые исполнители ===")
+VM = {0: {"defects": [{"key": "p2", "code": "MERGED", "action": "none", "confidence": 0.8},
+                      {"key": "p3", "code": "UNTRANSLATED", "action": "none", "confidence": 0.9},
+                      {"key": "p4", "code": "COLOR", "action": "none", "confidence": 0.7}]}}
+rm = P.plan_round(VM, {}, {})
+acts = {k: a for k, _c, a in rm["applied"]}
+check("слитые пункты — разложить по строкам", acts.get("p2") == "split_lines", acts)
+check("не переведено — перевести место", acts.get("p3") == "translate", acts)
+check("цвет — как в оригинале", acts.get("p4") == "color" and rm["tune"]["p4"] == {"color": 1}, rm)
+check("текстовые действия собраны по виду", rm["text"].get("split_lines") == {"p2"}
+      and rm["text"].get("translate") == {"p3"}, rm["text"])
+at = P.apply_tune({"p1": {"tight": 1}}, [("p1", "OVERFLOW", "wide"), ("p9", "COLOR", "color")])
+check("приёмка по местам: правки только перечисленных", at == {"p1": {"wide": 1}, "p9": {"color": 1}}, at)
+check("«цвет» из слов модели", P._code_from_words("heading colour black instead of blue") == "COLOR")
+check("«пятно» не стало цветом", P._code_from_words("colour patch behind the text") == "PATCH")
+
 print("=== вопрос и разбор ответа ===")
 places = [{"n": 1, "key": "p3", "label": "Итого"}, {"n": 2, "key": "x0", "label": "Подпись"}]
 pr = P.prompt("RU", "EN", places)

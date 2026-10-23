@@ -39,7 +39,7 @@ from pathlib import Path
 
 # Версия ВОПРОСА к модели и списка действий: правишь промпт — поднимай,
 # иначе память отдаст ответ на прежний вопрос.
-PROMPT_VERSION = "pp2"
+PROMPT_VERSION = "pp3"
 LEARN_MIN_OK = int(os.environ.get("PREPRESS_LEARN_MIN_OK", "2"))
 LEARN_MAX = int(os.environ.get("PREPRESS_LEARN_MAX", "500"))
 
@@ -47,10 +47,12 @@ LEARN_MAX = int(os.environ.get("PREPRESS_LEARN_MAX", "500"))
 # либо особое действие, которое исполняет `main` (короче перевод, гарнитура, выключка).
 ACTIONS = ("tight", "wide", "solo", "erase", "keep_rule", "lines2", "keep_breaks", "cond",
            "leave_orig", "shorter", "align_left", "align_right", "align_center", "justify",
-           "no_justify", "serif", "sans", "mono", "none")
+           "no_justify", "serif", "sans", "mono", "color", "split_lines", "translate", "none")
 TUNE_ACTIONS = {"tight", "wide", "solo", "erase", "keep_rule", "lines2", "keep_breaks", "cond",
                 "align_left", "align_right", "align_center", "justify", "no_justify",
-                "serif", "sans", "mono"}
+                "serif", "sans", "mono", "color"}
+# Действия, которые исполняет `main` вызовом модели (текст меняется только в файле).
+TEXT_ACTIONS = {"shorter", "split_lines", "translate", "leave_orig"}
 MIN_CONF = float(os.environ.get("PREPRESS_MIN_CONF", "0.4"))
 _LOCK = threading.RLock()
 
@@ -258,7 +260,11 @@ def prompt(src: str, tgt: str, places: list) -> str:
         "(stamp, signature, logo, code); shorter — the text cannot fit, give a shorter translation "
         "in 'text' with the same meaning, numbers, units and codes; align_left/align_right/"
         "align_center/justify/no_justify — alignment as in the original; serif/sans/mono — "
-        "typeface class as in the original; none — no automatic fix.",
+        "typeface class as in the original; color — print with the text colour of the original; "
+        "split_lines — separate items of the original (dish name and its description, label and "
+        "form field, two lines of different style) were merged into one block: print each original "
+        "line separately in its own style; translate — this place still shows source-language text "
+        "that must be translated; none — no automatic fix.",
         "Codes: UNTRANSLATED — source-language text left; OVERFLOW — text goes outside its box, "
         "cell, plate, logo, frame or page; OVERLAP — text overlaps other text or graphics; SMALL — "
         "text clearly smaller than the same kind of text in the original; SIZE — text clearly larger; "
@@ -268,7 +274,8 @@ def prompt(src: str, tgt: str, places: list) -> str:
         "a stamp, signature or logo is erased or damaged; GHOST — remnants of the original glyphs "
         "(dots, accents, strokes) are left; PATCH — a visible patch or notch of a different colour "
         "or texture; CONTRAST — text hard to read on its background; MISSING — something of the "
-        "original is lost (incl. form fields ____); BLUR — blurred text; OTHER — anything else, "
+        "original is lost (incl. form fields ____); COLOR — text colour differs from the original "
+        "(e.g. black instead of blue); BLUR — blurred text; OTHER — anything else, "
         "describe the new kind of defect in 'what' (no client text).",
         'Answer ONLY JSON: {"ok": true|false, "defects": [{"place": 3, "code": "OVERFLOW", '
         '"action": "tight", "confidence": 0.8, "what": "short note", "text": ""}]}.',
@@ -285,6 +292,7 @@ _CODE_WORDS = (("RULE_CUT", ("rule", "frame line", "border line", "gridline")),
                ("PATCH", ("patch", "notch", "smudge", "stain")),
                ("OVERFLOW", ("overflow", "outside", "beyond", "runs onto", "spills")),
                ("OVERLAP", ("overlap",)),
+               ("COLOR", ("colour", "color")),
                ("SMALL", ("smaller", "tiny", "too small")),
                ("SIZE", ("larger", "bigger")),
                ("FONT", ("typeface", "font", "serif", "monospace", "condensed", "bold", "italic")),
@@ -482,7 +490,8 @@ WEIGHT = {"OVERFLOW": 3, "OVERLAP": 3, "MISSING": 3, "UNTRANSLATED": 3, "RULE_CU
 
 # Что показывается человеку списком «посмотрите страницы»: видимый брак.
 USER_CODES = {"OVERFLOW", "OVERLAP", "MISSING", "UNTRANSLATED", "RULE_CUT", "MARK_LOST",
-              "GHOST", "PATCH", "CONTRAST", "MERGED", "FRAGMENT"}
+              "GHOST", "PATCH", "CONTRAST", "MERGED", "FRAGMENT", "COLOR"}
+WEIGHT.setdefault("COLOR", 2)
 
 
 def page_score(verdict: dict) -> int:
@@ -501,8 +510,10 @@ LADDER = {
     "RULE_CUT": ("keep_rule",),
     "MARK_LOST": ("keep_rule", "leave_orig"),
     "PATCH": ("keep_rule",),
-    "MERGED": ("solo", "keep_breaks"),
+    "MERGED": ("split_lines", "solo", "keep_breaks"),
     "FRAGMENT": ("solo",),
+    "COLOR": ("color",),
+    "UNTRANSLATED": ("translate", "erase"),
 }
 # Взаимоисключающие правки: у места одна из группы. Не помогла прежняя —
 # новая её ЗАМЕНЯЕТ (теснее не помогло → шире).
@@ -520,6 +531,7 @@ def plan_round(verdicts: dict, base: dict, tried: "dict | None" = None, rules=No
     feats = feats or {}
     out = {k: dict(v) for k, v in (base or {}).items()}
     leave, short, applied, busy = set(), set(), [], set()
+    texts_: dict = {}
     for v in verdicts.values():
         for d in (v or {}).get("defects") or []:
             key = d.get("key")
@@ -537,7 +549,7 @@ def plan_round(verdicts: dict, base: dict, tried: "dict | None" = None, rules=No
             pick = None
             for a in cands:
                 a = "wide" if a == "lines2" else a
-                if a in ("none", "") or a in done or (a not in TUNE_ACTIONS and a not in ("leave_orig", "shorter")):
+                if a in ("none", "") or a in done or (a not in TUNE_ACTIONS and a not in TEXT_ACTIONS):
                     continue
                 if a in TUNE_ACTIONS and (out.get(key) or {}).get(a):
                     continue                     # уже стоит
@@ -549,15 +561,29 @@ def plan_round(verdicts: dict, base: dict, tried: "dict | None" = None, rules=No
             applied.append((key, code, pick))
             if pick == "leave_orig":
                 leave.add(key)
-            elif pick == "shorter":
+            elif pick in ("shorter", "split_lines", "translate"):
                 short.add(key)
+                texts_.setdefault(pick, set()).add(key)
             else:
                 cur = out.setdefault(key, {})
                 for x in _EXCL.get(pick, []):
                     cur.pop(x, None)
                 cur[pick] = 1
     return {"tune": {k: v for k, v in out.items() if v}, "leave": leave, "short": short,
-            "applied": applied}
+            "text": texts_, "applied": applied}
+
+
+def apply_tune(base: dict, applied: list) -> dict:
+    """Правки сборки только из перечисленных действий (поверх `base`) —
+    для приёмки по местам: полезное остаётся, вредное откатывается."""
+    out = {k: dict(v) for k, v in (base or {}).items()}
+    for key, _code, act in applied:
+        if act in TUNE_ACTIONS:
+            cur = out.setdefault(key, {})
+            for x in _EXCL.get(act, []):
+                cur.pop(x, None)
+            cur[act] = 1
+    return {k: v for k, v in out.items() if v}
 
 
 def tune_from(verdicts: dict, base: dict) -> tuple:

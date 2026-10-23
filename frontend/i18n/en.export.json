@@ -450,8 +450,10 @@
   " и ещё ": " and ",
   "Исправили сами: ": "Fixed automatically: ",
   "Нажмите «Скачать» ещё раз — проверка продолжается.": "Press “Download” again — the check is still running.",
-  "Сократили в файле, чтобы влезло: ": "Shortened in the file to fit: ",
   "в переводе": "in the translation",
   "Применить к переводу": "Apply to the translation",
-  "Не применено": "Not applied"
+  "Не применено": "Not applied",
+  "Поправили текст только в файле: ": "Text changed in the file only: ",
+  "перевели": "translated",
+  "сократили, чтобы влезло": "shortened to fit"
 }

@@ -837,10 +837,11 @@ function ExpShortReport({ items, pid, store }) {
   };
   return React.createElement("div", { className: "col", style: { gap: 6, marginTop: 12, fontSize: 13 } },
     React.createElement("div", { style: { fontWeight: 600 } },
-      TR("Сократили в файле, чтобы влезло: ") + items.length),
+      TR("Поправили текст только в файле: ") + items.length),
     items.slice(0, 10).map((it, i) => React.createElement("div", { key: i, className: "row between row-wrap", style: { gap: 8 } },
       React.createElement("span", { className: "dim", style: { minWidth: 0, flex: "1 1 260px" } },
-        React.createElement("s", null, it.from), " → ", React.createElement("span", { style: { color: "var(--text-1)" } }, it.to)),
+        (it.kind === "translate" ? TR("перевели") : TR("сократили, чтобы влезло")) + ": ",
+        it.from ? React.createElement("s", null, it.from) : null, it.from ? " → " : "", React.createElement("span", { style: { color: "var(--text-1)" } }, it.to)),
       (it.segs || []).length === 1 && (done[i]
         ? React.createElement("span", { className: "dim" }, TR("в переводе"))
         : React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => apply(it, i) }, TR("Применить к переводу"))))));

@@ -137,6 +137,13 @@ check("неуверенный ответ — «нет разницы»", low["p1
 sw = [P.ab_swap("p%d" % i, 0) for i in range(40)]
 check("перемешивание — примерно поровну", 10 <= sum(sw) <= 30, sum(sw))
 
+print("=== картинки: только свои действия ===")
+VI = {0: {"defects": [{"key": "x1", "code": "OVERFLOW", "action": "wide", "confidence": 0.9}]}}
+ri = P.plan_round(VI, {}, {}, allowed=P.IMAGE_ACTIONS)
+check("у картинки «шире» не предлагается — сразу «теснее»", ri["applied"] == [("x1", "OVERFLOW", "tight")], ri)
+ri2 = P.plan_round(VI, ri["tune"], {"x1": {"tight"}}, allowed=P.IMAGE_ACTIONS)
+check("потом — короче", ri2["applied"][0][2] == "shorter", ri2)
+
 print("=== вопрос и разбор ответа ===")
 places = [{"n": 1, "key": "p3", "label": "Итого"}, {"n": 2, "key": "x0", "label": "Подпись"}]
 pr = P.prompt("RU", "EN", places)

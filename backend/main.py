@@ -34018,6 +34018,7 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                 continue                     # Ы5: проверка решила оставить оригинал (печать, логотип)
             if ov_.get("text"):
                 target = ov_["text"]         # Ы5: короче / переведено — только в файле
+                b = dict(b, breaks=None)     # переносы считались для прежнего текста
             if not target:
                 # Не переведён — надпись остаётся на языке оригинала. Стереть
                 # её «пока что» значило бы выбросить текст совсем.
@@ -37849,7 +37850,8 @@ def _job_prepress_body(job: dict) -> None:
         c["skipped"] = "no_project"
         return
     try:
-        inp = _layout_inputs(project) or _image_prepress_inputs(project)
+        inp = (_image_prepress_inputs(project) if (project.get("importKind") or "") in ("scan", "image")
+               else _layout_inputs(project))
     except HTTPException as e:
         c["skipped"] = "layout:%s" % e.status_code
         return
@@ -38480,7 +38482,8 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
         if c.get("capped") or not nconf(v_cur):
             break
         feats = _pp_feats(inp, texts_cur, extra_cur)
-        plan = prepress_mod.plan_round(v_cur, tune_cur, tried, rules, feats)
+        plan = prepress_mod.plan_round(v_cur, tune_cur, tried, rules, feats,
+                                       allowed=prepress_mod.IMAGE_ACTIONS if inp.get("images") else None)
         if not plan["applied"]:
             break
         for key, code, act in plan["applied"]:
@@ -38517,6 +38520,9 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                     t_new, kd = None, ""
                     if act == "shorter" and PREPRESS_SHORTEN:
                         t_new, kd = _prepress_shorten(project, src_t, now, models, c, spent), "short"
+                    elif (act == "translate" and " ".join(now.split()) == " ".join(src_t.split())
+                          and sum(ch.isalpha() for ch in src_t) >= 4):
+                        t_new, kd = _prepress_translate_place(project, src_t, models, c, spent), "translate"
                     if t_new:
                         e_["text"] = t_new
                         xnew[key] = (now, t_new, kd, seg_["id"])
@@ -38757,7 +38763,8 @@ def prepress_status(pid: int):
     if not meta:
         return {"ok": True, "state": "none"}
     try:
-        inp = _layout_inputs(project) or _image_prepress_inputs(project, with_work=False)
+        inp = (_image_prepress_inputs(project, with_work=False)
+               if (project.get("importKind") or "") in ("scan", "image") else _layout_inputs(project))
     except Exception:
         inp = None
     fresh = inp is not None and meta.get("fp") == _prepress_fp(inp)
@@ -38791,13 +38798,13 @@ def _export_images_file(project: dict, out: Path, tmp: Path, ext: str) -> dict:
     if not getattr(_IMG_OV, "building", False):
         gate = _prepress_gate_images(project)        # Ы5: только проверенное; иначе PrepressPending
     prev_ov = getattr(_IMG_OV, "v", None)
-    if gate is not None and gate.get("ov") is not None:
-        _IMG_OV.v = gate["ov"]
+    if gate is not None:
+        _IMG_OV.v = gate.get("ov") or None
     try:
         stats = _export_docx_layout(project, inner)
         imgs = importers.images_from_docx(inner.read_bytes())
     finally:
-        if gate is not None and gate.get("ov") is not None:
+        if gate is not None:
             _IMG_OV.v = prev_ov
         try:
             inner.unlink()

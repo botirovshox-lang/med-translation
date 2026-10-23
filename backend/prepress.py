@@ -746,8 +746,13 @@ _GROUPS = [("wide", "tight"), ("align_left", "align_right", "align_center"),
 _EXCL = {a: [b for b in g if b != a] for g in _GROUPS for a in g}
 
 
+# Что умеет печать надписи В КАРТИНКЕ (`image_text.render_target`): прочие
+# действия там ничего не меняют, и круг на них — пустой (замер 23.10.2026).
+IMAGE_ACTIONS = {"plate", "tight", "solo", "leave_orig", "shorter", "translate"}
+
+
 def plan_round(verdicts: dict, base: dict, tried: "dict | None" = None, rules=None,
-               feats: "dict | None" = None) -> dict:
+               feats: "dict | None" = None, allowed: "set | None" = None) -> dict:
     """План следующего круга правок по вердиктам: {tune, leave, short,
     applied: [(ключ, код, действие)]}. У места — одно новое действие за
     круг; уже испробованное на этом месте не повторяется."""
@@ -774,6 +779,8 @@ def plan_round(verdicts: dict, base: dict, tried: "dict | None" = None, rules=No
             for a in cands:
                 a = "wide" if a == "lines2" else a
                 if a in ("none", "") or a in done or (a not in TUNE_ACTIONS and a not in TEXT_ACTIONS):
+                    continue
+                if allowed is not None and a not in allowed:
                     continue
                 if a in TUNE_ACTIONS and (out.get(key) or {}).get(a):
                     continue                     # уже стоит

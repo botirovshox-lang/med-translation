@@ -449,5 +449,9 @@
   "Просмотрите его перед отправкой.": "Yuborishdan oldin uni ko‘rib chiqing.",
   " и ещё ": " va yana ",
   "Исправили сами: ": "O‘zimiz tuzatdik: ",
-  "Нажмите «Скачать» ещё раз — проверка продолжается.": "«Yuklab olish»ni yana bosing — tekshiruv davom etmoqda."
+  "Нажмите «Скачать» ещё раз — проверка продолжается.": "«Yuklab olish»ni yana bosing — tekshiruv davom etmoqda.",
+  "Сократили в файле, чтобы влезло: ": "Sig‘ishi uchun faylda qisqartirdik: ",
+  "в переводе": "tarjimada",
+  "Применить к переводу": "Tarjimaga qo‘llash",
+  "Не применено": "Qo‘llanmadi"
 }

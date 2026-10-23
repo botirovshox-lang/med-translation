@@ -36977,7 +36977,9 @@ def _prepress_public(meta: Optional[dict], state: Optional[str] = None) -> dict:
     return {"state": state or (meta or {}).get("state") or "none",
             "pages": rep_.get("pages"), "checked": rep_.get("checked"),
             "unchecked": rep_.get("unchecked"), "fixed": rep_.get("fixed"),
-            "left": [{"page": x.get("page"), "code": x.get("code")} for x in (rep_.get("left") or [])][:20]}
+            "left": [{"page": x.get("page"), "code": x.get("code")} for x in (rep_.get("left") or [])][:20],
+            "shortened": [{"segs": x.get("segs") or [], "from": x.get("from"), "to": x.get("to")}
+                          for x in (rep_.get("shortened") or [])][:50]}
 
 
 def _prepress_gate(project: dict, inp: dict) -> Optional[dict]:
@@ -37604,15 +37606,17 @@ def _prepress_cache_write(pid: int, fp: str, pdf: Optional[bytes], state: str, r
     os.replace(str(tmp), str(meta_p))
 
 
-def _prepress_pixel(project: dict, inp: dict, res: tuple) -> dict:
-    """Находки по пикселям для сборки `res` (как в петле правил)."""
+def _prepress_pixel(project: dict, inp: dict, res: tuple, texts: Optional[dict] = None) -> dict:
+    """Находки по пикселям для сборки `res` (как в петле правил). `texts` —
+    тексты этой сборки (короткий перевод в файле отличается от проекта)."""
     pdf, st, lay, ext = res
-    if st.get("_pixel"):
+    if st.get("_pixel") and texts is None:
         return st["_pixel"]
     segs = project.get("segments") or []
     lang = export_qa_mod.Lang([x.get("source") or "" for x in segs], [x.get("target") or "" for x in segs])
     try:
-        return export_qa_mod.inspect_pdf(inp["work"], pdf, lay, inp["texts"], ext, lang,
+        return export_qa_mod.inspect_pdf(inp["work"], pdf, lay, texts if texts is not None else inp["texts"],
+                                         ext, lang,
                                          overlay=st.get("_overlay"),
                                          overlay_order=st.get("_overlayOrder"),
                                          time_budget=1e9, detect=None, sources=inp["sources"])
@@ -37631,7 +37635,7 @@ def _prepress_pages(job: dict, project: dict, inp: dict, res: tuple, texts: dict
     pdf, st, lay, ext = res
     items = export_qa_mod.printed_items(lay, texts, ext, inp["sources"])
     placed = st.get("_placed") or {}
-    pix = _prepress_pixel(project, inp, res)
+    pix = _prepress_pixel(project, inp, res, texts if texts is not inp.get("texts") else None)
     sus: dict = {}
     for it in pix.get("issues") or []:
         if it.get("page") is not None and it.get("box"):
@@ -37777,6 +37781,9 @@ def _job_prepress_body(job: dict) -> None:
     _JOB_PROJECT.id = None                  # и не в себестоимость файла клиента
     final = base
     try:
+        base = _prepress_rules_first(project, inp, base, c)
+        final = base
+        final_pre = base
         try:
             v1 = _prepress_pages(job, project, inp, base, inp["texts"], models, mem, ver, c, spent)
         except _PrepressPause:
@@ -37785,50 +37792,12 @@ def _job_prepress_body(job: dict) -> None:
         c["pages"] = report["pages"]
         v_final = v1
         if mode == "fix" and not c.get("capped"):
-            tune0 = base[1].get("_tune") or {}
-            tune1, leave = prepress_mod.tune_from(v1, tune0)
-            if tune1 != tune0 or leave:
-                texts1 = dict(inp["texts"])
-                extra1 = _copy.deepcopy(inp["extra"])
-                for key in leave:
-                    if key.startswith("p"):
-                        try:
-                            texts1.pop(int(key[1:]), None)
-                        except ValueError:
-                            pass
-                    elif key.startswith("x"):
-                        try:
-                            extra1[int(key[1:])]["text"] = ""
-                        except (ValueError, IndexError):
-                            pass
-                inp1 = dict(inp, extra=extra1)
-                lay_, ext_ = _copy.deepcopy(inp["layout"]), _copy.deepcopy(extra1)
-                pdf2, st2 = layout_pdf_mod.build(inp["work"], lay_, texts1, extra=ext_,
-                                                 lang=project.get("tgt"), sources=inp["sources"],
-                                                 keep_overlay=True, tune=tune1 or None)
-                cand = (pdf2, st2, lay_, ext_)
-                try:
-                    v2 = _prepress_pages(job, project, inp1, cand, texts1, models, mem, ver, c, spent)
-                except _PrepressPause:
-                    return
-                s1 = sum(prepress_mod.page_score(v) for v in v1.values())
-                s2 = sum(prepress_mod.page_score(v) for v in v2.values())
-                p1 = _loop_score(_prepress_pixel(project, inp, base), base[1])
-                p2 = _loop_score(_prepress_pixel(project, inp1, cand), st2)
-                codes1 = {d["code"] for v in v1.values() for d in v.get("defects") or []
-                          if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF}
-                codes2 = {d["code"] for v in v2.values() for d in v.get("defects") or []
-                          if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF}
-                if s2 < s1 and p2[0] <= p1[0] and not (codes2 - codes1) and len(v2) >= len(v1):
-                    final, v_final = cand, v2
-                    # «Исправили сами: N мест» — число мест, а не вес.
-                    n1 = sum(1 for v in v1.values() for d in v.get("defects") or []
-                             if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF)
-                    n2 = sum(1 for v in v2.values() for d in v.get("defects") or []
-                             if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF)
-                    report["fixed"] = max(0, n1 - n2)
-                    report["left_orig"] = len(leave)
-                c["round2"] = {"before": s1, "after": s2, "used": final is cand}
+            try:
+                final, v_final, extra_rep = _prepress_fix_rounds(job, project, inp, base, v1, models,
+                                                                 mem, ver, c, spent, final_pre)
+            except _PrepressPause:
+                return
+            report.update(extra_rep)
         left = []
         for pg, v in sorted(v_final.items()):
             for d in v.get("defects") or []:
@@ -37861,6 +37830,288 @@ def _job_prepress_body(job: dict) -> None:
     finally:
         _JOB_TENANT.id, _JOB_PROJECT.id = prev_t, prev_p
     _prepress_tell(project, c)
+
+
+PREPRESS_ROUNDS = int(os.environ.get("PREPRESS_ROUNDS", "3"))        # кругов правок после первого взгляда
+PREPRESS_SHORTEN = os.environ.get("PREPRESS_SHORTEN", "1") != "0"     # короткий перевод только в файл
+_PREPRESS_RULES_LOCK = threading.Lock()
+
+
+def _prepress_rules():
+    """Выученные правила — файл на весь сервис (пишет только исполнитель)."""
+    return prepress_mod.LearnedRules(SOURCE_DIR.parent / "prepress_rules.json")
+
+
+def _pp_feats(inp: dict, texts: dict, extra: list) -> dict:
+    """Признаки мест (без текста клиента) — для подписи правила."""
+    out = {}
+    boxes = (inp.get("layout") or {}).get("boxes") or {}
+    for k, bl in boxes.items():
+        try:
+            idx = int(k)
+        except (TypeError, ValueError):
+            continue
+        b = (bl or [{}])[0] if isinstance(bl, list) else (bl or {})
+        out["p%d" % idx] = prepress_mod.place_features(b, texts.get(idx) or "",
+                                                      (inp.get("sources") or {}).get(idx) or "")
+    for n, e in enumerate(extra or []):
+        out["x%d" % n] = prepress_mod.place_features(dict(e or {}, image=True), (e or {}).get("text") or "",
+                                                    (e or {}).get("source") or "")
+    return out
+
+
+def _pp_doc(inp: dict) -> str:
+    return hashlib.sha1(inp.get("work") or b"").hexdigest()[:12]
+
+
+def _pp_build(project: dict, inp: dict, texts: dict, extra: list, tune: dict) -> tuple:
+    import copy as _copy
+    lay_, ext_ = _copy.deepcopy(inp["layout"]), _copy.deepcopy(extra)
+    pdf_, st_ = layout_pdf_mod.build(inp["work"], lay_, texts, extra=ext_, lang=project.get("tgt"),
+                                     sources=inp["sources"], keep_overlay=True, tune=tune or None)
+    return pdf_, st_, lay_, ext_
+
+
+def _prepress_rules_first(project: dict, inp: dict, base: tuple, c: dict) -> tuple:
+    """Ы5, этап 3: выученные правила — ДО модели. Находки по пикселям
+    базовой сборки, у которых есть действующее правило для такого места,
+    получают его действие; пересборка берётся, только если пиксели стали
+    лучше. Не стало — правилу провал (два провала — отозвано)."""
+    if not inp.get("layout", {}).get("boxes"):
+        return base
+    try:
+        rules = _prepress_rules()
+        pix = _prepress_pixel(project, inp, base)
+        feats = _pp_feats(inp, inp["texts"], inp["extra"])
+        tune = {k: dict(v) for k, v in (base[1].get("_tune") or {}).items()}
+        used = []
+        for it in pix.get("issues") or []:
+            key = it.get("key")
+            if not key or key not in feats:
+                continue
+            sig = prepress_mod.place_signature("px:" + str(it.get("code")), feats[key])
+            act = rules.active(sig)
+            if act and act in prepress_mod.TUNE_ACTIONS and not (tune.get(key) or {}).get(act):
+                cur = tune.setdefault(key, {})
+                for x in prepress_mod._EXCL.get(act, []):
+                    cur.pop(x, None)
+                cur[act] = 1
+                used.append((sig, act, key, it.get("code")))
+        if not used:
+            return base
+        cand = _pp_build(project, inp, inp["texts"], inp["extra"], tune)
+        p1 = _loop_score(pix, base[1])
+        pix2 = _prepress_pixel(project, inp, cand)
+        p2 = _loop_score(pix2, cand[1])
+        ok = p2 < p1
+        left = {(it.get("key"), it.get("code")) for it in pix2.get("issues") or []}
+        with _PREPRESS_RULES_LOCK:
+            rules = _prepress_rules()
+            for sig, act, key, pc in used:
+                gone = (key, pc) not in left
+                if gone and ok:
+                    rules.note(sig, act, True, doc=_pp_doc(inp))
+                elif not gone:
+                    rules.note(sig, act, False, doc=_pp_doc(inp))
+            rules.save()
+        c["rulesFirst"] = {"used": len(used), "ok": ok}
+        if ok:
+            cand[1]["_tune"] = tune
+            return cand
+    except Exception as e:
+        print("[backend] выученные правила до модели: %s" % e, file=sys.stderr)
+    return base
+
+
+def _prepress_shorten(project: dict, src_text: str, cur: str, models: list, c: dict,
+                      spent: list) -> Optional[str]:
+    """Короче тот же перевод — для места, куда он не влезает. Только в файл:
+    в проекте перевод не меняется. Берётся, только если бесплатные проверки
+    не хуже прежнего текста: числа, единицы, отрицание, сторона, утверждённые
+    термины, письмо языка."""
+    cur = (cur or "").strip()
+    if not cur or len(cur) < 12:
+        return None
+    limit = max(8, int(len(cur) * 0.8))
+    tgt = project.get("tgt")
+    system = ("You shorten a %s translation so that it fits a fixed place on a printed page. Keep the "
+              "meaning, every number, unit, code, name, negation and term; do not add anything; use "
+              "common abbreviations of the target language only where natural. Answer ONLY the "
+              "shortened text, at most %d characters." % (_lang_prompt(tgt), limit))
+    user = "Original (%s): %s\nCurrent translation: %s" % (_lang_prompt(project.get("src")), src_text, cur)
+    new = None
+    for mdl in models:
+        try:
+            client = _llm_client(mdl, timeout=90, step="exportqa", max_retries=1)
+            extra = ({"max_completion_tokens": 1200} if mdl["api"] == "modern"
+                     else {"max_tokens": 800} if mdl["api"] == "anthropic"
+                     else {"max_tokens": 800, "temperature": 0})
+            resp = client.chat.completions.create(
+                model=mdl["id"], messages=[{"role": "system", "content": system},
+                                           {"role": "user", "content": user}], **extra)
+            _note_usage("exportqa", mdl["id"], resp)
+            spent[0] += float(_resp_cost(mdl["id"], resp) or 0.0)
+            c["cost"] = round(spent[0], 4)
+            new = (resp.choices[0].message.content or "").strip().strip('"').strip()
+            break
+        except Exception:
+            continue
+    if new.startswith("```"):
+        new = new.strip("`").strip()
+    if (not new or "\n" in new or len(new) > limit * 1.1 or len(new) >= len(cur) * 0.95
+            or (":" in new[:40] and ":" not in cur[:40])):
+        return None                      # пояснение модели, отказ, не короче
+    import re as _re
+    if sorted(_re.findall(r"\d+", new)) != sorted(_re.findall(r"\d+", cur)):
+        return None                      # числа — буква в букву те же
+    if (len(_re.findall(r"\b(?:не|нет|ни|not|no|never|without|emas|yo'q)\b", new.lower()))
+            < len(_re.findall(r"\b(?:не|нет|ни|not|no|never|without|emas|yo'q)\b", cur.lower()))):
+        return None                      # отрицание не теряется
+    try:
+        seg_old = {"source": src_text, "target": cur}
+        seg_new = {"source": src_text, "target": new}
+        dom, sl, tl = project.get("domain"), project.get("src") or "RU", project.get("tgt") or "EN"
+
+        def hard(t):
+            iss = checks_mod.deterministic_issues(src_text, t, domain=dom, src_lang=sl, tgt_lang=tl) or []
+            return {(x.get("type") or x.get("issue_type"), x.get("target_fragment") or "")
+                    for x in iss if (x.get("type") or x.get("issue_type")) in checks_mod.OBJECTIVE_ISSUE_TYPES}
+        if hard(new) - hard(cur):
+            return None
+        if len(_gloss_misses(seg_new, project)) > len(_gloss_misses(seg_old, project)):
+            return None
+        if len(_alphabet_misses(seg_new, project)) > len(_alphabet_misses(seg_old, project)):
+            return None
+    except Exception as e:
+        print("[backend] проверка короткого перевода: %s" % e, file=sys.stderr)
+        return None
+    return new
+
+
+def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: dict, models: list,
+                         mem, ver: dict, c: dict, spent: list, _pre) -> tuple:
+    """Круги правок (Ы5, этап 3): по дефектам — следующее действие лестницы
+    (выученное правило → действие модели → лестница вида дефекта), короткий
+    перевод только в файл, пересборка, второй взгляд на изменившиеся
+    страницы; круг берётся, только если стало строго лучше. Исходы действий
+    учат правила (подтверждение — из разных документов)."""
+    import copy as _copy
+    rules = _prepress_rules()
+    cur, v_cur = base, v1
+    tune_cur = {k: dict(v) for k, v in (base[1].get("_tune") or {}).items()}
+    texts_cur, extra_cur = dict(inp["texts"]), _copy.deepcopy(inp["extra"])
+    tried: dict = {}
+    short_done: dict = {}
+    rounds = []
+    by_id = {s_["id"]: s_ for s_ in project.get("segments") or []}
+    groups = dict(_para_groups(inp["data"] or {})) if inp.get("data") else {}
+    doc = _pp_doc(inp)
+
+    def nconf(vs):
+        return sum(1 for v in vs.values() for d in v.get("defects") or []
+                   if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF)
+    n_start = nconf(v1)
+    for rnd in range(PREPRESS_ROUNDS):
+        if c.get("capped") or not nconf(v_cur):
+            break
+        feats = _pp_feats(inp, texts_cur, extra_cur)
+        plan = prepress_mod.plan_round(v_cur, tune_cur, tried, rules, feats)
+        if not plan["applied"]:
+            break
+        for key, code, act in plan["applied"]:
+            tried.setdefault(key, set()).add(act)
+        texts2, extra2 = dict(texts_cur), _copy.deepcopy(extra_cur)
+        for key in plan["leave"]:
+            if key.startswith("p"):
+                try:
+                    texts2.pop(int(key[1:]), None)
+                except ValueError:
+                    pass
+            elif key.startswith("x"):
+                try:
+                    extra2[int(key[1:])]["text"] = ""
+                except (ValueError, IndexError):
+                    pass
+        new_short = {}
+        if PREPRESS_SHORTEN:
+            for key in plan["short"]:
+                if not key.startswith("p"):
+                    continue
+                try:
+                    idx = int(key[1:])
+                except ValueError:
+                    continue
+                sids = groups.get(idx) or []
+                segs_ = [by_id[x] for x in sids if x in by_id]
+                joined = " ".join((x_.get("target") or "").strip() for x_ in segs_)
+                if (not segs_ or len(segs_) != len(sids) or any(_human_text(x_) for x_ in segs_)
+                        or " ".join(joined.split()) != " ".join((texts2.get(idx) or "").split())):
+                    continue                     # текст человека или текст к печати — не трогаем
+                t_new = _prepress_shorten(project, (inp.get("sources") or {}).get(idx) or "",
+                                          texts2.get(idx) or "", models, c, spent)
+                if t_new:
+                    new_short[idx] = (texts2.get(idx) or "", t_new)
+                    texts2[idx] = t_new
+        if plan["tune"] == tune_cur and not plan["leave"] and not new_short:
+            continue                     # действия исчерпаны или не дали правки — следующий круг
+        inp2 = dict(inp, extra=extra2)
+        try:
+            cand = _pp_build(project, inp2, texts2, extra2, plan["tune"])
+            v2 = _prepress_pages(job, project, inp2, cand, texts2, models, mem, ver, c, spent)
+            px1 = _prepress_pixel(project, dict(inp, extra=extra_cur), cur,
+                                  texts_cur if cur is not base else None)
+            px2 = _prepress_pixel(project, inp2, cand, texts2)
+        except _PrepressPause:
+            raise
+        except Exception as e:
+            print("[backend] круг правок #%s: %s" % (project.get("id"), e), file=sys.stderr)
+            break
+        s1 = sum(prepress_mod.page_score(v) for v in v_cur.values())
+        s2 = sum(prepress_mod.page_score(v) for v in v2.values())
+        p1 = _loop_score(px1, cur[1])
+        p2 = _loop_score(px2, cand[1])
+
+        def codes(vs):
+            return {d["code"] for v in vs.values() for d in v.get("defects") or []
+                    if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF}
+        ok = s2 < s1 and p2[0] <= p1[0] and not (codes(v2) - codes(v_cur)) and len(v2) >= len(v_cur)
+        left2 = {(d.get("key"), d.get("code")) for v in v2.values() for d in v.get("defects") or []
+                 if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF}
+        pxk1 = {(it.get("key"), it.get("code")) for it in px1.get("issues") or [] if it.get("key")}
+        pxk2 = {(it.get("key"), it.get("code")) for it in px2.get("issues") or [] if it.get("key")}
+        with _PREPRESS_RULES_LOCK:
+            rules = _prepress_rules()           # свежий файл: другая задача могла дописать
+            for key, code, act in plan["applied"]:
+                if act not in prepress_mod.TUNE_ACTIONS or key not in feats:
+                    continue
+                sig = prepress_mod.place_signature(code, feats[key])
+                if (key, code) in left2:
+                    rules.note(sig, act, False, doc=doc)     # своё место не исправилось
+                elif ok:
+                    rules.note(sig, act, True, doc=doc)
+                    # находки по пикселям этого места, ушедшие в принятом круге, —
+                    # то же действие станет правилом и ДО модели (`_prepress_rules_first`)
+                    for (k2, pc) in pxk1 - pxk2:
+                        if k2 == key:
+                            rules.note(prepress_mod.place_signature("px:" + str(pc), feats[key]),
+                                       act, True, doc=doc)
+            rules.save()
+        rounds.append({"n": rnd + 1, "applied": len(plan["applied"]), "before": s1, "after": s2,
+                       "used": ok})
+        if ok:
+            cur, v_cur, tune_cur, texts_cur, extra_cur = cand, v2, plan["tune"], texts2, extra2
+            for idx, (frm, to) in new_short.items():
+                short_done[idx] = (short_done.get(idx, (frm, to))[0], to)
+    c["rounds"] = rounds
+    rep = {"fixed": max(0, n_start - nconf(v_cur)), "rounds": len(rounds)}
+    if short_done:
+        rep["shortened"] = [{"key": "p%d" % idx, "from": frm, "to": to,
+                             "segs": [groups[idx][0]] if (len(groups.get(idx) or []) == 1
+                                                         and groups[idx][0] in by_id
+                                                         and (by_id[groups[idx][0]].get("target") or "").strip()
+                                                         == frm.strip()) else []}
+                            for idx, (frm, to) in sorted(short_done.items())][:50]
+    return cur, v_cur, rep
 
 
 def _prepress_tell(project: dict, c: dict) -> None:

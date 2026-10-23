@@ -3453,7 +3453,9 @@ API**, воркер — никогда: счётчик в документе н�
 `PREPRESS_MODEL` (claude-opus-5-5), `PREPRESS_FALLBACK` (gpt-5.6-sol),
 `PREPRESS_MAX_USD` (10 на проект за проход, дальше — «не досмотрено»
 и сообщение владельцу), `PREPRESS_PARALLEL` (3 страницы разом),
-`PREPRESS_MIN_CONF` (0.4), `PREPRESS_TEXT_PX` (16). Платит сервис
+`PREPRESS_MIN_CONF` (0.4), `PREPRESS_TEXT_PX` (16), `PREPRESS_ROUNDS` (3 круга правок),
+`PREPRESS_SHORTEN` (1 — короткий перевод только в файл; 0 — выключить),
+`PREPRESS_LEARN_MIN_OK` (2 документа до правила). Платит сервис
 (служебная организация `_qa`), лимит клиента не тратится.
 Выгрузка ждёт проверку: `export` отвечает `{pending, job}`, скачивание — 409,
 экран «Скачать» опрашивает `GET /api/projects/{pid}/prepress` («Готовим файл…

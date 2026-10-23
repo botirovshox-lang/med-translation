@@ -39,7 +39,7 @@ from pathlib import Path
 
 # Версия ВОПРОСА к модели и списка действий: правишь промпт — поднимай,
 # иначе память отдаст ответ на прежний вопрос.
-PROMPT_VERSION = "pp1"
+PROMPT_VERSION = "pp2"
 LEARN_MIN_OK = int(os.environ.get("PREPRESS_LEARN_MIN_OK", "2"))
 LEARN_MAX = int(os.environ.get("PREPRESS_LEARN_MAX", "500"))
 
@@ -173,8 +173,11 @@ class LearnedRules:
             return r.get("action")
         return None
 
-    def note(self, sig: str, action: str, ok: bool, what: str = "") -> None:
-        """Исход действия на месте с этой подписью. Провал отзывает правило."""
+    def note(self, sig: str, action: str, ok: bool, what: str = "", doc: str = "") -> None:
+        """Исход действия на месте с этой подписью. В силу правило входит
+        после `LEARN_MIN_OK` подтверждений из РАЗНЫХ документов (один файл
+        с десятью одинаковыми ячейками — одно свидетельство); отзывается
+        при двух провалах или доле провалов больше трети."""
         if action not in ACTIONS or action == "none":
             return
         r = self.rules.setdefault(sig, {"action": action, "ok": 0, "bad": 0, "state": "candidate",
@@ -186,11 +189,18 @@ class LearnedRules:
             r.update({"action": action, "ok": 0, "bad": 0})
         if ok:
             r["ok"] = int(r.get("ok") or 0) + 1
+            if doc:
+                docs = list(r.get("docs") or [])
+                if doc not in docs:
+                    docs.append(doc)
+                r["docs"] = docs[-20:]
         else:
             r["bad"] = int(r.get("bad") or 0) + 1
-        if r["bad"] > 0:
+        bad, okc = int(r.get("bad") or 0), int(r.get("ok") or 0)
+        evid = len(r.get("docs") or []) if r.get("docs") else okc
+        if bad >= 2 or (bad and okc + bad >= 3 and bad / max(1, okc) > 0.34):
             r["state"] = "revoked"
-        elif r["ok"] >= LEARN_MIN_OK and r.get("state") == "candidate":
+        elif evid >= LEARN_MIN_OK and okc >= LEARN_MIN_OK and r.get("state") == "candidate":
             r["state"] = "active"
         r["at"] = time.strftime("%Y-%m-%d %H:%M")
         if len(self.rules) > LEARN_MAX:
@@ -231,7 +241,10 @@ def prompt(src: str, tgt: str, places: list) -> str:
         "NOT defects (do not report): a different line break position or one more line inside the "
         "same box; the translation being longer or shorter than the original; condensed type when "
         "space is tight; type up to ~10% smaller than the original in tables and labels; untranslated "
-        "names, codes, formulas, numbers; stamps, signatures and logos left in the original language.",
+        "names, codes, formulas, numbers; stamps, signatures and logos left in the original language; "
+        "a different font FILE of the same class — the export is printed with Noto Sans / Noto Serif "
+        "/ a monospace face, so report FONT only when the CLASS (serif, sans, mono), the weight or "
+        "the style (italic) differs from the original.",
         "Look closely at small details: dots and accents above letters, thin table rules, frame "
         "lines, stamp rings, logo shapes, edges of coloured plates. Report EVERY visible defect, "
         "even subtle ones; confidence 0..1 says how sure you are that the defect is VISIBLE on the "
@@ -475,6 +488,76 @@ USER_CODES = {"OVERFLOW", "OVERLAP", "MISSING", "UNTRANSLATED", "RULE_CUT", "MAR
 def page_score(verdict: dict) -> int:
     return sum(WEIGHT.get(d.get("code"), 1) for d in (verdict or {}).get("defects") or []
                if float(d.get("confidence") or 0) >= MIN_CONF)
+
+
+# Лестница действий по виду дефекта: не помогло одно — пробуем следующее.
+# Первым идёт правило (выученное), потом действие модели, потом лестница.
+LADDER = {
+    "OVERFLOW": ("tight", "cond", "wide", "shorter"),
+    "OVERLAP": ("tight", "solo", "cond", "shorter"),
+    "SMALL": ("wide", "solo"),
+    "SIZE": ("tight",),
+    "GHOST": ("erase",),
+    "RULE_CUT": ("keep_rule",),
+    "MARK_LOST": ("keep_rule", "leave_orig"),
+    "PATCH": ("keep_rule",),
+    "MERGED": ("solo", "keep_breaks"),
+    "FRAGMENT": ("solo",),
+}
+# Взаимоисключающие правки: у места одна из группы. Не помогла прежняя —
+# новая её ЗАМЕНЯЕТ (теснее не помогло → шире).
+_GROUPS = [("wide", "tight"), ("align_left", "align_right", "align_center"),
+           ("justify", "no_justify"), ("serif", "sans", "mono"), ("erase", "keep_rule")]
+_EXCL = {a: [b for b in g if b != a] for g in _GROUPS for a in g}
+
+
+def plan_round(verdicts: dict, base: dict, tried: "dict | None" = None, rules=None,
+               feats: "dict | None" = None) -> dict:
+    """План следующего круга правок по вердиктам: {tune, leave, short,
+    applied: [(ключ, код, действие)]}. У места — одно новое действие за
+    круг; уже испробованное на этом месте не повторяется."""
+    tried = tried or {}
+    feats = feats or {}
+    out = {k: dict(v) for k, v in (base or {}).items()}
+    leave, short, applied, busy = set(), set(), [], set()
+    for v in verdicts.values():
+        for d in (v or {}).get("defects") or []:
+            key = d.get("key")
+            if float(d.get("confidence") or 0) < MIN_CONF or not key or key in busy:
+                continue
+            code = d.get("code") or "OTHER"
+            cands = []
+            if rules is not None and key in feats:
+                ra = rules.active(place_signature(code, feats[key]))
+                if ra:
+                    cands.append(ra)
+            cands.append(d.get("action") or "none")
+            cands += list(LADDER.get(code, ()))
+            done = tried.get(key) or set()
+            pick = None
+            for a in cands:
+                a = "wide" if a == "lines2" else a
+                if a in ("none", "") or a in done or (a not in TUNE_ACTIONS and a not in ("leave_orig", "shorter")):
+                    continue
+                if a in TUNE_ACTIONS and (out.get(key) or {}).get(a):
+                    continue                     # уже стоит
+                pick = a
+                break
+            if pick is None:
+                continue
+            busy.add(key)
+            applied.append((key, code, pick))
+            if pick == "leave_orig":
+                leave.add(key)
+            elif pick == "shorter":
+                short.add(key)
+            else:
+                cur = out.setdefault(key, {})
+                for x in _EXCL.get(pick, []):
+                    cur.pop(x, None)
+                cur[pick] = 1
+    return {"tune": {k: v for k, v in out.items() if v}, "leave": leave, "short": short,
+            "applied": applied}
 
 
 def tune_from(verdicts: dict, base: dict) -> tuple:

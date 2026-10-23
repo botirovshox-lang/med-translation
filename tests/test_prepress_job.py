@@ -216,14 +216,54 @@ j5 = {"id": 2, "kind": "prepress", "project": pid, "status": "running", "params"
 main._JOB_TENANT.id = "default"
 main._job_prepress(j5)
 c5 = j5["counters"]
-check("второй взгляд был", "round2" in c5, c5)
+check("круги правок были", bool(c5.get("rounds")), c5)
+check("круг взят, раз стало чище", any(r_["used"] for r_ in c5.get("rounds") or []), c5.get("rounds"))
 meta = main._prepress_cache(pid)
 inp = main._layout_inputs(project)
 check("файл в кэше, отпечаток совпал", bool(meta) and meta.get("fp") == main._prepress_fp(inp), meta)
 check("кэш помечен проверенным", (meta or {}).get("state") in ("checked", "partial"), meta)
 check("pdf проверки лежит", (meta or {}).get("pdfPath") and meta["pdfPath"].exists())
-if c5.get("round2", {}).get("used"):
+if any(r_["used"] for r_ in c5.get("rounds") or []):
     check("исправлено считается местами", (c5.get("report") or {}).get("fixed", 0) >= 1, c5.get("report"))
+
+print("=== короткий перевод только в файл: бесплатные проверки ===")
+ANS = ["Total 12 kg paid"]
+
+
+class _Comp3:
+    def create(self, **kw):
+        return _Resp(ANS[0])
+
+
+class _Client3:
+    def __init__(self):
+        self.chat = type("C", (), {"completions": _Comp3()})()
+
+
+main._llm_client = lambda mdl, timeout=None, step=None, max_retries=None: _Client3()
+cc, sp = {}, [0.0]
+mdls = main._prepress_models()
+got = main._prepress_shorten(project, "Итого 12 кг оплачено полностью", "Total of 12 kg has been paid in full",
+                             mdls, cc, sp)
+check("короче и числа те же — берём", got == "Total 12 kg paid", got)
+ANS[0] = "Total 13 kg paid"
+got = main._prepress_shorten(project, "Итого 12 кг оплачено полностью", "Total of 12 kg has been paid in full",
+                             mdls, cc, sp)
+check("число поменялось — не берём", got is None, got)
+ANS[0] = "Total of 12 kg has been paid in full!"
+got = main._prepress_shorten(project, "Итого 12 кг оплачено полностью", "Total of 12 kg has been paid in full",
+                             mdls, cc, sp)
+check("не короче — не берём", got is None, got)
+ANS[0] = "Payment of 12 kg done"
+got = main._prepress_shorten(project, "Оплата 12 кг не принята банком", "Payment of 12 kg was not accepted by the bank",
+                             mdls, cc, sp)
+check("отрицание потеряно — не берём", got is None, got)
+ANS[0] = "Here is it: Total 12 kg paid"
+got = main._prepress_shorten(project, "Итого 12 кг оплачено полностью", "Total of 12 kg has been paid in full",
+                             mdls, cc, sp)
+check("пояснение модели — не берём", got is None, got)
+check("в проекте перевод не тронут", all("Total 12 kg paid" != s_.get("target") for s_ in segs))
+main._llm_client = lambda mdl, timeout=None, step=None, max_retries=None: _Client2()
 
 print("=== выгрузка ждёт проверку ===")
 g = main._prepress_gate(project, inp)

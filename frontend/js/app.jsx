@@ -191,6 +191,7 @@ function useStore(authed) {
         if (r && r.segment && patch.target !== undefined)
           _patchLocal(pid, sid, { backcheck: r.segment.backcheck, termcheck: r.segment.termcheck,
                                   qa_result: r.segment.qa_result });
+        return r;
       });
     }
     return Promise.resolve();

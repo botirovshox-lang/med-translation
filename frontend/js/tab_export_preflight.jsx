@@ -821,6 +821,31 @@ function ExpLayoutReport({ report, store }) {
       store.go("editor"); } }, TR("Показать строки")));
 }
 
+/* Ы5, этап 3: строки, которые проверка перед выдачей сократила ТОЛЬКО
+   в файле, чтобы они влезли на своё место. В проекте перевод прежний;
+   «Применить» переносит короткий вариант в перевод строки (это решение
+   человека — как правка руками). Свой хук — в своём компоненте. */
+function ExpShortReport({ items, pid, store }) {
+  const [done, setDone] = useState({});
+  const apply = (it, i) => {
+    const sid = (it.segs || [])[0];
+    if (!sid || !store.updateSegment) return;
+    Promise.resolve(store.updateSegment(pid, sid, { target: it.to })).then(r => {
+      if (r && r.segment) setDone(d => ({ ...d, [i]: true }));
+      else toast.error(TR("Не применено"), TR("Сервер недоступен или вернул ошибку."));
+    });
+  };
+  return React.createElement("div", { className: "col", style: { gap: 6, marginTop: 12, fontSize: 13 } },
+    React.createElement("div", { style: { fontWeight: 600 } },
+      TR("Сократили в файле, чтобы влезло: ") + items.length),
+    items.slice(0, 10).map((it, i) => React.createElement("div", { key: i, className: "row between row-wrap", style: { gap: 8 } },
+      React.createElement("span", { className: "dim", style: { minWidth: 0, flex: "1 1 260px" } },
+        React.createElement("s", null, it.from), " → ", React.createElement("span", { style: { color: "var(--text-1)" } }, it.to)),
+      (it.segs || []).length === 1 && (done[i]
+        ? React.createElement("span", { className: "dim" }, TR("в переводе"))
+        : React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => apply(it, i) }, TR("Применить к переводу"))))));
+}
+
 /* Приёмка готового файла (Ч5, backend/export_qa.py): лист выгрузки против
    листа оригинала, независимо от отчёта сборки. Идёт на сервере фоном —
    опрашиваем, пока «проверяем». Находки — словами человека и числом, без
@@ -1121,7 +1146,8 @@ function TabExport({ store, toast }) {
       const st = result.stats || {};
       setLayoutReport(st.layout ? { collisions: st.collisions || 0, pages: st.collisionPages || [],
                                     segs: st.collisionSegs || [], small: st.smallShare || 0,
-                                    smallPages: st.smallPages || [], fmt, at: Date.now() } : null);
+                                    smallPages: st.smallPages || [], fmt, at: Date.now(),
+                                    shortened: (st.prepress && st.prepress.shortened) || [] } : null);
       // Про 1в1 говорим не «готово», а что именно легло в файл: сколько абзацев
       // переведено, сколько осталось на языке оригинала и в скольких границу
       // выделения пришлось ставить по доле длины, а не по знаку препинания.
@@ -1249,6 +1275,8 @@ function TabExport({ store, toast }) {
           project.pdfSheets && (fmt === "original" || fmt === "pdf")
             && React.createElement(ExpSheetsPick, { info: project.pdfSheets, value: sheets, onChange: setSheets }),
           layoutReport && React.createElement(ExpLayoutReport, { report: layoutReport, store }),
+          layoutReport && (layoutReport.shortened || []).length > 0
+            && React.createElement(ExpShortReport, { key: "s" + layoutReport.at, items: layoutReport.shortened, pid: project.id, store }),
           layoutReport && React.createElement(ExpQaReport, { key: layoutReport.at, pid: project.id, fmt: layoutReport.fmt, store })
         ),
         !project.media && React.createElement("div", null,

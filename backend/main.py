@@ -38453,6 +38453,10 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                        # почему круг взят или нет — для разбора владельцем (коды и числа)
                        "acts": sorted({a for _k, _c, a in plan["applied"]}),
                        "better": len(dec["good"]), "worse": len(dec["bad"]), "same": len(dec["same"]),
+                       "worseKeys": sorted(dec["bad"])[:10],
+                       "worseWhy": sorted({(ab.get(k) or {}).get("newB") or (ab.get(k) or {}).get("better") or ""
+                                           for k in dec["bad"]})[:5],
+                       "appliedKeys": sorted({k for k, _c, _a in plan["applied"]})[:12],
                        "px": [p1[0], _loop_score(px2, cand[1])[0]]})
         if ok:
             cur, v_cur, tune_cur, texts_cur, extra_cur = cand, v2, tune2, texts2, extra2

@@ -38045,8 +38045,10 @@ def _prepress_split(project: dict, inp: dict, idx: int, cur: str, models: list, 
     system = ("The original block consists of %d separate lines (in reading order below), but its "
               "translation was printed as one block. Split the TRANSLATION into exactly %d parts, one "
               "per original line, in the same order. Use only the words of the translation, each "
-              "exactly once; do not add, drop, change or translate anything. Answer ONLY a JSON array "
-              "of %d strings." % (len(slots), len(slots), len(slots)))
+              "exactly once; do not add, drop, change or translate anything. Each part must be a "
+              "complete translation of its own original line; if the translation cannot be cut that "
+              "way (it mixes words of different lines into one phrase), answer null. Answer ONLY a "
+              "JSON array of %d strings, or null." % (len(slots), len(slots), len(slots)))
     user = "Original text (all lines): %s\nOriginal lines in order:\n%s\nTranslation: %s" % (
         src, "\n".join(lines), cur)
     ans = _pp_ask(models, system, user, c, spent)
@@ -38058,7 +38060,8 @@ def _prepress_split(project: dict, inp: dict, idx: int, cur: str, models: list, 
     except Exception:
         parts = None
     if not isinstance(parts, list) or len(parts) != len(slots) or not all(isinstance(x, str) and x.strip() for x in parts):
-        return None
+        # модель сказала «не режется» (null) или ответила не тем — перевод по строкам
+        return _prepress_split_retranslate(project, src, lines, models, c, spent)
     if _pp_runs_of(parts, cur):
         return [x.strip() for x in parts]
     return _prepress_split_retranslate(project, src, lines, models, c, spent)

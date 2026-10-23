@@ -909,7 +909,8 @@ def _delete_project_record(pid: int) -> None:
     if gone is not None and gone.get("media"):
         shutil.rmtree(str(MEDIA_DIR / str(int(pid))), ignore_errors=True)
     for path in (list(_source_paths(pid)) + list(SOURCE_DIR.glob("%d.orig.*" % pid))
-                 + list(SOURCE_DIR.glob("%d.full.*" % pid)) + [_tune_path(pid)]):
+                 + list(SOURCE_DIR.glob("%d.full.*" % pid)) + [_tune_path(pid)]
+                 + [SOURCE_DIR / ("%d.prepress.json" % pid)]):
         try:
             path.unlink(missing_ok=True)
         except OSError as e:
@@ -36961,19 +36962,10 @@ def _drop_duplicate_extras(layout: dict, texts: dict, extra: list) -> int:
     return len(drop)
 
 
-def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optional[dict]:
-    """PDF «как в оригинале»: слой с переводом поверх исходных страниц.
-
-    None — у ЭТОГО проекта такой выгрузки нет: раскладку пишет разбор файла,
-    и у проекта, залитого до неё (или без хранимого оригинала), её просто
-    неоткуда взять. Тогда вызывающий печатает собранный Word-документ,
-    как печатал раньше.
-
-    А вот когда раскладка ЕСТЬ, а собрать нечем (не поставлен reportlab,
-    нет шрифта с нужной письменностью) — это 503 со словами, а не тихая
-    подмена: человек просил перевод «как в оригинале», и отдать ему вместо
-    этого ровный поток абзацев, ничего не сказав, нельзя (инвариант 4).
-    Лечится установкой, а не молчанием."""
+def _layout_inputs(project: dict) -> Optional[dict]:
+    """Входы сборки PDF «как в оригинале» — ОДНИ для выгрузки и для
+    предпечатной проверки (`_prepress_run`): соберись они порознь, проверенный
+    файл и выгруженный разошлись бы. None — раскладки у проекта нет."""
     if not layout_pdf_mod:
         return None
     data = _load_source_map(project["id"]) if project.get("sourceDocx") else None
@@ -37004,6 +36996,28 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     by_id = {s_["id"]: s_ for s_ in project.get("segments") or []}
     sources = {int(idx): " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
                for idx, sids in _para_groups(data)}
+    return {"data": data, "layout": layout, "work": work, "texts": texts, "extra": extra,
+            "sources": sources, "same": same, "dup": dup_dropped}
+
+
+def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optional[dict]:
+    """PDF «как в оригинале»: слой с переводом поверх исходных страниц.
+
+    None — у ЭТОГО проекта такой выгрузки нет: раскладку пишет разбор файла,
+    и у проекта, залитого до неё (или без хранимого оригинала), её просто
+    неоткуда взять. Тогда вызывающий печатает собранный Word-документ,
+    как печатал раньше.
+
+    А вот когда раскладка ЕСТЬ, а собрать нечем (не поставлен reportlab,
+    нет шрифта с нужной письменностью) — это 503 со словами, а не тихая
+    подмена: человек просил перевод «как в оригинале», и отдать ему вместо
+    этого ровный поток абзацев, ничего не сказав, нельзя (инвариант 4).
+    Лечится установкой, а не молчанием."""
+    inp_ = _layout_inputs(project)
+    if inp_ is None:
+        return None
+    data, layout, work, texts = inp_["data"], inp_["layout"], inp_["work"], inp_["texts"]
+    extra, sources, same, dup_dropped = inp_["extra"], inp_["sources"], inp_["same"], inp_["dup"]
     try:
         pdf, stats, layout, extra = _layout_loop(project, work, layout, texts, extra, sources)
     except layout_pdf_mod.NotAvailable as e:
@@ -37023,6 +37037,7 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     # Сбой здесь экспорт не роняет: приёмка — побочная работа.
     ov = stats.pop("_overlay", None)
     order = stats.pop("_overlayOrder", None)
+    stats.pop("_placed", None)          # места строк — внутреннее (prepress)
     try:
         if len(work) + len(ov or b"") <= EXPORT_QA_KEEP_MB * 1048576:
             with _QA_INPUTS_LOCK:
@@ -37081,6 +37096,7 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
 #    воркере — минуты, там работают правила;
 #  * денег не тратит: вызовов модели в петле нет.
 LAYOUT_LOOP = os.environ.get("LAYOUT_LOOP", "1") != "0"
+PREPRESS_QBASE = 10 ** 12          # билеты задач низкого приоритета (предпечатная проверка)
 LAYOUT_LOOP_TRIES = int(os.environ.get("LAYOUT_LOOP_TRIES", "2"))
 LAYOUT_LOOP_MAX_PAGES = int(os.environ.get("LAYOUT_LOOP_MAX_PAGES", "12"))
 LAYOUT_LOOP_TIME = float(os.environ.get("LAYOUT_LOOP_TIME", "90"))
@@ -37317,6 +37333,276 @@ def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: l
                        "used": best is not first, "hints": len(hints), "hinted": hinted,
                        "seconds": round(time.time() - t0, 1)}
     return best
+
+
+# ─── Предпечатная проверка (раздел Ы2, backend/prepress.py) ────────────
+# У выгрузки одна попытка (решение владельца 23.10.2026): сильная модель
+# смотрит КАЖДУЮ страницу до выдачи, платит сервис (служебная организация),
+# лимит клиента не тратится. Этап 1 — «смотреть»: модель видит все страницы,
+# вердикты ложатся в память страниц, владельцу — сводка; файл не меняется.
+# Этап 2 — «чинить» (PREPRESS=fix). Ответ о странице берётся из памяти,
+# только если совпали тексты страницы, места строк, картинка и версии.
+try:
+    import prepress as prepress_mod
+except Exception as _e:                 # pragma: no cover
+    prepress_mod = None
+    print("[backend] prepress не загружен: %s" % _e, file=sys.stderr)
+PREPRESS = os.environ.get("PREPRESS", "observe").strip().lower()      # off | observe | fix
+PREPRESS_TENANTS = os.environ.get("PREPRESS_TENANTS", "*super")
+PREPRESS_MODEL = os.environ.get("PREPRESS_MODEL", "claude-opus-5-5")
+PREPRESS_FALLBACK = os.environ.get("PREPRESS_FALLBACK", "gpt-5.6-sol")
+PREPRESS_MAX_USD = float(os.environ.get("PREPRESS_MAX_USD", "10"))
+PREPRESS_PARALLEL = int(os.environ.get("PREPRESS_PARALLEL", "3"))
+
+
+def _prepress_path(pid: int) -> Path:
+    return SOURCE_DIR / ("%d.prepress.json" % int(pid))
+
+
+def _prepress_on(tenant: str) -> bool:
+    """Включена ли проверка у организации: `PREPRESS_TENANTS` — список
+    организаций, «*» — у всех, «*super» — у домов администраторов сервиса
+    (раскатка: сначала у владельца)."""
+    if PREPRESS == "off" or prepress_mod is None or export_qa_mod is None:
+        return False
+    lst = [x.strip() for x in PREPRESS_TENANTS.split(",") if x.strip()]
+    if "*" in lst or tenant in lst:
+        return True
+    if "*super" in lst:
+        for u in _users():
+            if u.get("super") and (u.get("tenant") == tenant or any(
+                    (m or {}).get("tenant") == tenant for m in u.get("memberships") or [])):
+                return True
+    return False
+
+
+def _prepress_models() -> list:
+    """Сильная модель Claude, при её недоступности — OpenAI (решение
+    владельца). Модель без ключа пропускается; пусто — проверять нечем."""
+    out = []
+    for mid in (PREPRESS_MODEL, PREPRESS_FALLBACK):
+        if not mid:
+            continue
+        try:
+            m = _resolve_model(mid)
+        except Exception:
+            continue
+        if m.get("id") != mid or any(x["id"] == m["id"] for x in out):
+            continue
+        if _provider_ready(m):
+            out.append(m)
+    return out
+
+
+def _prepress_kick(pid: int, why: str) -> Optional[dict]:
+    """Поставить предпечатную проверку проекта — задачей низкого приоритета.
+    Только PDF «как в оригинале» (этап 1), только полный перевод, одна
+    ждущая задача на проект."""
+    project = _project_by_id(pid)
+    if project is None or not _prepress_on(_tenant_of(project)):
+        return None
+    if (project.get("importKind") or "") != "pdf" or not project.get("sourceDocx"):
+        return None
+    segs = [s_ for s_ in project.get("segments") or [] if not _anchorless_seg(s_)]
+    if not segs or any(_needs_translation(s_) for s_ in segs):
+        return None
+    for q in _queued_jobs():
+        if int(q.get("project") or -1) == int(pid) and int(q.get("qseq") or 0) >= PREPRESS_QBASE:
+            return None
+    for j in list(_JOBS.values()):
+        if (j.get("project") == pid and j.get("kind") == "prepress"
+                and j.get("status") in ("queued", "running")):
+            return None
+    prev = getattr(_JOB_TENANT, "id", None)
+    _JOB_TENANT.id = _tenant_of(project)
+    try:
+        return _job_enqueue(pid, "prepress", [], {"mode": PREPRESS, "why": why}, low=True)
+    finally:
+        _JOB_TENANT.id = prev
+
+
+def _prepress_look(work: bytes, pdf: bytes, page: int, places: list, src: str, tgt: str,
+                   models: list) -> dict:
+    """Взгляд модели на одну страницу (все плитки — одним вызовом). Ловит
+    свои исключения: одна страница не роняет проверку."""
+    try:
+        tiles = prepress_mod.pair_images(work, pdf, page, places)
+    except Exception as e:
+        return {"error": "tiles:%s" % type(e).__name__}
+    content = [{"type": "text", "text": "Page %d, %d tile(s)." % (page + 1, len(tiles))}]
+    for jpeg, _m in tiles:
+        content.append({"type": "image_url", "image_url": {
+            "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(), "detail": "high"}})
+    system = prepress_mod.prompt(src, tgt, places)
+    last = None
+    cost = 0.0
+    for mdl in models:
+        for attempt in range(2):
+            try:
+                client = _llm_client(mdl, timeout=180, step="exportqa", max_retries=1)
+                extra = ({"max_completion_tokens": 4000} if mdl["api"] == "modern"
+                         else {"max_tokens": 3000} if mdl["api"] == "anthropic"
+                         else {"max_tokens": 3000, "temperature": 0})
+                resp = client.chat.completions.create(
+                    model=mdl["id"], messages=[{"role": "system", "content": system},
+                                               {"role": "user", "content": content}], **extra)
+                _note_usage("exportqa", mdl["id"], resp)
+                cost += float(_resp_cost(mdl["id"], resp) or 0.0)
+                v = prepress_mod.parse(resp.choices[0].message.content or "", places)
+                if v["parsed"]:
+                    return {"verdict": v, "cost": cost, "model": mdl["id"], "tiles": len(tiles)}
+                last = "unparsed"
+            except Exception as e:
+                last = _err_public(e)
+                break                   # к запасной модели
+    return {"error": str(last or "no_model")[:200], "cost": cost}
+
+
+def _job_prepress(job: dict) -> None:
+    """Предпечатная проверка проекта: сборка → картинка каждой страницы →
+    память или взгляд модели → вердикты в память, сводка в задаче. Между
+    пачками страниц — стоп, выкат (парковка) и уступка очереди."""
+    pid = job["project"]
+    project = _project_by_id(pid)
+    c = job.setdefault("counters", {})
+    if project is None or prepress_mod is None:
+        c["skipped"] = "no_project"
+        return
+    try:
+        inp = _layout_inputs(project)
+    except HTTPException as e:
+        c["skipped"] = "layout:%s" % e.status_code
+        return
+    if inp is None:
+        c["skipped"] = "no_layout"
+        return
+    models = _prepress_models()
+    if not models:
+        c["skipped"] = "no_model"
+        return
+    pdf, st, lay, ext = _layout_loop(project, inp["work"], inp["layout"], inp["texts"],
+                                     inp["extra"], inp["sources"])
+    items = export_qa_mod.printed_items(lay, inp["texts"], ext, inp["sources"])
+    placed = st.get("_placed") or {}
+    try:
+        import pypdfium2 as _pp
+        pdfium_v = str(getattr(_pp, "V_PDFIUM", "") or getattr(_pp, "PDFIUM_INFO", ""))
+    except Exception:
+        pdfium_v = ""
+    ver = {"model": models[0]["id"], "prompt": prepress_mod.PROMPT_VERSION, "pdfium": pdfium_v}
+    from pypdf import PdfReader as _PR
+    rd = _PR(io.BytesIO(pdf))
+    n = len(rd.pages)
+    mem = prepress_mod.PageMemory(_prepress_path(pid))
+    todo = []
+    reasons: dict = {}
+    for pg in range(n):
+        mb = rd.pages[pg].mediabox
+        pw, ph = float(mb.width), float(mb.height)
+        places = prepress_mod.page_places(items, pg, pw, ph)
+        texts_pg = [it.get("text") or "" for it in items if it["page"] == pg]
+        keys = prepress_mod.page_keys(texts_pg, placed.get(pg) or [], prepress_mod.page_raster(pdf, pg), ver)
+        rec, why = mem.lookup(pg, keys)
+        reasons[why] = reasons.get(why, 0) + 1
+        if rec is None:
+            todo.append((pg, places, keys))
+    job["total"] = n
+    job["done"] = n - len(todo)
+    c.update({"pages": n, "fromMemory": n - len(todo), "reasons": reasons})
+    _job_persist(job)
+    spent = float(c.get("cost") or 0.0)
+    prev_t, prev_p = getattr(_JOB_TENANT, "id", None), getattr(_JOB_PROJECT, "id", None)
+    _JOB_TENANT.id = QA_SERVICE_TENANT      # расход — сервису, не клиенту
+    _JOB_PROJECT.id = None                  # и не в себестоимость файла клиента
+    try:
+        k = 0
+        while k < len(todo):
+            if _job_should_stop():
+                job["status"] = "stopped"
+                break
+            if _SHUTDOWN.is_set():
+                mem.save()
+                _job_park(job)
+                return
+            if _job_should_yield(job):
+                mem.save()
+                _job_yield(job, [])
+                return
+            if spent >= PREPRESS_MAX_USD:
+                c["unchecked"] = len(todo) - k
+                c["capped"] = True
+                break
+            batch = todo[k:k + max(1, PREPRESS_PARALLEL)]
+            res = _run_parallel(batch, lambda t: _prepress_look(
+                inp["work"], pdf, t[0], t[1], project.get("src") or "", project.get("tgt") or "",
+                models), workers=PREPRESS_PARALLEL)
+            for (pg, places, keys), r in zip(batch, res):
+                spent += float(r.get("cost") or 0.0)
+                if r.get("verdict") is None:
+                    c["errors"] = int(c.get("errors") or 0) + 1
+                    c["lastError"] = r.get("error")
+                    continue
+                v = r["verdict"]
+                mem.store(pg, keys, {"ok": v["ok"], "defects": v["defects"], "model": r.get("model")})
+                c["looked"] = int(c.get("looked") or 0) + 1
+                for d in v["defects"]:
+                    if d.get("confidence", 0) >= prepress_mod.MIN_CONF:
+                        bc = c.setdefault("byCode", {})
+                        bc[d["code"]] = bc.get(d["code"], 0) + 1
+                        if d["code"] == "OTHER":
+                            c.setdefault("other", []).append(d.get("what") or "")
+            k += len(batch)
+            job["done"] = min(n, job["done"] + len(batch))
+            c["cost"] = round(spent, 4)
+            _job_persist(job)
+    finally:
+        _JOB_TENANT.id, _JOB_PROJECT.id = prev_t, prev_p
+    mem.data["report"] = {k_: v_ for k_, v_ in c.items() if k_ != "cost"}
+    mem.data["report"]["at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    mem.save()
+    _prepress_tell(project, c)
+
+
+def _prepress_tell(project: dict, c: dict) -> None:
+    """Сводка владельцу сервиса (Telegram): только коды и числа."""
+    try:
+        if not tg_mod or not (c.get("byCode") or c.get("capped") or c.get("errors")):
+            return
+        codes = ", ".join("%s %d" % (k, v) for k, v in sorted((c.get("byCode") or {}).items()))
+        txt = ("🔎 Предпечатная проверка: проект #%s «%s» — страниц %s, модель смотрела %s, "
+               "из памяти %s. Дефекты: %s%s%s" % (
+                   project.get("id"), (project.get("title") or "")[:60], c.get("pages"),
+                   c.get("looked", 0), c.get("fromMemory", 0), codes or "нет",
+                   "; не досмотрено %s (потолок)" % c.get("unchecked") if c.get("capped") else "",
+                   "; сбоев %s" % c.get("errors") if c.get("errors") else ""))
+        if c.get("other"):
+            txt += "\nНовые виды: " + "; ".join(x for x in c["other"][:5] if x)
+        tg_mod.notify_admin_async(txt)
+    except Exception as e:
+        print("[backend] сводка предпечатной проверки не ушла: %s" % e, file=sys.stderr)
+
+
+@app.post("/api/admin/prepress/{pid}")
+def prepress_run_now(pid: int):
+    """Поставить предпечатную проверку проекта сейчас — суперпользователю."""
+    project = get_project(pid)
+    if not _actor_is_super():
+        raise HTTPException(403, "Только администратору сервиса")
+    job = _prepress_kick(int(project["id"]), "admin")
+    return {"ok": bool(job), "job": (job or {}).get("id")}
+
+
+@app.get("/api/admin/prepress/{pid}")
+def prepress_report(pid: int):
+    """Отчёт предпечатной проверки проекта — суперпользователю."""
+    project = get_project(pid)
+    if not _actor_is_super():
+        raise HTTPException(403, "Только администратору сервиса")
+    try:
+        data = json.loads(_prepress_path(int(project["id"])).read_text(encoding="utf-8"))
+    except Exception:
+        return {"ok": True, "report": None, "pages": {}}
+    return {"ok": True, "report": data.get("report"), "pages": data.get("pages") or {}}
 
 
 def _orig_page_width(project: dict) -> Optional[float]:
@@ -39098,7 +39384,7 @@ def health(request: Request):
 # словарь в памяти. Два параллельных прогона дрались бы за один state.json.
 import queue as _queue
 
-JOB_CHUNKS = {"translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10,
+JOB_CHUNKS = {"prepress": 1, "translate": 10, "backcheck": 10, "termcheck": 10, "medical_qa": 10,
               # Видео: распознавание речи и сборка (субтитры дорожкой, озвучка).
               # Порций по сегментам у них нет — цикл свой (`_job_media`), число
               # здесь лишь затем, что `_job_run` читает его до ветвления.
@@ -40091,16 +40377,20 @@ def _next_qseq() -> int:
     уступившей задаче билет МЕНЬШЕ, чем у ждущих. Она тут же забрала бы
     исполнителя обратно, и уступка превратилась бы в пустую трату: на замере
     так и вышло — первый прогон доел две порции подряд, пока сосед ждал."""
-    floor = _QSEQ[0]
+    floor = _QSEQ[0] if _QSEQ[0] < PREPRESS_QBASE else 0
     for j in list(_JOBS.values()):
-        floor = max(floor, int(j.get("qseq") or j.get("id") or 0))
+        q_ = int(j.get("qseq") or j.get("id") or 0)
+        if q_ < PREPRESS_QBASE:         # билеты низкого приоритета — свой диапазон
+            floor = max(floor, q_)
     # В процессе ВОРКЕРА `_JOBS` почти пуст (там лежит только текущая задача),
     # поэтому пол берём и по самой очереди: у задач без билета им служит
     # номер, и счётчик ниже этих номеров выдал бы уступившему билет МЕНЬШЕ,
     # чем у ждущих, — он забрал бы исполнителя обратно.
     try:
         for q in _queued_jobs():
-            floor = max(floor, int(q.get("qseq") or q.get("id") or 0))
+            q_ = int(q.get("qseq") or q.get("id") or 0)
+            if q_ < PREPRESS_QBASE:
+                floor = max(floor, q_)
     except Exception:
         pass
     if STORE.kind == "pg":
@@ -40161,7 +40451,14 @@ def _job_should_yield(job: dict) -> bool:
     if not QUEUE_YIELD:
         return False
     mine = _tenant_of(job)
-    return any(q["tenant"] != mine and q["id"] != job["id"] for q in _queued_jobs())
+    q_all = _queued_jobs()
+    if job.get("low"):
+        # Задача низкого приоритета (предпечатная проверка) уступает ЛЮБОЙ
+        # обычной задаче, своей и чужой: она — работа сервиса, а не человека.
+        return any(int(q.get("qseq") or 0) < PREPRESS_QBASE and q["id"] != job["id"] for q in q_all)
+    # Обычная задача задачам низкого приоритета не уступает.
+    return any(q["tenant"] != mine and q["id"] != job["id"] and int(q.get("qseq") or 0) < PREPRESS_QBASE
+               for q in q_all)
 
 
 # Сервис останавливается (выкат, рестарт): идущая задача доделывает ТЕКУЩУЮ
@@ -40194,7 +40491,7 @@ def _job_yield(job: dict, remaining: list) -> None:
     job["ids"] = list(remaining)
     job["cursor"] = 0
     job["status"] = "queued"
-    job["qseq"] = _next_qseq()
+    job["qseq"] = _next_qseq() + (PREPRESS_QBASE if job.get("low") else 0)
     job["yields"] = int(job.get("yields") or 0) + 1
     # `recent` НЕ чистим: браузер тянет по нему сегменты последней порции,
     # и уступка на границе оставила бы их в таблице с допрогонным статусом
@@ -40553,6 +40850,12 @@ def _job_run(job: dict):
     if kind in _MEDIA_KINDS:
         _job_media(job)
         return
+    if kind == "prepress":
+        _job_prepress(job)
+        if job["status"] == "running":
+            job["status"] = "done"
+            job["finished"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return
     if kind == "images":
         # Разбор картинок не идёт по сегментам: их ещё нет — они из него
         # и рождаются. Цикл свой, но остановка, счётчики и сохранение общие.
@@ -40770,6 +41073,12 @@ def _job_run(job: dict):
         _guide_auto(job, final=True)
         _job_auto_terms(job)
         job["status"] = "done"
+        if kind in ("translate", "full"):
+            # Ы2: перевод стал полным — предпечатная проверка сама, заранее.
+            try:
+                _prepress_kick(pid, "run")
+            except Exception as e:
+                print("[backend] предпечатная проверка не поставлена: %s" % e, file=sys.stderr)
     # Метка резервируется файлом ДО первой правки — если правок так и не
     # случилось, убираем пустышку, чтобы каталог копий не зарастал.
     _backup_drop_empty("review", job["params"].get("review_stamp"))
@@ -40888,8 +41197,12 @@ def _job_loop():
 
 def _job_is_free(job: dict) -> bool:
     """Задача, которая не зовёт модель ни разу: сборка видео с дорожкой
-    субтитров и с субтитрами в кадре (ffmpeg на нашем сервере)."""
+    субтитров и с субтитрами в кадре (ffmpeg на нашем сервере). И задача,
+    за которую платит СЕРВИС, а не клиент: предпечатная проверка (её расход —
+    служебной организации, лимит клиента её не режет — решение владельца)."""
     p = job.get("params") or {}
+    if job.get("kind") == "prepress":
+        return True
     if job.get("kind") == "mediarender" and p.get("what") in ("subs", "burn"):
         return True
     # Своё распознавание речи без чтения кадров — процессор сервера, не деньги.
@@ -41065,7 +41378,7 @@ def create_job(pid: int, req: JobRequest):
         if _guest_jobs_active() >= GUEST_QUEUE_MAX:
             _ev("cap.guestBusy429", _tenant_of(project))
             raise HTTPException(429, GUEST_BUSY_429)
-    if req.kind not in JOB_KINDS or req.kind in _MEDIA_KINDS:
+    if req.kind not in JOB_KINDS or req.kind in _MEDIA_KINDS or req.kind == "prepress":
         # Видео-задачи ставят свои двери: там проверки диска, звука и денег,
         # которых у общей постановки нет.
         raise HTTPException(400, "Неизвестный тип прогона: " + req.kind)
@@ -41128,14 +41441,14 @@ def create_job(pid: int, req: JobRequest):
     return {"ok": True, "job": _job_public(job)}
 
 
-def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict]) -> dict:
+def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict], low: bool = False) -> dict:
     """Поставить задачу в очередь: общее для кнопки (`create_job`) и для
     авточтения картинок при загрузке файла. Организация, пользователь и язык
     — из сессии запроса (в threadpool контекст доезжает)."""
     # Билет берём ДО лока: `_next_qseq` заглядывает в очередь, а та читается
     # под тем же `_JOBS_LOCK`, который здесь и держат. Лок обычный, не
     # реентерабельный, — вложенный захват вешает обработчик намертво.
-    qseq = _next_qseq()
+    qseq = _next_qseq() + (PREPRESS_QBASE if low else 0)
     # Перевод — «через файл» (`_ctx_interleave`): иначе внутри параллельной
     # порции предыдущая строка всегда ещё пуста и свой предыдущий перевод
     # модель не видит. Порядок меняется ЗДЕСЬ, один раз: список сохраняется
@@ -41162,7 +41475,7 @@ def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict]) -> dict
             # Билет очереди: по нему исполнитель и выбирает следующую задачу.
             # Уступив между порциями, задача берёт НОВЫЙ билет и встаёт
             # в хвост — так очередь и становится круговой.
-            "qseq": qseq,
+            "qseq": qseq, "low": bool(low),
             "ids": ids, "stop": False, "recent": [],
             # Модели шагов по умолчанию — НА МОМЕНТ ПОСТАНОВКИ: под них посчитана
             # смета, и правка системной настройки идущий прогон не меняет (`_dm`).
@@ -41172,6 +41485,12 @@ def _job_enqueue(pid: int, kind: str, ids: list, params: Optional[dict]) -> dict
         _ev("funnel.run:" + str(kind or "?"), job["tenant"])
         _trim_jobs()
     _job_persist(job)
+    if low:
+        # Работа сервиса — не прогон клиента: в счёт прогонов не идёт.
+        if not EXTERNAL_WORKER:
+            _ensure_job_worker()
+            _JOB_QUEUE.put(1)
+        return job
     # Счёт прогонов по проекту — счётчиком хранилища, а не полем документа
     # проекта: документ во время прогона пишет воркер, и приращение API
     # в нём ушло бы в DocConflict (см. `_proj_spend_add`).

@@ -7170,6 +7170,11 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                     x = sd["x"]
                 if k == 0:
                     x = _span_x(sd, w, x, align)
+                if keep_overlay:
+                    # Отпечаток раскладки (prepress): где и каким кеглем встала
+                    # каждая строка перевода — «строки не сдвинулись».
+                    stats.setdefault("_placed", {}).setdefault(i, []).append(
+                        (round(x, 1), round(y - k * 1.2 * size, 1), round(size, 2), ln))
                 if raster is not None and sd.get("_r"):
                     if sd.get("_rtl") and align == "left":
                         x = sd["x1"] - w        # справа налево — от правого края места

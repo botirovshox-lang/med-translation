@@ -3444,6 +3444,15 @@ API**, воркер — никогда: счётчик в документе н�
 `data/sources/{pid}.tune.json`, со следующей выгрузки и только если пиксели
 не хуже. Возврат линий, печати и фона из-под заплатки у картинок —
 `IMG_RESTORE=0` выключает; новые коды приёмки — `EXPORT_QA_NEW=0`.
+**Предпечатная проверка сильной моделью** (раздел Ы5, `backend/prepress.py`,
+задача `prepress` низкого приоритета): `PREPRESS` (off | observe | fix,
+по умолчанию observe — смотрит и сообщает, файл не меняет), `PREPRESS_TENANTS`
+(«*super» — дома администраторов сервиса, «*» — все, либо список),
+`PREPRESS_MODEL` (claude-opus-5-5), `PREPRESS_FALLBACK` (gpt-5.6-sol),
+`PREPRESS_MAX_USD` (10 на проект за проход, дальше — «не досмотрено»
+и сообщение владельцу), `PREPRESS_PARALLEL` (3 страницы разом),
+`PREPRESS_MIN_CONF` (0.4), `PREPRESS_TEXT_PX` (16). Платит сервис
+(служебная организация `_qa`), лимит клиента не тратится.
 **Тест-группа и бот** (юнит `deploy/medcat-tg.service`, ставится рядом
 с `medcat` и `medcat-worker`): `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT`
 (числовой id владельца), `TG_SERVICE_TOKEN` (общий у сервиса и бота — им

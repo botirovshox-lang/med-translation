@@ -376,6 +376,7 @@ def page_lines(page) -> tuple:
     # позже, на листе не виден (у боевого PDF под схемой лежал абзац
     # другого раздела, и его перевод печатался поверх схемы).
     covers: list = []
+    ccstack: list = []
     try:
         xobjs = page.get("/Resources", {}).get("/XObject", {}) or {}
         xobjs = xobjs.get_object() if hasattr(xobjs, "get_object") else xobjs
@@ -632,6 +633,7 @@ def page_lines(page) -> tuple:
             if op == b"q":
                 cstack.append((state["fill"], state["cs"], state["tr"]))
                 stack.append((state["box"], state["clips"]))
+                ccstack.append(state.get("cclip") or ())
                 astack.append(state["alpha"])
                 tstack.append((state["tc"], state["tw"], state["tz"],
                                state.get("fd"), state.get("fs")))
@@ -640,6 +642,7 @@ def page_lines(page) -> tuple:
                 if cstack:
                     state["fill"], state["cs"], state["tr"] = cstack.pop()
                 state["box"], state["clips"] = stack.pop() if stack else (None, ())
+                state["cclip"] = ccstack.pop() if ccstack else ()
                 state["alpha"] = astack.pop() if astack else 1.0
                 (state["tc"], state["tw"], state["tz"],
                  state["fd"], state["fs"]) = (tstack.pop() if tstack
@@ -760,7 +763,12 @@ def page_lines(page) -> tuple:
                     if (op not in (b"S", b"s") and state["alpha"] >= 0.99   # обводка не закрывает
                             and not forms):     # у формы своя система координат — не знаем
                         state["seq"] += 1
-                        covers.extend((state["seq"], r) for r in pending)
+                        covers.extend((state["seq"], r, state.get("cclip") or ()) for r in pending)
+                if (CURVE_SOFT and state["clip"] and state["curve"] and ppts and not forms
+                        and len(ppts) <= CLIP_POINTS_MAX):
+                    # Э3: кривая обрезка (круглое фото) — запоминается областью
+                    # для решения «накрыто ли слово» (`_mark_covered`).
+                    state["cclip"] = tuple(state.get("cclip") or ()) + (([list(ppts)], False),)
                 if state["clip"] and pending and not state["curve"] and not forms:
                     clip = [min(r[0] for r in pending), min(r[1] for r in pending),
                             max(r[2] for r in pending), max(r[3] for r in pending)]
@@ -785,7 +793,7 @@ def page_lines(page) -> tuple:
                                   state["tz"], state.get("fd"), state.get("fs"),
                                   len(stack), len(astack), len(tstack),
                                   (state["fill"], state["cs"], state["tr"]), len(cstack),
-                                  state["clips"]))
+                                  state["clips"], len(ccstack), state.get("cclip") or ()))
                     r_ = obj.get("/Resources")
                     r_ = r_.get_object() if hasattr(r_, "get_object") else r_
                     res_stack.append(r_ if r_ is not None else res_now())
@@ -827,7 +835,9 @@ def page_lines(page) -> tuple:
                 if fmats:
                     ftext[-1] += t_
             (state["box"], state["alpha"], state["tc"], state["tw"], state["tz"],
-             state["fd"], state["fs"], n1, n2, n3, col_, n4, clips_) = forms.pop()
+             state["fd"], state["fs"], n1, n2, n3, col_, n4, clips_, n5, cc_) = forms.pop()
+            del ccstack[n5:]
+            state["cclip"] = cc_
             state["clips"] = clips_
             state["fill"], state["cs"], state["tr"] = col_
             del cstack[n4:]
@@ -1054,6 +1064,8 @@ def _mark_covered(chunks: list, covers: list) -> list:
     if not cv:
         return chunks
     hit = np.zeros(len(idx), dtype=bool)
+    soft_: dict = {}
+    hard_: dict = {}
     for k in range(0, len(cv), 256):            # блоками: память — не квадрат
         part = cv[k:k + 256]
         seq = np.array([c[0] for c in part], dtype=np.int64)[None, :]
@@ -1070,6 +1082,31 @@ def _mark_covered(chunks: list, covers: list) -> list:
                         if not _in_clips(float(xs[r_]), float(ys[r_]), c[2]):
                             m[r_, j] = False
         hit |= m.any(axis=1)
+        if CURVE_SOFT:
+            # Э3: попадание только в прямоугольник заливки под КРИВОЙ обрезкой,
+            # но не в саму обрезку (угол рамки круглого фото) — «мягкое».
+            for j, c in enumerate(part):
+                if len(c) > 2 and c[2] and not CURVE_CLIP:
+                    for r_ in np.nonzero(m[:, j])[0]:
+                        if not _in_clips(float(xs[r_]), float(ys[r_]), c[2]):
+                            soft_[r_] = soft_.get(r_, 0) + 1
+                        else:
+                            hard_[r_] = True
+                elif not (len(c) > 2 and c[2]):
+                    for r_ in np.nonzero(m[:, j])[0]:
+                        hard_[r_] = True
+    if CURVE_SOFT and soft_:
+        # Мягко накрытое слово открывается, только если на его базовой линии
+        # рядом стоит открытое слово (строка текста обтекает фото): целиком
+        # «накрытые» строки (подписи-дуги под панелью схемы) остаются как были.
+        szs = [max(float(chunks[i][3] or 1.0), 1.0) for i in idx]
+        for r_ in soft_:
+            if hard_.get(r_):
+                continue
+            near = any(not hit[q] and abs(ys[q] - ys[r_]) <= 0.3 * szs[r_]
+                       and abs(xs[q] - xs[r_]) <= 25 * szs[r_] for q in range(len(idx)))
+            if near:
+                hit[r_] = False
     if not hit.any():
         return chunks
     out = list(chunks)
@@ -1207,6 +1244,9 @@ def _exact_ends(geo_lines: list, op_ends, op_recs=()) -> None:
 # живой выгрузке (двойная печать слоя и надписи картинки). Флаг выключен
 # жёстко, чтобы включение окружением не обещало того, чего код не делает.
 CURVE_CLIP = False
+# Э3: заливка под кривой обрезкой «накрывает» слово только внутри обрезки,
+# и только если слово не продолжает видимую строку (см. `_mark_covered`).
+CURVE_SOFT = os.environ.get("PDF_CURVE_SOFT", "1") != "0"
 CLIP_POINTS_MAX = 6000
 _BEZ_STEPS = 8
 

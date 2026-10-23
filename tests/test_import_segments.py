@@ -170,7 +170,7 @@ legacy_sha = importers.slots_sha(importers.extract_slots("x.html", H.encode("utf
 new_sha = importers.slots_sha(importers.extract_slots("x.html", H.encode("utf-8"))["slots"])
 check(legacy_sha != new_sha, "html: отпечатки правил 1 и 2 различаются")
 check(importers.slots_rule_for("x.html", H.encode("utf-8"), legacy_sha) == 1
-      and importers.slots_rule_for("x.html", H.encode("utf-8"), new_sha) == 2
+      and importers.slots_rule_for("x.html", H.encode("utf-8"), new_sha) == importers.SLOT_RULE
       and importers.slots_rule_for("x.html", H.encode("utf-8"), "0" * 40) is None,
       "html: правило узнаётся по отпечатку, чужой отпечаток — None")
 legacy = [t for t, _r in importers.html_slots(H, rule=1)]
@@ -180,11 +180,11 @@ check(back1 == back, "html: обратная запись правилом 1 к�
 p_legacy = importers.slots_sha(importers.extract_slots("s.pptx", PPTX, rule=1)["slots"])
 p_new = importers.slots_sha(importers.extract_slots("s.pptx", PPTX)["slots"])
 check(p_legacy != p_new and importers.slots_rule_for("s.pptx", PPTX, p_legacy) == 1
-      and importers.slots_rule_for("s.pptx", PPTX, p_new) == 2, "pptx: оба правила узнаются")
+      and importers.slots_rule_for("s.pptx", PPTX, p_new) == importers.SLOT_RULE, "pptx: оба правила узнаются")
 check([t for t, _a in importers.pptx_slots(PPTX, rule=1)] == ["ТашкентУзбекистан", "насе\xadкомое"],
       "pptx: правило 1 — прежний текст")
 csv_b = "a,b\nc,d\n".encode("utf-8")
-check(importers.slots_rule_for("t.csv", csv_b, importers.slots_sha(importers.extract_slots("t.csv", csv_b)["slots"])) == 2,
+check(importers.slots_rule_for("t.csv", csv_b, importers.slots_sha(importers.extract_slots("t.csv", csv_b)["slots"])) == importers.SLOT_RULE,
       "csv: одно правило")
 
 print("=== TXT/MD: строка — слот, не склеивается ===")

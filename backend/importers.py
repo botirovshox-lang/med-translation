@@ -108,8 +108,11 @@ def kind_of(filename: str) -> str:
 # дубликата, а повторный импорт — новые платные сегменты там, где текст
 # слота сменился. Поэтому выгрузка подбирает правило по отпечатку
 # (`slots_rule_for`) и тем же правилом кладёт переводы (`write_back`).
-SLOT_RULE = 2
-SLOT_RULES = (2, 1)             # порядок перебора: сначала текущее
+# 3 — Э18: у pptx к слайдам добавлены тексты ДИАГРАММ (заголовки, подписи
+# осей, имена рядов, категории) — прежде встроенная диаграмма оставалась на
+# языке оригинала посреди переведённого слайда.
+SLOT_RULE = 3
+SLOT_RULES = (3, 2, 1)          # порядок перебора: сначала текущее
 
 
 def slots_sha(slots: list) -> str:
@@ -607,15 +610,45 @@ def _pptx_para_text(p_xml: str, rule: int = SLOT_RULE) -> str:
     return " ".join("".join(parts).replace("­", "").split())
 
 
+_C_STRCACHE_RE = re.compile(r"<c:strCache\b[^>]*>.*?</c:strCache>", re.S)
+_C_V_RE = re.compile(r"<c:v>(.*?)</c:v>", re.S)
+
+
+def _chart_names(z: zipfile.ZipFile) -> list:
+    return sorted((n for n in z.namelist() if re.fullmatch(r"ppt/charts/chart\d+\.xml", n)),
+                  key=lambda n: int(re.search(r"(\d+)", n).group(1)))
+
+
+def _chart_values(xml: str) -> list:
+    """Тексты кэша строк диаграммы (имена рядов и категории) — по порядку
+    в части. Числа (`numCache`) не берутся: переводить там нечего."""
+    out = []
+    for mc in _C_STRCACHE_RE.finditer(xml):
+        for mv in _C_V_RE.finditer(mc.group(0)):
+            out.append(_html.unescape(mv.group(1) or ""))
+    return out
+
+
 def pptx_slots(content: bytes, rule: int = SLOT_RULE) -> list:
     """[(текст абзаца, (часть, номер абзаца в части))] — абзацы `<a:p>`
-    на слайдах в порядке показа (заметки к слайдам не берутся)."""
+    на слайдах в порядке показа (заметки к слайдам не берутся). С правила 3
+    (Э18) за слайдами — тексты диаграмм: абзацы заголовков и подписей осей
+    (адрес как у слайда) и строки кэша рядов и категорий (адрес
+    (часть, ("v", номер))). Встроенная таблица данных диаграммы не
+    правится: «изменить данные» в PowerPoint вернёт подписи оригинала."""
     out = []
     with zipfile.ZipFile(io.BytesIO(content)) as z:
         for name in _pptx_slide_names(z):
             xml = z.read(name).decode("utf-8", "replace")
             for i, m in enumerate(_A_P_RE.finditer(xml)):
                 out.append((_pptx_para_text(m.group(0), rule), (name, i)))
+        if rule >= 3:
+            for name in _chart_names(z):
+                xml = z.read(name).decode("utf-8", "replace")
+                for i, m in enumerate(_A_P_RE.finditer(xml)):
+                    out.append((_pptx_para_text(m.group(0), rule), (name, i)))
+                for j, v in enumerate(_chart_values(xml)):
+                    out.append((" ".join(v.split()), (name, ("v", j))))
     return out
 
 
@@ -659,6 +692,21 @@ def _pptx_write(content: bytes, repl: dict) -> bytes:
                         body = body.replace("\x00FLD%d\x00" % j, h)
                     return body
                 xml = _A_P_RE.sub(fix_p, xml)
+                vals = {k[1][1]: v for k, v in repl.items()
+                        if k[0] == item.filename and isinstance(k[1], tuple)}
+                if vals:
+                    # Э18: строки кэша рядов и категорий диаграммы — по номеру.
+                    vc = [0]
+
+                    def fix_cache(mc):
+                        def fix_v(mv):
+                            j = vc[0]
+                            vc[0] += 1
+                            if j in vals:
+                                return "<c:v>%s</c:v>" % _html.escape(vals[j], quote=False)
+                            return mv.group(0)
+                        return _C_V_RE.sub(fix_v, mc.group(0))
+                    xml = _C_STRCACHE_RE.sub(fix_cache, xml)
                 data = xml.encode("utf-8")
             dst.writestr(item, data)
     return out.getvalue()
@@ -1073,7 +1121,7 @@ def write_back(filename: str, content: bytes, translations: dict, rule: int = SL
         repl = {addr[i]: t for i, t in translations.items() if 0 <= i < len(addr)}
         return _xlsx_write(content, repl)
     if ext == ".pptx":
-        addr = [a for _t, a in pptx_slots(content)]
+        addr = [a for _t, a in pptx_slots(content, rule)]
         repl = {addr[i]: t for i, t in translations.items() if 0 <= i < len(addr)}
         return _pptx_write(content, repl)
     if ext in (".srt", ".vtt"):

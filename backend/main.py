@@ -1537,6 +1537,12 @@ def _lang_rule(code: str) -> dict:
 _NORM_CACHE: dict = {}
 
 
+_ARAB_DIGITS = {**{0x0660 + i: 0x30 + i for i in range(10)}, **{0x06F0 + i: 0x30 + i for i in range(10)}}
+_ARAB_DIGITS_RE = re.compile("[٠-٩۰-۹]")
+_ARAB_NUM_RE = re.compile("[\u0660-\u0669\u06f0-\u06f9]+(?:[/.,:-][\u0660-\u0669\u06f0-\u06f9]+)*")
+_ARAB_LETTER_RE = re.compile("[\u0621-\u064a\u0671-\u06d3]")
+
+
 def _lang_normalize(text: str, code: str, src: str = "") -> str:
     """Ш12: орфографическая нормализация языка перевода ДАННЫМИ
     (`lang_rules.json` → `normalize`: [[шаблон, замена], …]). Модель пишет
@@ -1546,6 +1552,16 @@ def _lang_normalize(text: str, code: str, src: str = "") -> str:
     текст как есть."""
     if not text:
         return text
+    # Э17: цифры арабского письма («٢٠٢٦/٤٨٧», персидские «۲۰۲۶») — у языка
+    # перевода НЕ арабским письмом обычными цифрами; у арабского письма
+    # перевод их сохраняет. Модель переносит такие номера из оригинала
+    # буква в букву (письмо AR→RU, корпус 2), а читатель их не прочтёт.
+    _sc = (_LANG_BY_CODE.get((code or "").upper()) or {}).get("script")
+    if _ARAB_DIGITS_RE.search(text) and _sc and _sc != "ARABIC":
+        # Число внутри арабской цитаты (рядом арабские буквы) — как есть.
+        text = _ARAB_NUM_RE.sub(lambda m: m.group(0) if _ARAB_LETTER_RE.search(
+            text[max(0, m.start() - 2):m.start()] + text[m.end():m.end() + 2])
+            else m.group(0).translate(_ARAB_DIGITS), text)
     rules = _lang_rule(code).get("normalize") or []
     if not rules:
         return text
@@ -13053,6 +13069,21 @@ def _docx_clean(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def _docx_note_parts() -> None:
+    """Э15: python-docx не знает части сносок и держит их сырыми байтами —
+    править такую часть нечем. Регистрируем её как XML-часть до открытия."""
+    try:
+        from docx.opc.part import PartFactory, XmlPart
+        for ct in ("application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml",
+                   "application/vnd.openxmlformats-officedocument.wordprocessingml.endnotes+xml"):
+            PartFactory.part_type_for.setdefault(ct, XmlPart)
+    except Exception:
+        pass
+
+
+_docx_note_parts()
+
+
 def _docx_flat_paragraphs(doc) -> list:
     """Все абзацы документа одним списком: сначала тело, затем колонтитулы
     по имени части пакета.
@@ -13069,7 +13100,7 @@ def _docx_flat_paragraphs(doc) -> list:
     return [p for p, _part in _docx_flat_parts(doc)]
 
 
-def _docx_flat_parts(doc) -> list:
+def _docx_flat_parts(doc, notes: bool = True) -> list:
     """[(абзац, часть пакета, которой он принадлежит)] в том же порядке.
 
     Часть нужна ссылкам на картинки: r:embed указывает на связь ВНУТРИ своей
@@ -13080,11 +13111,28 @@ def _docx_flat_parts(doc) -> list:
     from docx.oxml.ns import qn as _qn
     main = doc.part
     out = [(p, main) for p in doc.element.body.findall(".//" + _qn("w:p"))]
-    for part in sorted(doc.part.package.iter_parts(), key=lambda p: str(p.partname)):
+    parts = sorted(doc.part.package.iter_parts(), key=lambda p: str(p.partname))
+    for part in parts:
         ct = part.content_type or ""
         el = getattr(part, "element", None)
         if el is not None and ("header+xml" in ct or "footer+xml" in ct):
             out.extend((p, part) for p in el.findall(".//" + _qn("w:p")))
+    # Э15: сноски и концевые сноски — ПОСЛЕ колонтитулов: номера абзацев тела
+    # и колонтитулов, записанные картами раньше, от этого не сдвигаются.
+    # Прежде текст сноски оставался на языке оригинала (MISSING у приёмки).
+    for part in (parts if notes else ()):
+        ct = part.content_type or ""
+        el = getattr(part, "element", None)
+        if el is not None and ("footnotes+xml" in ct or "endnotes+xml" in ct):
+            for p in el.findall(".//" + _qn("w:p")):
+                # Служебные сноски-разделители (w:type separator) — не текст.
+                fn = p.getparent()
+                while fn is not None and not str(fn.tag).endswith(("}footnote", "}endnote")):
+                    fn = fn.getparent()
+                if fn is not None and fn.get(_qn("w:type")) in ("separator", "continuationSeparator",
+                                                                 "continuationNotice"):
+                    continue
+                out.append((p, part))
     return out
 
 
@@ -18181,7 +18229,11 @@ def _image_read_system(dom: dict, src_lang: str) -> str:
         "nothing at all is legible.\n"
         '  "overlay" — true if this is NOT text of the document but a label '
         "burnt in by equipment or software: patient name, examination date, "
-        "scanner settings, ruler marks, watermark, file name. When the picture "
+        "scanner settings, ruler marks, watermark, file name. The text of a "
+        "rubber stamp or round seal pressed on the page (its ring and its "
+        "centre) and a handwritten signature or initials (not handwritten "
+        "answers filled into a form) are also overlay true: a seal is not "
+        "re-drawn in translation. When the picture "
         "itself is a screenshot, a form or a page, its menus, buttons and labels "
         "ARE the document: overlay false. Otherwise false.\n"
         '  "hand"    — true if the text is WRITTEN BY HAND (pen, pencil, marker), '
@@ -34032,6 +34084,8 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                           "lineH": b.get("lineH"), "rows": b.get("rows"),
                           # Рамки строк: базы, шаг и отступ абзаца (Ф1).
                           "lineBoxes": b.get("lineBoxes"),
+                          # Э14: наклонная строка — её четырёхугольник.
+                          "quad": b.get("quad"),
                           # Семейство: рукопись — на всю страницу; иначе
                           # засечки по признаку чтения (Х6), машинопись узнаёт
                           # печать по пикселям (Х1).
@@ -34165,6 +34219,84 @@ def _refresh_fields(doc, qn) -> int:
     return n
 
 
+def _lang_is_rtl(code) -> bool:
+    try:
+        return bool((media_mod.sub_norm(code) or {}).get("rtl")) if code else False
+    except Exception:
+        return False
+
+
+def _docx_flip_direction(doc, qn, src, tgt) -> int:
+    """Э16: направление письма — свойство ЯЗЫКА, а не документа. Арабское
+    письмо, переведённое на русский, сохраняло `w:bidi` абзацев, `w:rtl`
+    прогонов и `w:bidiVisual` таблиц: русский текст печатался справа налево
+    (точка в начале строки, кавычки задом наперёд), а столбцы таблицы шли
+    в обратном порядке (корпус 2, письмо AR→RU). Если направление оригинала
+    и перевода разное, переключаем его во ВСЕХ частях с текстом (тело,
+    колонтитулы, сноски): признаки ставятся или снимаются, выравнивание
+    «вправо/влево» зеркалится. Ответ — сколько абзацев переключено."""
+    rs, rt = _lang_is_rtl(src), _lang_is_rtl(tgt)
+    if rs == rt:
+        return 0
+    parts = [doc.part] + [p for p in doc.part.package.iter_parts()
+                          if getattr(p, "element", None) is not None and p is not doc.part
+                          and any(k in (p.content_type or "") for k in
+                                  ("header+xml", "footer+xml", "footnotes+xml", "endnotes+xml"))]
+    from docx.oxml import OxmlElement
+    flipped = 0
+    mirror = {"right": "left", "left": "right", "end": "start", "start": "end"}
+    for part in parts:
+        root = part.element
+        for ppr in root.iter(qn("w:pPr")):
+            bidi = ppr.find(qn("w:bidi"))
+            had = bidi is not None and bidi.get(qn("w:val")) not in ("0", "false", "off")
+            if rt and not had:
+                el = OxmlElement("w:bidi")
+                # Порядок схемы CT_PPr: bidi стоит перед этими элементами.
+                after = {qn("w:" + t) for t in ("adjustRightInd", "snapToGrid", "spacing", "ind",
+                                                "contextualSpacing", "mirrorIndents", "suppressOverlap",
+                                                "jc", "textDirection", "textAlignment", "textboxTightWrap",
+                                                "outlineLvl", "divId", "cnfStyle", "rPr", "sectPr",
+                                                "pPrChange")}
+                nxt = next((c for c in ppr if c.tag in after), None)
+                if nxt is not None:
+                    nxt.addprevious(el)
+                else:
+                    ppr.append(el)
+            elif not rt and bidi is not None:
+                ppr.remove(bidi)
+            else:
+                continue
+            jc = ppr.find(qn("w:jc"))
+            if jc is not None and jc.get(qn("w:val")) in mirror and jc.get(qn("w:val")) in ("right", "left"):
+                jc.set(qn("w:val"), mirror[jc.get(qn("w:val"))])
+            flipped += 1
+        for rpr in root.iter(qn("w:rPr")):
+            r_ = rpr.find(qn("w:rtl"))
+            if not rt and r_ is not None:
+                rpr.remove(r_)
+        for tpr in root.iter(qn("w:tblPr")):
+            bv = tpr.find(qn("w:bidiVisual"))
+            if not rt and bv is not None:
+                tpr.remove(bv)
+            elif rt and bv is None:
+                el = OxmlElement("w:bidiVisual")
+                after = {qn("w:" + t) for t in ("tblStyleRowBandSize", "tblStyleColBandSize", "tblW",
+                                                "jc", "tblCellSpacing", "tblInd", "tblBorders", "shd",
+                                                "tblLayout", "tblCellMar", "tblLook", "tblCaption",
+                                                "tblDescription", "tblPrChange")}
+                nxt = next((c for c in tpr if c.tag in after), None)
+                if nxt is not None:
+                    nxt.addprevious(el)
+                else:
+                    tpr.append(el)
+        for spr in root.iter(qn("w:sectPr")):
+            sb = spr.find(qn("w:bidi"))
+            if not rt and sb is not None:
+                spr.remove(sb)
+    return flipped
+
+
 def _export_docx_layout(project: dict, out: Path) -> dict:
     """Подставляет переводы в сохранённый исходник и сохраняет копию.
 
@@ -34188,7 +34320,7 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
     doc = Document(str(data["path"]))
     all_p = _docx_flat_paragraphs(doc)
     body_n = len(doc.element.body.findall(".//" + qn("w:p")))
-    if data.get("paras") not in (len(all_p), body_n):
+    if data.get("paras") not in (len(all_p), body_n, len(_docx_flat_parts(doc, notes=False))):
         # Файл под картой подменили. Молча продолжать нельзя: номера абзацев
         # уехали, и перевод встал бы по всему документу не на свои места.
         # body_n принимается тоже: карты, записанные до того, как в разбор
@@ -34301,6 +34433,7 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
     _export_images(doc, data, by_id, qn, stats)
     # ПОСЛЕ всех правок: пересчитывать надо готовый текст, а не промежуточный.
     stats["fields_refreshed"] = _refresh_fields(doc, qn)
+    stats["dirFlipped"] = _docx_flip_direction(doc, qn, project.get("src"), project.get("tgt"))
     stats.update(_tw_stats)         # Т16: twinsUnified / twinGroups
     doc.save(str(out))
     return stats

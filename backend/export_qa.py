@@ -257,6 +257,24 @@ def _rect_px(b: dict, W: int, H: int, sc: float, ph: float) -> "tuple | None":
             x0, x1 = float(b["x0"]) * sc, float(b["x1"]) * sc
             top, bot = float(b["top"]), float(b["bottom"])
             y0, y1 = (ph - max(top, bot)) * sc, (ph - min(top, bot)) * sc
+            if x1 - x0 < 1.0:
+                # Э7: повёрнутая строка — у рамки нет ширины (x0 == x1), место
+                # задаёт путь строки (`pts` → `end`) с запасом в кегль во все
+                # стороны. Без этого печать повёрнутого перевода считалась
+                # «легшей на чужой текст» (OVERPRINT в шапке расписания).
+                pts = []
+                for sl in b.get("slots") or ():
+                    rp = sl[8] if len(sl) > 8 and isinstance(sl[8], dict) else None
+                    if rp:
+                        pts += [(float(q[0]), float(q[1])) for q in rp.get("pts") or ()]
+                        if rp.get("end"):
+                            pts.append((float(rp["end"][0]), float(rp["end"][1])))
+                if pts:
+                    s_ = float(b.get("size") or 0.0)
+                    x0 = (min(q[0] for q in pts) - s_) * sc
+                    x1 = (max(q[0] for q in pts) + s_) * sc
+                    y0 = (ph - max(q[1] for q in pts) - s_) * sc
+                    y1 = (ph - min(q[1] for q in pts) + s_) * sc
     except (KeyError, TypeError, ValueError):
         return None
     if x1 <= x0 or y1 <= y0:
@@ -366,6 +384,59 @@ def duplicates(items: list, sizes: dict) -> list:
 
 
 _LEADER_RUN = re.compile(r"^[\s.·…‥]{4,}$")
+
+
+QA_PLATE_OWN = os.environ.get("EXPORT_QA_PLATE_OWN", "1") != "0"
+QA_PLATE_ITEM_X = 60.0          # плашка не больше стольких площадей места
+QA_PLATE_MAX = 0.45             # доля листа: больше — фон страницы, а не плашка (панель буклета — треть листа)
+
+
+def _own_plates(ai, item_px: list, H: int, W: int):
+    """Э11: плашка, на которой стоит место печати (закрашенный блок схемы,
+    кнопка, ячейка с заливкой), — тоже своё место: перевод, выросший на
+    вторую строку внутри своей плашки, на чужой рисунок не лёг. Плашка —
+    связная область цвета фона места в ОРИГИНАЛЕ (заливка от края рамки
+    места); больше `QA_PLATE_MAX` листа — фон страницы, не считаем."""
+    out = np.zeros((H, W), bool)
+    try:
+        import cv2
+    except Exception:
+        return out
+    img = np.ascontiguousarray(ai[..., :3].astype(np.uint8))
+    lim = QA_PLATE_MAX * H * W
+    done = set()
+    for _it, rects in item_px:
+        for r in rects:
+            x0, y0, x1, y1 = r
+            if x1 - x0 < 3 or y1 - y0 < 3:
+                continue
+            # Затравка — у левого края рамки на средней линии (между буквами
+            # вероятнее фон, чем у самой середины слова).
+            sx, sy = min(W - 1, max(0, x0 + 1)), min(H - 1, max(0, (y0 + y1) // 2))
+            key = (sx // 4, sy // 4)
+            if key in done:
+                continue
+            done.add(key)
+            seed = img[sy, sx].astype(int)
+            if int(seed.max()) - int(seed.min()) < 12 and int(seed.mean()) > 235:
+                continue                # белая бумага — не плашка
+            mask = np.zeros((H + 2, W + 2), np.uint8)
+            n_, _im, _m, rect = cv2.floodFill(img, mask, (int(sx), int(sy)), (0, 0, 0),
+                                               (8, 8, 8), (8, 8, 8),
+                                               4 | cv2.FLOODFILL_MASK_ONLY | cv2.FLOODFILL_FIXED_RANGE
+                                               | (255 << 8))
+            if n_ <= 0 or n_ > lim:
+                continue
+            # Плашка — почти прямоугольная (заливка на фото и градиенте
+            # расползается кляксой) и не больше места во много раз.
+            rx, ry, rw, rh = rect
+            if n_ < 0.75 * max(1, rw * rh) or rw * rh > QA_PLATE_ITEM_X * max(1, (x1 - x0) * (y1 - y0)):
+                continue
+            # Сама область (с затянутыми дырами от букв), а не её рамка:
+            # значок или рисунок НА плашке своим местом не становится.
+            m = cv2.morphologyEx(mask[1:-1, 1:-1], cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8)) > 0
+            out |= m
+    return out
 
 
 def inspect_pdf(orig: bytes, out: bytes, layout: "dict | None" = None, texts: "dict | None" = None,
@@ -549,6 +620,8 @@ def _inspect_page(A, B, O, oi, i: int, pw: float, ph: float, items: list, lang, 
     # 2. Печать на рисунке, линии, плашке — вне своего места.
     if printed is not None and not dark:
         spill = printed & diff & nonpaper & ~own & ~words_zone & ~lost
+        if QA_PLATE_OWN and spill.any():
+            spill &= ~_own_plates(ai, item_px, H, W)
         for x0, y0, x1, y1, area in _cc(spill, max(6, int(QA_SPILL_LINES * lh_med * lh_med))):
             rep["issues"].append({"code": "SPILL", "page": i, "box": _frac((x0, y0, x1, y1), W, H),
                                   "area": round(area / max(1.0, lh_med * lh_med), 2),
@@ -708,6 +781,14 @@ def _new_checks(a, b, diff, ink_a, printed, own, lost, words_zone, runs, item_px
     lh_ = cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, k_h) > 0
     lv_ = cv2.morphologyEx(ink_a.astype(np.uint8), cv2.MORPH_OPEN, k_v) > 0
     la = (la > 0) & ((lh_ & side_h) | (lv_ & side_v))
+    # Э19: ряд подчёркиваний в ТЕКСТЕ оригинала («Дата «___» ______ 20__ г.»)
+    # — поле бланка, а не линия таблицы: перевод несёт свои поля (Ш38) своей
+    # длины, и «разрыв» там законен (4 ложных RULE_CUT у подписей договора).
+    for txt, x0, y0, x1, y1 in runs:
+        if "___" in (txt or ""):
+            r0, r1 = max(0, int((ph - y1) * sc) - 3), min(H, int((ph - y0) * sc) + 4)
+            c0, c1 = max(0, int(x0 * sc) - 3), min(W, int(x1 * sc) + 4)
+            la[r0:r1, c0:c1] = False
     # Линия «на месте», если в выгрузке рядом (±1 точка) есть краска.
     near_b = cv2.dilate(ink_b.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
     cut = la & ~near_b & diff
@@ -794,7 +875,12 @@ def _new_checks(a, b, diff, ink_a, printed, own, lost, words_zone, runs, item_px
             med = float(np.median(px))
             far = np.abs(px - med)
             ink = far[far > 12]
-            return float(np.median(ink)) if ink.size >= 8 else None
+            # Э6: высокий процентиль, а не медиана краски: мелкий сжатый
+            # шрифт (6 пт, сужение начертания) при разрешении приёмки — это
+            # серые края штрихов, и медиана объявляла «бледным» перевод,
+            # напечатанный той же тёмной краской (расписание, корпус 2).
+            # У настоящего «белого на светлом» бледна и самая тёмная краска.
+            return float(np.percentile(ink, 90)) if ink.size >= 8 else None
         ca = contrast(ga[r[1]:r[3], r[0]:r[2]])
         cb_ = contrast(gb[r[1]:r[3], r[0]:r[2]])
         if (ca is not None and cb_ is not None and ca >= 2 * QA_CONTRAST and cb_ < QA_CONTRAST

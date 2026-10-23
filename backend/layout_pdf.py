@@ -1176,6 +1176,12 @@ def _slot_align(slots: list) -> str:
     lefts = spread(xs)
     if lefts <= 1.0 * size:
         return "left"
+    # Э2б: все строки, кроме последней, одной меры (тот же левый и правый
+    # край) — это набор по формату, а последнюю сдвинула фигура (обтекание)
+    # или это «последняя по центру»; «по центру» весь абзац печатать нельзя.
+    if (len(ls) >= 3 and spread(xs[:-1]) <= 0.3 * size
+            and spread([ln["x1"] for ln in ls[:-1]]) <= 0.3 * size):
+        return "left"
     # Середины всех строк совпадают, а последняя строка (короче прочих)
     # стоит не от общего левого края — центрированная подпись. Отступ
     # красной строки сюда не попадает: у него последняя строка от края.
@@ -2561,6 +2567,55 @@ STORY_PAPER_DELTA = 0.06                   # другая бумага (доля
 # пункта не возвращается под значок.
 MARK_REACH = float(os.environ.get("LAYOUT_MARK_REACH", "1.5"))
 STORY_INDENT_KEEP = 0.5
+# Э2: обтекание. Строка колонки, у которой край отодвинут фигурой (круглое
+# фото посреди журнальной полосы, врезка с цитатой между колонками), задаёт
+# ширину и перевёрнутой строке на той же высоте. Без этого история верстала
+# перевод на всю ширину колонки — поверх фото и врезки (корпус 2, журнал).
+SHAPE_WRAP = os.environ.get("LAYOUT_SHAPE_WRAP", "1") != "0"
+SHAPE_EDGE = 1.2                # в кеглях: сдвиг края, который уже фигура, а не неровность
+SHAPE_JUST_SHARE = 0.6          # доля полных строк у правого края — колонка выключена по формату
+
+
+def _shape_profile(pcs: list) -> list:
+    """Строки оригинала цепочки: (лист, y, x, x1, кегль, первая, последняя,
+    свой отступ, выключка по формату)."""
+    out = []
+    for p in pcs:
+        nrun = len(p["runs"])
+        for r_k, rs in enumerate(p["runs"]):
+            for j, sd in enumerate(rs):
+                first = p["first_piece"] and r_k == 0 and j == 0
+                last = p["last_piece"] and r_k == nrun - 1 and j == len(rs) - 1
+                out.append({"page": sd["page"], "y": sd["y"], "x": sd["x"], "x1": sd["x1"],
+                            "size": sd["size"] or 1.0, "first": first, "last": last,
+                            "off": p["off0"] if first else p["off1"]})
+    return out
+
+
+def _shape_at(shape: list, page, y: float, pitch: float, col: dict) -> tuple:
+    """(левый, правый) пределы строки на высоте `y` в колонке `col` по
+    строкам оригинала, либо (None, None). Левый — когда строка оригинала
+    начата правее края колонки (с учётом своего отступа) больше чем на
+    `SHAPE_EDGE` кегля; правый — когда кончилась левее края, не последняя
+    в абзаце, а колонка выключена по формату (у рваного края короткая
+    строка — норма, не фигура)."""
+    cand = [e for e in shape if e["page"] == page and abs(e["y"] - y) <= 0.55 * pitch
+            and e["x"] < col["x1"] and e["x1"] > col["x0"]]
+    if not cand:
+        return None, None
+    e = min(cand, key=lambda e_: abs(e_["y"] - y))
+    # Выключка по формату — соседние полные строки кончаются на одном крае
+    # (у обтекания край свой на каждом отрезке, но у соседей общий); у рваного
+    # края соседние строки кончаются где придётся.
+    col_l = [d for d in shape if d["page"] == page and d["x"] < col["x1"] and d["x1"] > col["x0"]]
+    pairs = [(a, b) for a, b in zip(col_l, col_l[1:]) if not a["last"] and not b["last"]
+             and 0 < a["y"] - b["y"] <= 2.0 * a["size"]]
+    just = len(pairs) >= 3 and (sum(1 for a, b in pairs if abs(a["x1"] - b["x1"]) <= 0.4 * a["size"])
+                                >= SHAPE_JUST_SHARE * len(pairs))
+    left = e["x"] if e["x"] - (col["x0"] + e["off"]) > SHAPE_EDGE * e["size"] else None
+    right = (e["x1"] if just and not e["last"] and col["x1"] - e["x1"] > SHAPE_EDGE * e["size"]
+             else None)
+    return left, right
 
 
 def _icon_marks(slots: list, icons: list) -> int:
@@ -2596,6 +2651,33 @@ def _story_piece_boxes(runs: list) -> list:
     return [dict(_run_box(rs), n=len(rs)) for rs in runs]
 
 
+NUM_ANCHOR_W = 6.0          # Э8: номер пункта не шире стольких кеглей
+NUM_ANCHOR_GAP = 4.0        # и стоит не дальше стольких кеглей левее текста
+
+
+def _num_anchor(fb: dict, B: dict, page_slots: "dict | None", A: "dict | None" = None) -> bool:
+    """Э8: слева от первой строки пункта на той же базовой линии стоит
+    КОРОТКАЯ отдельная надпись — номер пункта («3.3.», «1.2.1.», «а)»),
+    набранный своим абзацем на висячем отступе. История, сдвинувшая текст
+    пункта вверх или вниз, разлучала его с номером: «3.3.» оставался на
+    месте, а его текст уезжал на строку выше (договор, корпус 2)."""
+    if not isinstance(page_slots, dict):
+        return False
+    own = {id(sd) for rs in B["runs"] for sd in rs}
+    if A is not None:
+        # Строка самого A на той же высоте — это «заголовок в подбор», а не
+        # номер пункта (проверка стоит после ветки inline, но и тут не номер).
+        own |= {id(sd) for rs in A["runs"] for sd in rs}
+    s = max(fb["size"], 1.0)
+    for o in page_slots.get(int(fb.get("page", -1)), []):
+        if id(o) in own or o.get("rot") or abs(o["y"] - fb["y"]) > 0.3 * s:
+            continue
+        if (o["x1"] <= fb["x"] + 0.3 * s and fb["x"] - o["x1"] <= NUM_ANCHOR_GAP * s
+                and o["x1"] - o["x"] <= NUM_ANCHOR_W * s):
+            return True
+    return False
+
+
 def _story_link(A: dict, B: dict, page_slots: "dict | None") -> "str | None":
     """Как кусок `B` продолжает кусок `A` той же страницы: «inline» —
     заголовок в подбор (B начинается на последней строке A, правее её конца,
@@ -2621,6 +2703,8 @@ def _story_link(A: dict, B: dict, page_slots: "dict | None") -> "str | None":
             and len(B["runs"][0]) >= 2
             and abs(B["runs"][0][1]["x"] - ra["x0"]) <= 1.0 * s):
         return "inline"
+    if not B.get("cont") and _num_anchor(fb, B, page_slots, A):
+        return None                     # Э8: пункт с номером слева отдельной строкой — якорь
     sa, sb = A["msize"], B["msize"]
     big, small = max(sa, sb), max(1.0, min(sa, sb))
     if big > 1.25 * small:
@@ -2896,6 +2980,7 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
 
     def lay(chain, f, hs_k):
         pcs, lks = chain
+        shape = _shape_profile(pcs) if SHAPE_WRAP else []
         # Области: колонки кусков по порядку; «v» и «inline» — та же область.
         regions: list = []
         for k, p in enumerate(pcs):
@@ -3000,6 +3085,12 @@ def _stories(slot_plan: list, slot_meta: list, stats: dict, page_slots: "dict | 
                 else:
                     v["x"] = bx["x0"] + p["off1"]
                     v["x1"] = bx["x1"]
+                if shape and not inline and slot_plan[p["i"]][5] in ("left", "justify"):
+                    lim_l, lim_r = _shape_at(shape, reg["page"], y_, pitch_p * f, bx)
+                    if lim_l is not None and lim_l > v["x"]:
+                        v["x"] = lim_l
+                    if lim_r is not None and lim_r < v["x1"]:
+                        v["x1"] = lim_r
                 _dc_shift(v, p.get("first") or v)
                 v["x0"] = min(bx["x0"], v["x"])
                 ys = [sd["y"] for rs in p["runs"] for sd in rs]

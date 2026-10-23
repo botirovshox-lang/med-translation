@@ -201,11 +201,26 @@ def stage_export(st, man):
         it.setdefault("exports", {})
         for fmt in _formats(m):
             r = call("POST", "/projects/%d/export" % pid, {"format": fmt, "source": True}, timeout=1800)
+            t0 = time.time()
+            while (r or {}).get("pending") and time.time() - t0 < 3600:
+                # Ы5: файл проверяется моделью перед выдачей — ждём и спрашиваем снова
+                pp = call("GET", "/projects/%d/prepress" % pid)
+                log("проверка перед выдачей", m["id"], fmt, (pp or {}).get("state"), (pp or {}).get("done"),
+                    "/", (pp or {}).get("total"))
+                if (pp or {}).get("state") == "running":
+                    time.sleep(20)
+                    continue
+                r = call("POST", "/projects/%d/export" % pid, {"format": fmt, "source": True}, timeout=1800)
+                if (r or {}).get("pending"):
+                    time.sleep(20)
+            pp = call("GET", "/projects/%d/prepress" % pid)
+            it.setdefault("prepress", {})[fmt] = pp
             st_ = (r or {}).get("stats") or {}
             it["exports"][fmt] = {"ok": r.get("ok"), "file": r.get("file"), "error": r.get("error"),
                                   "stats": {k: st_.get(k) for k in (
                                       "pdfFrom", "collisions", "overflow", "dupDropped", "imageBoxes",
-                                      "leftover", "img_repainted", "written", "missing", "layoutWhy")}}
+                                      "leftover", "img_repainted", "written", "missing", "layoutWhy", "loop",
+                                      "prepress", "paintPlate", "img_vertical")}}
             log("выгрузка", m["id"], fmt, r.get("ok"), r.get("file") or r.get("error"))
             save(st)
 
@@ -257,6 +272,7 @@ def stage_collect(st, man):
         row["importNote"] = (p.get("importNote") or "")[:400]
         row["imagesSkipped"] = p.get("imagesSkipped")
         row["exports"] = it.get("exports")
+        row["prepress"] = it.get("prepress")
         for fmt, ex in (it.get("exports") or {}).items():
             if not ex.get("ok"):
                 continue

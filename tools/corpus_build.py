@@ -13,7 +13,7 @@
 корпус гонялся как регрессия и на сервере, и здесь. Текст клиентов сюда
 не попадает: всё написано для корпуса.
 
-  python tools/corpus_build.py OUT_DIR [--only id1,id2]
+  python tools/corpus_build.py OUT_DIR [--only id1,id2] [--set2]
 
 Рядом с файлами пишется `manifest.json`: язык оригинала и перевода, формат
 выгрузки, вид файла и что именно он проверяет — его читает
@@ -1573,7 +1573,12 @@ def main(argv):
     if "--only" in argv:
         only = set(argv[argv.index("--only") + 1].split(","))
     manifest = []
-    for rid, ext, fn, src, tgt, fmt, what in RECIPES:
+    recipes = RECIPES
+    if "--set2" in argv:
+        # Второй корпус (41–70): сложная вёрстка, языки, офисные форматы, трудные фото.
+        import corpus2_a, corpus2_b, corpus2_c
+        recipes = corpus2_a.RECIPES + corpus2_b.RECIPES + corpus2_c.RECIPES
+    for rid, ext, fn, src, tgt, fmt, what in recipes:
         path = out / ("%s.%s" % (rid, ext))
         if only is None or rid in only:
             random.seed(rid)

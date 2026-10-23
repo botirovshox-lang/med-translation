@@ -3639,6 +3639,7 @@ node tests/test_home_examples_browser.js                            # «Прим
 .venv/bin/python tests/test_size_break.py                            # Х19: строка другого размера — разрыв при чтении
 .venv/bin/python tests/test_fidelity.py                              # замеры точности выгрузки картинки против оригинала
 .venv/bin/python tests/test_synth.py                                 # синтетические страницы: рецепты данными → раскраска → замеры (Х23)
+.venv/bin/python tests/test_corpus2_rules.py                         # раздел Э: второй корпус (обтекание, поля бланка, наклонные строки, сноски, RTL, диаграммы pptx)
 .venv/bin/python tests/test_doc_catalog.py                           # каталог элементов, правил и форматов; страница покрытия
 .venv/bin/python tests/test_paint_marks.py                           # Х20 печать/подпись не стираются, Х21 неразрывный пробел
 .venv/bin/python tests/test_corpus_rules.py                          # Ш1–Ш5: слова одной базовой линии, абзацы по геометрии, стихи, отточия

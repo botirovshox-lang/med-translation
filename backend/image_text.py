@@ -826,7 +826,7 @@ def detect_lines(img_bytes: bytes) -> Optional[list]:
     # и зазор между кусками, а по этому числу решают, можно ли писать перевод
     # поверх картинки. Померив куски порознь, мы поручились бы за место,
     # которого не смотрели, — и заливка стёрла бы попавшую в зазор графику.
-    out = _join_pieces(_dedupe_boxes(found))
+    out = _join_pieces(_dedupe_boxes(_rot_page_skew(found)))
     # Строки, пропущенные детектором в ровной колонке (рукопись), — по краске.
     for gb in rhythm_gaps(arr, [l["box"] for l in out], confirm=True):
         out.append({"box": gb, "conf": None, "gap": 1})
@@ -1064,6 +1064,59 @@ def _flattened(arr):
     return cv2.cvtColor(cl, cv2.COLOR_GRAY2RGB)
 
 
+IMG_ROT_LINES = os.environ.get("IMG_ROT_LINES", "1") != "0"
+IMG_ROT_MIN = float(os.environ.get("IMG_ROT_MIN", "4"))      # градусов: меньше — дрожание, не наклон
+IMG_ROT_SPREAD = 3.0            # градусов: разброс углов, при котором наклон — свойство строк, а не листа
+
+
+def _rot_page_skew(lines: list) -> list:
+    """Э14 (критик): скан, снятый с общим наклоном 4–6°, даёт угол КАЖДОЙ
+    строке, и режим наклонных строк рассыпал бы абзацы по строкам. Если
+    наклонены почти все строки (не меньше 80 %) и на один угол (разброс
+    меньше `IMG_ROT_SPREAD`), это наклон листа — четырёхугольники снимаются,
+    строки идут прежней дорогой по рамкам."""
+    rot = [l for l in lines if l.get("quad")]
+    if len(rot) < 2 or len(rot) < 0.8 * len(lines):
+        return lines
+    angs = sorted(float(l.get("ang") or 0.0) for l in rot)
+    if angs[-1] - angs[0] >= IMG_ROT_SPREAD:
+        return lines
+    for l in rot:
+        l.pop("quad", None)
+        l.pop("ang", None)
+    return lines
+
+
+def _quad_angle(pts) -> float:
+    """Угол строки по верхнему краю четырёхугольника детектора, в градусах
+    (y вниз: наклон «вверх вправо» — отрицательный)."""
+    (x0, y0), (x1, y1) = pts[0][:2], pts[1][:2]
+    return math.degrees(math.atan2(float(y1) - float(y0), float(x1) - float(x0)))
+
+
+def _rot(l: dict) -> bool:
+    return bool(l.get("quad"))
+
+
+def _quad_inter(a: dict, b: dict) -> tuple:
+    """(площадь пересечения четырёхугольников, площадь меньшего) — у строки
+    без четырёхугольника им служит её рамка."""
+    def poly(l):
+        q = l.get("quad")
+        if q:
+            return _np.array(q, dtype=_np.float32)
+        x0, y0, x1, y1 = l["box"]
+        return _np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]], dtype=_np.float32)
+    pa, pb = poly(a), poly(b)
+    try:
+        import cv2
+        inter, _pts = cv2.intersectConvexConvex(pa, pb)
+        aa, ab = abs(cv2.contourArea(pa)), abs(cv2.contourArea(pb))
+    except Exception:
+        return 0.0, 1.0
+    return float(max(0.0, inter)), float(max(1.0, min(aa, ab)))
+
+
 def _detect_boxes(eng, arr, k: int) -> list:
     """Рамки одного прохода, ВСЕГДА в исходных пикселях: по рамке потом стирают,
     пишут и режут кроп — в увеличенных координатах она попала бы мимо."""
@@ -1094,6 +1147,12 @@ def _detect_boxes(eng, arr, k: int) -> list:
         if box[2] - box[0] < 4 or box[3] - box[1] < 4:
             continue
         rec = {"box": box, "conf": round(score, 3) if score is not None else None, "flat": 0.0}
+        if IMG_ROT_LINES and len(pts) == 4:
+            ang = _quad_angle(pts)
+            if IMG_ROT_MIN <= abs(ang) <= 90 - IMG_ROT_MIN:
+                # Э14: наклонная строка — её место четырёхугольник, а не рамка.
+                rec["ang"] = round(ang, 1)
+                rec["quad"] = [[round(float(p_[0]) / k, 1), round(float(p_[1]) / k, 1)] for p_ in pts]
         if score is not None and score < IMG_MIN_CONF:
             (weak if score >= IMG_WEAK_CONF else faint).append(rec)
             continue
@@ -1160,6 +1219,54 @@ def _in_column(box: list, strong: list) -> bool:
 IMG_COL_WIDTH = float(os.environ.get("IMG_COL_WIDTH", "0.6"))
 
 
+IMG_RESCUE_FIRST = os.environ.get("IMG_RESCUE_FIRST", "1") != "0"
+
+
+def _first_or_centered(box: list, pool: list) -> bool:
+    """Э12: слабая строка, которую выдаёт ГЕОМЕТРИЯ абзаца, а не чтение.
+    Распознавалка движка кириллицы не знает, и уверенность у русской строки
+    бывает 0.13–0.2; прежнее спасение (`_column_rescue`) требовало общего
+    левого или правого края — и теряло ПЕРВУЮ строку каждого абзаца: у неё
+    красная строка (левый край правее), а правый край рваный. Письмо с
+    печатью (корпус 2): три первые строки абзацев и строка «администрации
+    города…» между заголовком и адресом остались по-русски. Признаки:
+      • первая строка: вплотную НАД строкой той же высоты, начата правее
+        неё на 0.5–6 высот строки, не уже 0.6 ширины, а под ней колонка
+        (две строки и больше с общим левым краем);
+      • строка шапки по центру: вплотную над ней и под ней стоят строки
+        (высота в пределах 0.5–2 раз) с той же серединой, сама не короче
+        трёх высот строки."""
+    h = box[3] - box[1]
+    if h <= 0:
+        return False
+    w = box[2] - box[0]
+    for s in pool:
+        m = s["box"]
+        mh = m[3] - m[1]
+        if abs(mh - h) > 0.3 * h or not (0 <= m[1] - box[3] <= 0.8 * h):
+            continue
+        if not (0.5 * h <= box[0] - m[0] <= 6.0 * h) or w < IMG_COL_WIDTH * (m[2] - m[0]):
+            continue
+        col = sum(1 for t in pool if abs((t["box"][3] - t["box"][1]) - h) <= 0.3 * h
+                  and abs(t["box"][0] - m[0]) <= h)
+        if col >= 2:
+            return True
+    if w < 3 * h:
+        return False
+    cx = (box[0] + box[2]) / 2.0
+    up = down = False
+    for s in pool:
+        m = s["box"]
+        mh = m[3] - m[1]
+        if not (0.5 * h <= mh <= 2.0 * h) or abs((m[0] + m[2]) / 2.0 - cx) > 0.5 * h:
+            continue
+        if 0 <= box[1] - m[3] <= 0.8 * max(h, mh):
+            up = True
+        if 0 <= m[1] - box[3] <= 0.8 * max(h, mh):
+            down = True
+    return up and down
+
+
 def _column_rescue(cands: list, strong: list) -> list:
     got: list = []
     pool = list(strong)
@@ -1171,6 +1278,12 @@ def _column_rescue(cands: list, strong: list) -> list:
             h = box[3] - box[1]
             if h <= 0:
                 cands.remove(c)
+                continue
+            if IMG_RESCUE_FIRST and _first_or_centered(box, pool):
+                cands.remove(c)
+                got.append(c)
+                pool.append(c)
+                changed = True
                 continue
             mates = [s["box"] for s in pool
                      if abs((s["box"][3] - s["box"][1]) - h) <= 0.3 * h
@@ -1240,6 +1353,17 @@ def _dedupe_boxes(lines: list) -> list:
         area = max(1, (x1 - x0) * (y1 - y0))
         dup = False
         for k in out:
+            if _rot(l) or _rot(k):
+                # Э14: рамки соседних наклонных строк накрывают друг друга
+                # почти целиком — по рамке они «одна строка» и терялись
+                # (визитка под углом: из семи строк осталось три).
+                it_, small = _quad_inter(k, l)
+                if it_ >= IMG_DUP_COVER * small:
+                    k["conf"] = _conf_best(k["conf"], l["conf"])
+                    _text_same(k, l)
+                    dup = True
+                    break
+                continue
             kx0, ky0, kx1, ky1 = k["box"]
             over = (max(0, min(x1, kx1) - max(x0, kx0))
                     * max(0, min(y1, ky1) - max(y0, ky0)))
@@ -1475,6 +1599,8 @@ def _join_pieces(lines: list) -> list:
     for ln in sorted(lines, key=lambda l: (l["box"][1], l["box"][0])):
         joined = False
         for cur in out:
+            if _rot(cur) or _rot(ln):
+                continue                # Э14: наклонная строка — сама по себе
             if cur["box"][0] > ln["box"][0] or not _same_line(cur, ln):
                 continue
             gap = ln["box"][0] - cur["box"][2]
@@ -1966,7 +2092,9 @@ def group_blocks(lines: list) -> list:
         # Т36: строка, которая начинается с ключа легенды (`legend_key`), —
         # подпись серии, к тексту выше она не принадлежит. Продолжение
         # длинной подписи снизу к ней по-прежнему приклеивается.
-        for b in ([] if ln.get("key") else blocks):
+        for b in ([] if (ln.get("key") or _rot(ln)) else blocks):
+            if b.get("quad"):
+                continue                # Э14: к наклонной строке не клеим
             bx0, by0, bx1, by1 = b["box"]
             over = min(x1, bx1) - max(x0, bx0)          # та же колонка
             narrow = max(1, min(x1 - x0, bx1 - bx0))
@@ -1992,8 +2120,16 @@ def group_blocks(lines: list) -> list:
                 placed = True
                 break
         if not placed:
-            blocks.append({"box": [x0, y0, x1, y1], "lines": [ln], "lineH": h, "bg": ln.get("bg")})
-    blocks = _drop_inner(_rhythm_merge(blocks))
+            nb = {"box": [x0, y0, x1, y1], "lines": [ln], "lineH": h, "bg": ln.get("bg")}
+            if _rot(ln):
+                nb["quad"], nb["ang"] = ln["quad"], ln.get("ang")
+                # Высота СТРОКИ наклонной надписи — толщина четырёхугольника,
+                # а не высота рамки (у подписи оси под 45° рамка вчетверо выше).
+                q = ln["quad"]
+                nb["lineH"] = max(1.0, math.hypot(q[3][0] - q[0][0], q[3][1] - q[0][1]))
+            blocks.append(nb)
+    rot_b = [b for b in blocks if b.get("quad")]
+    blocks = _drop_inner(_rhythm_merge([b for b in blocks if not b.get("quad")])) + rot_b
     out = []
     for b in blocks:
         out.append({"box": [int(v) for v in b["box"]], "rows": len(b["lines"]),
@@ -2010,6 +2146,8 @@ def group_blocks(lines: list) -> list:
                     # в слое нет, не пропадает вместе с соседями из слоя.
                     "lineBoxes": [[int(v) for v in l["box"]] for l in
                                   sorted(b["lines"], key=lambda l: l["box"][1])]})
+        if b.get("quad"):
+            out[-1]["quad"], out[-1]["ang"] = b["quad"], b.get("ang")
         # Ключ `text` появляется ТОЛЬКО когда строки его несут. Пустая строка
         # тут была бы не безобидной: разбор картинок спрашивает модель ровно
         # про те блоки, у которых ключа нет (`"text" not in b`), — поставь его
@@ -2396,11 +2534,28 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         rgb_m = rgb.copy()
         bgv = _np.median(_np.concatenate([rgb[0], rgb[-1], rgb[:, 0], rgb[:, -1]]), axis=0)
         rgb_m[obj[0]] = bgv.astype(_np.uint8)
+    qmask = None
+    if it.get("quad") and tp.cv2 is not None:
+        # Э14: буквы соседних наклонных строк лежат в той же рамке — замер
+        # и стирание только внутри своего четырёхугольника (с запасом).
+        q = _np.array([[p_[0] - x0, p_[1] - y0] for p_ in it["quad"]], dtype=_np.int32)
+        qmask = _np.zeros(rgb_m.shape[:2], _np.uint8)
+        tp.cv2.fillConvexPoly(qmask, q, 1)
+        pad = max(1, int(0.15 * float(it.get("lineH") or 10)))
+        qmask = tp.cv2.dilate(qmask, _np.ones((2 * pad + 1, 2 * pad + 1), _np.uint8)) > 0
+        bgq = _np.median(rgb_m[~qmask], axis=0) if (~qmask).any() else None
+        if bgq is not None:
+            rgb_m = rgb_m.copy()
+            rgb_m[~qmask] = bgq.astype(_np.uint8)
     try:
         m = tp.measure(rgb_m, it.get("src") or "", rows, float(it.get("lineH") or 0), inner=inner,
                        angle_hint=float(it.get("angleLock") or 0.0))
         if not m.get("found"):
             return None
+        if qmask is not None:
+            for k_ in ("mask", "erase_mask"):
+                if m.get(k_) is not None and getattr(m[k_], "shape", None) == qmask.shape:
+                    m[k_] = m[k_].astype(bool) & qmask
         icons = []
         if ((it.get("fam") or "") != "hand" and not m["angle"] and not m.get("arc")
                 and len(m["bands"]) <= rows + 1):

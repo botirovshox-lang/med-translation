@@ -112,7 +112,9 @@ MATH_LIMIT_OPS = frozenset("\u222b\u222c\u222d\u222e\u222f\u2230"
 # картинкой (`textcount.layer_fragment_pages`);
 # 21 — Ш1–Ш3: куски одной базовой линии — одна строка; конец абзаца —
 # по тому, влезло бы первое слово следующей строки (а не по точке).
-RULES_VERSION = 22
+# 23 — Э1, Э3–Э5, Э9, Э10: подпись поля отдельно от значения, обтекание
+# круглого фото, слово прозы — не столбец, повтор после точки, свидетели-пробелы.
+RULES_VERSION = 23
 
 # Перенос строки внутри слова: мягкий перенос ВСЕГДА (для того и стоит),
 # дефис — когда продолжение начинается со строчной буквы.
@@ -1019,12 +1021,18 @@ WORD_JOIN_LOOK = 8.0         # в кеглях: где искать строки
 WORD_JOIN_WITNESS = 0.5      # доля соседних строк, которые пишут по зазору
 WORD_JOIN_COLSTART = 3       # столько соседних строк начинают кусок там же — это столбец
 WORD_JOIN = os.environ.get("PDF_WORD_JOIN", "1") != "0"
+WORD_GAP_WITNESS = float(os.environ.get("PDF_WORD_GAP_WITNESS", "1.15"))  # Э10; 0 — выключить
 
 
 def _twin_piece(ta: str, tb: str) -> bool:
     """Кусок b повторяет хвост куска a (та же надпись, прочитанная дважды
     рядом: «На заметку» + «На заметку $»): два слова подряд или одно от пяти
     букв."""
+    # Э9: после конца фразы слово может законно повториться («…(далее —
+    # «Заявка»). Заявка считается…» — термин договора): двойник надписи
+    # не кончается точкой и закрывающей кавычкой.
+    if re.search(r"[.!?;…][)»”\"']*\s*$", ta) and len(ta.split()) >= 4:
+        return False
     wa = [w for w in (re.sub(r"[^\w]+", " ", ta.lower())).split() if any(c.isalpha() for c in w)]
     wb = [w for w in (re.sub(r"[^\w]+", " ", tb.lower())).split() if any(c.isalpha() for c in w)]
     for n in range(min(len(wa), len(wb)), 0, -1):
@@ -1047,6 +1055,49 @@ def _y_index(recs: list) -> tuple:
         _YIDX.clear()
         _YIDX[key] = got
     return got[1], got[2]
+
+
+FIELD_SPLIT = os.environ.get("PDF_FIELD_SPLIT", "1") != "0"
+
+
+PROSE_GAP = float(os.environ.get("PDF_PROSE_GAP", "1.0"))
+
+
+def _prose_word(r: dict, recs: list, order: list, ys: list, s: float) -> bool:
+    """Э5: кусок, перед которым на его строке стоит слово через обычный
+    пробел, — слово прозы, а не начало столбца. Набор по формату рисует
+    каждое слово отдельно, и в колонке, где у многих строк последнее слово
+    случайно начинается на одной высоте («изго-», «сено:», «кры-» — x 525),
+    прежний счёт видел «столбец таблицы» и не клеил «добычу.» с «Дети»:
+    абзац журнала рвался посреди фразы (корпус 2). У столбца таблицы перед
+    его началом — широкий просвет."""
+    lo = bisect.bisect_left(ys, r["y"] - 0.2 * s)
+    hi = bisect.bisect_right(ys, r["y"] + 0.2 * s)
+    best = None
+    for q in (recs[j] for j in order[lo:hi]):
+        if q is r or q["x1"] > r["x0"] + 0.3 * s:
+            continue
+        if best is None or q["x1"] > best:
+            best = q["x1"]
+    return best is not None and r["x0"] - best <= PROSE_GAP * s
+
+
+def _field_pair(a: dict, b: dict) -> bool:
+    """Э1: подпись поля бланка и его значение — два места, а не одна строка.
+    Подпись кончается двоеточием и набрана другим начертанием, чем значение
+    («Пациент:» полужирным, «Сорокина Е. В.» прямым), а между ними просвет
+    шире межсловного. Склеенные, они печатались одним начертанием, а закраска
+    общей рамки стирала линию поля под значением (корпус 2, бланк анализов).
+    Обычный пробел («Примечание: текст» в прозе) правило не трогает — туда
+    оно не доходит."""
+    if not FIELD_SPLIT:
+        return False
+    ta = (a.get("t") or "").rstrip()
+    tb = (b.get("t") or "").lstrip()
+    s = max(a.get("s") or 0.0, b.get("s") or 0.0, 1.0)
+    return (ta.endswith((":", "：")) and len(ta) <= 60
+            and (a.get("st") or "") != (b.get("st") or "")
+            and not tb[:1].islower() and b["x0"] - a["x1"] >= 1.0 * s)
 
 
 def _baseline_piece(a: dict, b: dict, recs: list, vrules) -> bool:
@@ -1072,6 +1123,8 @@ def _baseline_piece(a: dict, b: dict, recs: list, vrules) -> bool:
             return False
     if gap <= WORD_JOIN_FREE * s:
         return True
+    if _field_pair(a, b):
+        return False
     # Шире межсловного: решают соседние строки. По пробелу внутри строки
     # пишут почти все строки колонки, по межколоннику и промежутку между
     # ячейками — почти никто (разве что заголовок во всю ширину). А кусок,
@@ -1079,6 +1132,7 @@ def _baseline_piece(a: dict, b: dict, recs: list, vrules) -> bool:
     # или колонки, а не слово посреди строки.
     mid = (a["x1"] + b["x0"]) / 2
     lines: dict = {}
+    edges: dict = {}
     starts = 0
     ys, order = _y_index(recs)
     lo = bisect.bisect_left(ys, a["y"] - WORD_JOIN_LOOK * s)
@@ -1089,12 +1143,28 @@ def _baseline_piece(a: dict, b: dict, recs: list, vrules) -> bool:
         dy = abs(r["y"] - a["y"])
         if not (0.5 * s < dy <= WORD_JOIN_LOOK * s):
             continue
-        if abs(r["x0"] - b["x0"]) <= 0.3 * s:
+        if abs(r["x0"] - b["x0"]) <= 0.3 * s and not _prose_word(r, recs, order, ys, s):
             starts += 1
         if r["x1"] < a["x0"] or r["x0"] > b["x1"]:
             continue                    # строка другой колонки — не свидетель
         key = round(r["y"] / max(0.3 * s, 0.5))
         lines[key] = lines.get(key, False) or (r["x0"] < mid < r["x1"])
+        if WORD_GAP_WITNESS:
+            # Э10: у прозы, набранной по формату словами-кусками, соседняя
+            # строка «пишет по зазору» и тогда, когда в этом месте у неё
+            # тоже межсловный пробел: слева и справа от середины её слова
+            # стоят ближе `WORD_GAP_WITNESS` кегля (межколонник шире).
+            le, rs_, cnt = edges.setdefault(key, [None, None, 0])
+            if r["x1"] <= mid and (le is None or r["x1"] > le):
+                edges[key][0] = r["x1"]
+            if r["x0"] >= mid and (rs_ is None or r["x0"] < rs_):
+                edges[key][1] = r["x0"]
+            edges[key][2] += 1
+    for key, (le, rs_, cnt) in edges.items():
+        # Строка прозы, набранная словами-кусками, — не меньше четырёх кусков
+        # в пределах пары: у ряда таблицы ячеек меньше (критик).
+        if key in lines and not lines[key] and le is not None and rs_ is not None                 and cnt >= 4 and rs_ - le <= WORD_GAP_WITNESS * s:
+            lines[key] = True
     if starts >= WORD_JOIN_COLSTART:
         return False
     if len(lines) < 3:
@@ -3354,6 +3424,15 @@ def _geo_breaks(lines: list, src: list) -> tuple:
                        and abs(g1[1] - g2[1]) > 1.0 * s)        # по центру
             prose = (g2[3] - g2[1]) >= GEO_IND_PROSE * s     # короткие строки подписи — не проза
             ind_b = GEO_IND_MIN * s <= ind <= GEO_IND_MAX * s and flush and not aligned and prose
+            # Э4: красная строка — правее начала ПРЕДЫДУЩЕЙ строки. Строка,
+            # начатая левее предыдущей, — край обтекания фигуры (строки вокруг
+            # круглого фото начинаются кто где), а не отступ абзаца.
+            if ind_b and g2[1] < g1[1] - 0.3 * s:
+                rights = [((src[j] or {}).get("geo") or [0, 0, 0, 0])[3]
+                          for j in range(max(0, k - GEO_WINDOW), min(n, k + 2 + GEO_WINDOW))
+                          if src[j] and (src[j] or {}).get("geo")]
+                if rights and g1[3] >= max(rights) - 1.0 * s:
+                    ind_b = False
             if ind_b and back and not hy and not t2[:1].islower() and not e2.get("bul"):
                 brk.add(k)
                 continue

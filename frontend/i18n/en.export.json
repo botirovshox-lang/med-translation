@@ -437,5 +437,17 @@
   "стёрта печать, подпись или логотип": "a stamp, signature or logo was erased",
   "над или под переводом остались следы оригинала": "traces of the original remain above or below the translation",
   "видна заплатка другого цвета": "a patch of a different colour is visible",
-  "перевод плохо виден на фоне": "the translation is hard to see against the background"
+  "перевод плохо виден на фоне": "the translation is hard to see against the background",
+  "Готовим файл… ": "Preparing the file… ",
+  "Готовим файл…": "Preparing the file…",
+  "Файл ещё проверяется": "The file is still being checked",
+  "Файл проверен перед выдачей": "The file was checked before delivery",
+  "Посмотрите эти страницы": "Please look at these pages",
+  "Страницы: ": "Pages: ",
+  " · не проверено страниц: ": " · pages not checked: ",
+  "Файл не удалось проверить": "The file could not be checked",
+  "Просмотрите его перед отправкой.": "Please look through it before sending.",
+  " и ещё ": " and ",
+  "Исправили сами: ": "Fixed automatically: ",
+  "Нажмите «Скачать» ещё раз — проверка продолжается.": "Press “Download” again — the check is still running."
 }

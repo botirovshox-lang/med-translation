@@ -1003,11 +1003,18 @@ function TabExport({ store, toast }) {
   const [sheets, setSheets] = useState("pages");
   /* Отчёт последней сборки PDF «как в оригинале»: наложения строк. */
   const [layoutReport, setLayoutReport] = useState(null);
+  const [busy, setBusy] = useState(false);
+  /* Проверка файла перед выдачей (Ы5): пока сервер смотрит страницы,
+     экран говорит «Готовим файл… N из M стр.» и сам скачивает по готовности. */
+  const [prep, setPrep] = useState(null);
   /* Отчёт и выбор листов — про ЭТОТ проект: экран при смене проекта не
      пересоздаётся, и отчёт прежнего проекта остался бы на чужом. */
   const curPid = store.activeProject && store.activeProject.id;
-  useEffect(() => { setLayoutReport(null); setSheets("pages"); }, [curPid]);
-  const [busy, setBusy] = useState(false);
+  /* Поколение экрана: смена проекта или уход с экрана обрывает ожидание
+     проверки — иначе файл прежнего проекта скачался бы поверх нового. */
+  const genRef = React.useRef(0);
+  useEffect(() => { setLayoutReport(null); setSheets("pages");
+                    return () => { genRef.current += 1; setBusy(false); setPrep(null); }; }, [curPid]);
   const [attaching, setAttaching] = useState(false);
   /* Умеет ли ЭТОТ сервер собирать PDF. Спрашиваем каталог, а не гадаем:
      конвертер — внешняя программа, и на разных установках его то есть,
@@ -1073,8 +1080,30 @@ function TabExport({ store, toast }) {
         && !confirm(untranslated + TR(" строк ещё не переведены и останутся на языке оригинала. Всё равно скачать?"))) return;
     setBusy(true);
     let result = null;
-    if (window.API) result = await window.API.safeCall(() => window.API.exportProject(project.id, fmt, opts.source, sheets));
+    const ask = () => window.API.safeCall(() => window.API.exportProject(project.id, fmt, opts.source, sheets));
+    if (window.API) result = await ask();
+    /* Ы5: файл проверяется перед выдачей. Ждём проверку (ход — страницами),
+       потом спрашиваем выгрузку снова: попытка у файла одна, и отдать его
+       непроверенным значило бы отдать клиенту брак. Потолок ожидания —
+       полчаса; дальше честно говорим, что не дождались. */
+    const t0 = Date.now();
+    const gen = genRef.current;
+    while (result && result.pending && Date.now() - t0 < 30 * 60 * 1000) {
+      if (genRef.current !== gen) return;      // ушли с проекта — не скачиваем
+      setPrep(x => x || { done: 0, total: 0 });
+      await new Promise(r => setTimeout(r, 3000));
+      const stt = await window.API.safeCall(() => window.API.prepressStatus(project.id));
+      if (stt && stt.state === "running") { setPrep({ done: stt.done || 0, total: stt.total || 0 }); continue; }
+      if (genRef.current !== gen) return;
+      result = await ask();
+    }
+    if (genRef.current !== gen) return;
+    setPrep(null);
     setBusy(false);
+    if (result && result.pending) {
+      toast.error(TR("Файл ещё проверяется"), TR("Нажмите «Скачать» ещё раз — проверка продолжается."));
+      return;
+    }
     if (result && result.ok && result.url) {
       // Реальное скачивание: бэкенд собирает файл и отдаёт по result.url.
       // Токен уходит заголовком (fetch → blob), а не в адресе ссылки.
@@ -1117,6 +1146,22 @@ function TabExport({ store, toast }) {
       // (считает сервер; законно оставленное — числа, ссылки, слова, которые
       // переводчик сам оставил, — не считается). Молчать об этом нельзя:
       // иначе брак увидит заказчик.
+      /* Проверка перед выдачей: что посмотрели и что исправили сами. */
+      /* Молчим, когда всё чисто: тост на каждую выгрузку — шум. */
+      const pp = st.prepress;
+      if (pp && (pp.state === "failed" || pp.state === "unchecked")) {
+        toast.warning(TR("Файл не удалось проверить"), TR("Просмотрите его перед отправкой."));
+      } else if (pp && pp.pages) {
+        const pages = Array.from(new Set((pp.left || []).map(x => x.page).filter(Boolean)));
+        if (pages.length || pp.unchecked) {
+          toast.warning(TR("Посмотрите эти страницы"),
+            (pages.length ? TR("Страницы: ") + pages.slice(0, 5).join(", ")
+               + (pages.length > 5 ? TR(" и ещё ") + (pages.length - 5) : "") : "")
+            + (pp.unchecked ? TR(" · не проверено страниц: ") + pp.unchecked : ""));
+        } else if (pp.fixed) {
+          toast.info(TR("Файл проверен перед выдачей"), TR("Исправили сами: ") + pp.fixed);
+        }
+      }
       const lo = st.leftover;
       if (lo && (lo.count || lo.figuresUnread)) {
         toast.warning(TR("В файле остался текст на языке оригинала"),
@@ -1260,7 +1305,9 @@ function TabExport({ store, toast }) {
             React.createElement("strong", { style: { color: "var(--c-warning)" } }, untranslated)),
           React.createElement("div", { className: "row between" }, React.createElement("span", { className: "muted" }, TR("Формат")), React.createElement("strong", null, fmtLabel)),
           React.createElement(Btn, { variant: "primary", size: "lg", className: "btn-block", icon: busy ? null : "download", disabled: busy, onClick: doExport },
-            busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null), TR("Сборка файла…"))
+            busy ? React.createElement(React.Fragment, null, React.createElement(Spinner, null),
+                     prep ? (prep.total ? TR("Готовим файл… ") + prep.done + TR(" из ") + prep.total + TR(" стр.") : TR("Готовим файл…"))
+                          : TR("Сборка файла…"))
                  : TR("Скачать ") + fmtLabel)
         ),
         React.createElement("div", null,

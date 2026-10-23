@@ -503,5 +503,6 @@
   "в оригинале строк: ": "asl matndagi qatorlar: ",
   ", в переводе: ": ", tarjimada: ",
   " — сохрани разбивку на строки, как в оригинале": " — qatorlarga boʻlinishini asl matndagidek saqlang",
-  "строк перевода не столько, сколько в оригинале": "tarjimadagi qatorlar soni asl matndagidan farq qiladi"
+  "строк перевода не столько, сколько в оригинале": "tarjimadagi qatorlar soni asl matndagidan farq qiladi",
+  "Файл проверяется перед выдачей — подождите немного и скачайте снова": "Fayl berishdan oldin tekshirilmoqda — biroz kuting va qayta yuklab oling"
 }

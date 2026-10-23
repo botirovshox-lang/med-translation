@@ -677,6 +677,7 @@ window.I18N.registerServer("uz", {
  "Файл переведён не фрагментом — дописывать нечего": "Fayl bo'lak bilan tarjima qilinmagan — qo'shadigan narsa yo'q",
  "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "Fayl yaxshilangan qoidalar bo‘yicha qayta o‘qilmoqda — bir-ikki daqiqa oladi. «Tarjima qilish»ni birozdan keyin bosing",
  "Файл после склейки заменялся или пересобирался — вернуть строки нельзя": "Birlashtirishdan keyin fayl almashtirilgan yoki qayta yig'ilgan — satrlarni qaytarib bo'lmaydi",
+ "Файл проверяется перед выдачей — подождите немного и скачайте снова": "Fayl berishdan oldin tekshirilmoqda — biroz kuting va qayta yuklab oling",
  "Файл пуст": "Fayl bo'sh",
  "Файл пустой": "Fayl bo'sh",
  "Файл уже переводили заново целиком (": "Fayl allaqachon butunlay qayta tarjima qilingan (",

@@ -503,5 +503,6 @@
   "в оригинале строк: ": "lines in the source: ",
   ", в переводе: ": ", in the translation: ",
   " — сохрани разбивку на строки, как в оригинале": " — keep the line breaks as in the source",
-  "строк перевода не столько, сколько в оригинале": "the translation has a different number of lines than the source"
+  "строк перевода не столько, сколько в оригинале": "the translation has a different number of lines than the source",
+  "Файл проверяется перед выдачей — подождите немного и скачайте снова": "The file is being checked before delivery — wait a moment and download again"
 }

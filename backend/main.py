@@ -910,7 +910,7 @@ def _delete_project_record(pid: int) -> None:
         shutil.rmtree(str(MEDIA_DIR / str(int(pid))), ignore_errors=True)
     for path in (list(_source_paths(pid)) + list(SOURCE_DIR.glob("%d.orig.*" % pid))
                  + list(SOURCE_DIR.glob("%d.full.*" % pid)) + [_tune_path(pid)]
-                 + [SOURCE_DIR / ("%d.prepress.json" % pid)]):
+                 + list(SOURCE_DIR.glob("%d.prepress.*" % pid))):
         try:
             path.unlink(missing_ok=True)
         except OSError as e:
@@ -36962,6 +36962,56 @@ def _drop_duplicate_extras(layout: dict, texts: dict, extra: list) -> int:
     return len(drop)
 
 
+class PrepressPending(Exception):
+    """Выгрузка ждёт предпечатной проверки: файл ещё не проверен."""
+
+    def __init__(self, job_id):
+        super().__init__("prepress")
+        self.job_id = job_id
+
+
+def _prepress_public(meta: Optional[dict], state: Optional[str] = None) -> dict:
+    """Отчёт проверки для человека: только числа и коды (без моделей
+    и денег — инварианты 22а, 24а)."""
+    rep_ = (meta or {}).get("report") or {}
+    return {"state": state or (meta or {}).get("state") or "none",
+            "pages": rep_.get("pages"), "checked": rep_.get("checked"),
+            "unchecked": rep_.get("unchecked"), "fixed": rep_.get("fixed"),
+            "left": [{"page": x.get("page"), "code": x.get("code")} for x in (rep_.get("left") or [])][:20]}
+
+
+def _prepress_gate(project: dict, inp: dict) -> Optional[dict]:
+    """Ы5: выгрузка PDF «как в оригинале» только проверенным файлом.
+    None — проверка у организации не включена либо проверить нечем (тогда
+    сборка как раньше). {pdf, stats, public} — проверенный файл с тем же
+    входом. {public} без pdf — вход тот же, но проверка не удалась: сборка
+    как раньше, с честной пометкой. Иначе — PrepressPending (задача
+    поставлена, экран ждёт её и спрашивает снова)."""
+    if PREPRESS != "fix" or not _prepress_on(_tenant_of(project)) or not _prepress_models():
+        return None
+    pid = int(project["id"])
+    fp = _prepress_fp(inp)
+    meta = _prepress_cache(pid)
+    if meta and meta.get("fp") == fp:
+        if meta.get("state") in ("checked", "partial") and meta["pdfPath"].exists():
+            return {"pdf": meta["pdfPath"].read_bytes(), "stats": meta.get("stats") or {},
+                    "public": _prepress_public(meta)}
+        if meta.get("state") in ("unchecked", "failed"):
+            return {"public": _prepress_public(meta)}
+    k_ = (pid, fp)
+    seen = _PREPRESS_KICKS.setdefault(k_, set())
+    if len(seen) >= 3:
+        # Три задачи с этим входом кончились без итога — не держим файл.
+        print("[backend] предпечатная проверка #%s не дала итога трижды — сборка без неё" % pid,
+              file=sys.stderr)
+        return None
+    job = _prepress_kick(pid, "export", urgent=True)
+    if job is None:
+        return None
+    seen.add(job.get("id"))
+    raise PrepressPending(job.get("id"))
+
+
 def _layout_inputs(project: dict) -> Optional[dict]:
     """Входы сборки PDF «как в оригинале» — ОДНИ для выгрузки и для
     предпечатной проверки (`_prepress_run`): соберись они порознь, проверенный
@@ -36996,7 +37046,8 @@ def _layout_inputs(project: dict) -> Optional[dict]:
     by_id = {s_["id"]: s_ for s_ in project.get("segments") or []}
     sources = {int(idx): " ".join((by_id.get(sid) or {}).get("source") or "" for sid in sids)
                for idx, sids in _para_groups(data)}
-    return {"data": data, "layout": layout, "work": work, "texts": texts, "extra": extra,
+    return {"pid": int(project["id"]), "pair": "%s>%s" % (project.get("src"), project.get("tgt")),
+            "data": data, "layout": layout, "work": work, "texts": texts, "extra": extra,
             "sources": sources, "same": same, "dup": dup_dropped}
 
 
@@ -37018,8 +37069,15 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
         return None
     data, layout, work, texts = inp_["data"], inp_["layout"], inp_["work"], inp_["texts"]
     extra, sources, same, dup_dropped = inp_["extra"], inp_["sources"], inp_["same"], inp_["dup"]
+    gate = _prepress_gate(project, inp_)
     try:
-        pdf, stats, layout, extra = _layout_loop(project, work, layout, texts, extra, sources)
+        if gate is not None and gate.get("pdf") is not None:
+            # Ы5: проверенный файл с тем же входом — отдаётся как есть.
+            pdf, stats = gate["pdf"], dict(gate.get("stats") or {})
+        else:
+            pdf, stats, layout, extra = _layout_loop(project, work, layout, texts, extra, sources)
+        if gate is not None:
+            stats["prepress"] = gate.get("public")
     except layout_pdf_mod.NotAvailable as e:
         raise HTTPException(503, "Выгрузка «как в оригинале» для PDF не собралась: %s. "
                                  "Доступен Word-документ и PDF из него" % e)
@@ -37038,6 +37096,8 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
     ov = stats.pop("_overlay", None)
     order = stats.pop("_overlayOrder", None)
     stats.pop("_placed", None)          # места строк — внутреннее (prepress)
+    stats.pop("_tune", None)
+    stats.pop("_pixel", None)
     try:
         if len(work) + len(ov or b"") <= EXPORT_QA_KEEP_MB * 1048576:
             with _QA_INPUTS_LOCK:
@@ -37332,6 +37392,8 @@ def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: l
     best[1]["loop"] = {"tries": tries, "before": before, "after": after, "fixed": fixed,
                        "used": best is not first, "hints": len(hints), "hinted": hinted,
                        "seconds": round(time.time() - t0, 1)}
+    best[1]["_tune"] = tune if best is not first else {}       # внутреннее: prepress достраивает
+    best[1]["_pixel"] = best_rep                                # внутреннее: находки по пикселям
     return best
 
 
@@ -37394,45 +37456,54 @@ def _prepress_models() -> list:
     return out
 
 
-def _prepress_kick(pid: int, why: str) -> Optional[dict]:
-    """Поставить предпечатную проверку проекта — задачей низкого приоритета.
-    Только PDF «как в оригинале» (этап 1), только полный перевод, одна
-    ждущая задача на проект."""
+def _prepress_kick(pid: int, why: str, urgent: bool = False) -> Optional[dict]:
+    """Поставить предпечатную проверку проекта. Заранее (`urgent=False`) —
+    низким приоритетом и только при полном переводе; для выгрузки
+    (`urgent=True`) — обычным приоритетом и при любом переводе: человек
+    уже нажал «Скачать». Одна ждущая задача своего вида на проект."""
     project = _project_by_id(pid)
     if project is None or not _prepress_on(_tenant_of(project)):
         return None
     if (project.get("importKind") or "") != "pdf" or not project.get("sourceDocx"):
         return None
-    segs = [s_ for s_ in project.get("segments") or [] if not _anchorless_seg(s_)]
-    if not segs or any(_needs_translation(s_) for s_ in segs):
-        return None
-    for q in _queued_jobs():
-        if int(q.get("project") or -1) == int(pid) and int(q.get("qseq") or 0) >= PREPRESS_QBASE:
+    if not urgent:
+        segs = [s_ for s_ in project.get("segments") or [] if not _anchorless_seg(s_)]
+        if not segs or any(_needs_translation(s_) for s_ in segs):
             return None
+    _refresh_jobs_from_db()
     for j in list(_JOBS.values()):
         if (j.get("project") == pid and j.get("kind") == "prepress"
-                and j.get("status") in ("queued", "running")):
-            return None
+                and j.get("status") in ("queued", "running") and bool(j.get("low")) != urgent):
+            return j
     prev = getattr(_JOB_TENANT, "id", None)
     _JOB_TENANT.id = _tenant_of(project)
     try:
-        return _job_enqueue(pid, "prepress", [], {"mode": PREPRESS, "why": why}, low=True)
+        return _job_enqueue(pid, "prepress", [], {"mode": PREPRESS, "why": why}, low=not urgent)
     finally:
         _JOB_TENANT.id = prev
 
 
 def _prepress_look(work: bytes, pdf: bytes, page: int, places: list, src: str, tgt: str,
-                   models: list) -> dict:
-    """Взгляд модели на одну страницу (все плитки — одним вызовом). Ловит
-    свои исключения: одна страница не роняет проверку."""
+                   models: list, suspects: Optional[list] = None) -> dict:
+    """Взгляд модели на одну страницу: все плитки и увеличенные вырезки мест,
+    которые подозревают правила по пикселям, — одним вызовом. Ловит свои
+    исключения: одна страница не роняет проверку."""
     try:
         tiles = prepress_mod.pair_images(work, pdf, page, places)
+        zooms = prepress_mod.zoom_images(work, pdf, page, suspects or [])
     except Exception as e:
         return {"error": "tiles:%s" % type(e).__name__}
     content = [{"type": "text", "text": "Page %d, %d tile(s)." % (page + 1, len(tiles))}]
     for jpeg, _m in tiles:
         content.append({"type": "image_url", "image_url": {
             "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(), "detail": "high"}})
+    if zooms:
+        content.append({"type": "text", "text": "Zoomed crops (original | translated) of spots "
+                        "that automatic checks suspect; confirm or reject each as a defect:"})
+        for jpeg, code in zooms:
+            content.append({"type": "text", "text": "Zoom — suspected %s" % code})
+            content.append({"type": "image_url", "image_url": {
+                "url": "data:image/jpeg;base64," + base64.b64encode(jpeg).decode(), "detail": "high"}})
     system = prepress_mod.prompt(src, tgt, places)
     last = None
     cost = 0.0
@@ -37450,7 +37521,8 @@ def _prepress_look(work: bytes, pdf: bytes, page: int, places: list, src: str, t
                 cost += float(_resp_cost(mdl["id"], resp) or 0.0)
                 v = prepress_mod.parse(resp.choices[0].message.content or "", places)
                 if v["parsed"]:
-                    return {"verdict": v, "cost": cost, "model": mdl["id"], "tiles": len(tiles)}
+                    return {"verdict": v, "cost": cost, "model": mdl["id"], "tiles": len(tiles),
+                            "zooms": len(zooms)}
                 last = "unparsed"
             except Exception as e:
                 last = _err_public(e)
@@ -37458,10 +37530,205 @@ def _prepress_look(work: bytes, pdf: bytes, page: int, places: list, src: str, t
     return {"error": str(last or "no_model")[:200], "cost": cost}
 
 
+_PREPRESS_CODE_FILES = ("layout_pdf.py", "export_qa.py", "prepress.py", "text_paint.py",
+                        "image_text.py", "pdftext.py")
+_PREPRESS_CODE_V: list = []
+
+
+def _prepress_code_version() -> str:
+    """Отпечаток кода сборки и проверки: выкат меняет его, и файл из кэша
+    собирается заново (сборка — секунды и бесплатно; модель при этом
+    смотрит только страницы, которые выглядят иначе)."""
+    if not _PREPRESS_CODE_V:
+        h = hashlib.sha1()
+        for f in _PREPRESS_CODE_FILES:
+            try:
+                h.update((Path(__file__).parent / f).read_bytes())
+            except OSError:
+                pass
+        _PREPRESS_CODE_V.append(h.hexdigest()[:16])
+    return _PREPRESS_CODE_V[0]
+
+
+def _prepress_fp(inp: dict) -> str:
+    """Отпечаток ВХОДА выгрузки: тексты к печати, надписи картинок, код,
+    вопрос модели. Совпал — проверенный файл годится как есть."""
+    texts = sorted((str(k), v or "") for k, v in (inp.get("texts") or {}).items())
+    extra = inp.get("extra") or []
+    work = inp.get("work") or b""
+    tune = ""
+    try:
+        pid_ = inp.get("pid")
+        if pid_ is not None and _tune_path(pid_).exists():
+            tune = hashlib.sha1(_tune_path(pid_).read_bytes()).hexdigest()
+    except Exception:
+        pass
+    # Режим входит в отпечаток: файл «наблюдения» не исправлен и выдаваться
+    # как проверенный в режиме «чинить» не может.
+    raw = json.dumps([texts, extra, hashlib.sha1(work).hexdigest(), inp.get("pair") or "", tune, PREPRESS,
+                      _prepress_code_version(),
+                      prepress_mod.PROMPT_VERSION if prepress_mod else ""],
+                     ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _prepress_cache_paths(pid: int) -> tuple:
+    return SOURCE_DIR / ("%d.prepress.pdf" % int(pid)), SOURCE_DIR / ("%d.prepress.meta.json" % int(pid))
+
+
+def _prepress_cache(pid: int) -> Optional[dict]:
+    pdf_p, meta_p = _prepress_cache_paths(pid)
+    try:
+        meta = json.loads(meta_p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    meta["pdfPath"] = pdf_p
+    return meta
+
+
+def _prepress_cache_write(pid: int, fp: str, pdf: Optional[bytes], state: str, report: dict,
+                          stats: Optional[dict] = None) -> None:
+    pdf_p, meta_p = _prepress_cache_paths(pid)
+    tid = threading.get_ident()
+    if pdf is not None:
+        tmp = pdf_p.with_suffix(".%d.%d.tmp" % (os.getpid(), tid))
+        tmp.write_bytes(pdf)
+        os.replace(str(tmp), str(pdf_p))
+    keep = {k: v for k, v in (stats or {}).items() if not str(k).startswith("_")
+            and isinstance(v, (int, float, str, bool, list, dict, type(None)))}
+    tmp = meta_p.with_suffix(".%d.%d.tmp" % (os.getpid(), tid))
+    tmp.write_text(json.dumps({"fp": fp, "state": state, "report": report, "stats": keep,
+                               "hasPdf": pdf is not None or pdf_p.exists(),
+                               "at": datetime.now().strftime("%Y-%m-%d %H:%M")},
+                              ensure_ascii=False), encoding="utf-8")
+    os.replace(str(tmp), str(meta_p))
+
+
+def _prepress_pixel(project: dict, inp: dict, res: tuple) -> dict:
+    """Находки по пикселям для сборки `res` (как в петле правил)."""
+    pdf, st, lay, ext = res
+    if st.get("_pixel"):
+        return st["_pixel"]
+    segs = project.get("segments") or []
+    lang = export_qa_mod.Lang([x.get("source") or "" for x in segs], [x.get("target") or "" for x in segs])
+    try:
+        return export_qa_mod.inspect_pdf(inp["work"], pdf, lay, inp["texts"], ext, lang,
+                                         overlay=st.get("_overlay"),
+                                         overlay_order=st.get("_overlayOrder"),
+                                         time_budget=1e9, detect=None, sources=inp["sources"])
+    except Exception:
+        return {"issues": []}
+
+
+class _PrepressPause(Exception):
+    """Проверку отложили (выкат) или она уступила очередь."""
+
+
+def _prepress_pages(job: dict, project: dict, inp: dict, res: tuple, texts: dict, models: list,
+                    mem, ver: dict, c: dict, spent: list) -> dict:
+    """Вердикты по страницам сборки `res`: из памяти, где страница та же,
+    остальное — модель, пачками со стопом, парковкой и уступкой."""
+    pdf, st, lay, ext = res
+    items = export_qa_mod.printed_items(lay, texts, ext, inp["sources"])
+    placed = st.get("_placed") or {}
+    pix = _prepress_pixel(project, inp, res)
+    sus: dict = {}
+    for it in pix.get("issues") or []:
+        if it.get("page") is not None and it.get("box"):
+            sus.setdefault(int(it["page"]), []).append({"box": it["box"], "code": it.get("code")})
+    from pypdf import PdfReader as _PR
+    rd = _PR(io.BytesIO(pdf))
+    n = len(rd.pages)
+    verdicts: dict = {}
+    todo = []
+    reasons = c.setdefault("reasons", {})
+    for pg in range(n):
+        mb = rd.pages[pg].mediabox
+        places = prepress_mod.page_places(items, pg, float(mb.width), float(mb.height))
+        texts_pg = [it.get("text") or "" for it in items if it["page"] == pg]
+        keys = prepress_mod.page_keys(texts_pg, placed.get(pg) or [], prepress_mod.page_raster(pdf, pg), ver)
+        rec, why = mem.lookup(pg, keys)
+        reasons[why] = reasons.get(why, 0) + 1
+        if rec is not None:
+            verdicts[pg] = rec.get("verdict") or {}
+            c["fromMemory"] = int(c.get("fromMemory") or 0) + 1
+        else:
+            todo.append((pg, places, keys))
+    job["total"] = int(job.get("total") or 0) + len(todo)
+    _job_persist(job)
+    k = 0
+    while k < len(todo):
+        if _job_should_stop():
+            job["status"] = "stopped"
+            raise _PrepressPause("stopped")
+        if _SHUTDOWN.is_set():
+            mem.save()
+            _job_park(job)
+            raise _PrepressPause("park")
+        if job.get("low") and _job_should_yield(job):
+            mem.save()
+            _job_yield(job, [])
+            raise _PrepressPause("yield")
+        if spent[0] >= PREPRESS_MAX_USD:
+            c["unchecked"] = int(c.get("unchecked") or 0) + len(todo) - k
+            c["capped"] = True
+            break
+        batch = todo[k:k + max(1, PREPRESS_PARALLEL)]
+        got = _run_parallel(batch, lambda t: _prepress_look(
+            inp["work"], pdf, t[0], t[1], project.get("src") or "", project.get("tgt") or "",
+            models, sus.get(t[0])), workers=PREPRESS_PARALLEL)
+        for (pg, places, keys), r in zip(batch, got):
+            spent[0] += float(r.get("cost") or 0.0)
+            if r.get("verdict") is None:
+                c["errors"] = int(c.get("errors") or 0) + 1
+                c["unchecked"] = int(c.get("unchecked") or 0) + 1
+                continue
+            v = {"ok": r["verdict"]["ok"], "defects": r["verdict"]["defects"]}
+            mem.store(pg, keys, dict(v, model=r.get("model")))
+            verdicts[pg] = v
+            c["looked"] = int(c.get("looked") or 0) + 1
+        k += len(batch)
+        job["done"] = int(job.get("done") or 0) + len(batch)
+        c["cost"] = round(spent[0], 4)
+        _job_persist(job)
+    return verdicts
+
+
+_PREPRESS_KICKS: dict = {}       # (проект, отпечаток) → сколько раз выгрузка ставила проверку
+
+
 def _job_prepress(job: dict) -> None:
-    """Предпечатная проверка проекта: сборка → картинка каждой страницы →
-    память или взгляд модели → вердикты в память, сводка в задаче. Между
-    пачками страниц — стоп, выкат (парковка) и уступка очереди."""
+    """Обёртка (Ы5): любой выход задачи, кроме уступки и парковки, оставляет
+    кэш с отпечатком входа — иначе выгрузка ставила бы проверку по кругу."""
+    c = job.setdefault("counters", {})
+    try:
+        _job_prepress_body(job)
+    except Exception as e:
+        print("[backend] предпечатная проверка #%s упала: %s" % (job.get("project"), e), file=sys.stderr)
+        c["errors"] = int(c.get("errors") or 0) + 1
+        c["failed"] = 1
+    if job.get("status") == "queued":            # уступила или отложена — продолжит
+        return
+    fp = job.get("ppFp")
+    if not fp:
+        return
+    meta = _prepress_cache(int(job["project"]))
+    if not meta or meta.get("fp") != fp:
+        try:
+            _prepress_cache_write(int(job["project"]), fp, None, "failed", {"why": "stopped"
+                                  if job.get("status") == "stopped" else "error"})
+        except Exception:
+            pass
+
+
+def _job_prepress_body(job: dict) -> None:
+    """Предпечатная проверка проекта (Ы5): сборка по правилам → взгляд
+    модели на каждую страницу (память — где страница та же) → в режиме
+    «чинить»: правки мест по действиям модели → пересборка → второй взгляд
+    на изменившиеся страницы → берётся, только если стало строго лучше
+    (вес дефектов модели + находки по пикселям, без новых видов) → готовый
+    файл в кэш. Сбой и потолок — файл всё равно ложится в кэш с честной
+    пометкой «не досмотрено», чтобы выгрузка не встала."""
     pid = job["project"]
     project = _project_by_id(pid)
     c = job.setdefault("counters", {})
@@ -37476,90 +37743,120 @@ def _job_prepress(job: dict) -> None:
     if inp is None:
         c["skipped"] = "no_layout"
         return
+    fp = _prepress_fp(inp)
+    job["ppFp"] = fp
+    old = _prepress_cache(pid)
+    if old and old.get("fp") == fp and old.get("state") in ("checked", "partial") and old["pdfPath"].exists():
+        c["skipped"] = "fresh"          # проверено другой задачей с тем же входом
+        return
     models = _prepress_models()
+    mode = (job.get("params") or {}).get("mode") or PREPRESS
+    import copy as _copy
+
+    def build(tune, texts):
+        lay_, ext_ = _copy.deepcopy(inp["layout"]), _copy.deepcopy(inp["extra"])
+        pdf_, st_ = layout_pdf_mod.build(inp["work"], lay_, texts, extra=ext_, lang=project.get("tgt"),
+                                         sources=inp["sources"], keep_overlay=True, tune=tune or None)
+        return pdf_, st_, lay_, ext_
+
+    base = _layout_loop(project, inp["work"], inp["layout"], inp["texts"], inp["extra"], inp["sources"])
     if not models:
         c["skipped"] = "no_model"
+        _prepress_cache_write(pid, fp, base[0], "unchecked", {"why": "no_model"}, base[1])
         return
-    pdf, st, lay, ext = _layout_loop(project, inp["work"], inp["layout"], inp["texts"],
-                                     inp["extra"], inp["sources"])
-    items = export_qa_mod.printed_items(lay, inp["texts"], ext, inp["sources"])
-    placed = st.get("_placed") or {}
     try:
         import pypdfium2 as _pp
         pdfium_v = str(getattr(_pp, "V_PDFIUM", "") or getattr(_pp, "PDFIUM_INFO", ""))
     except Exception:
         pdfium_v = ""
     ver = {"model": models[0]["id"], "prompt": prepress_mod.PROMPT_VERSION, "pdfium": pdfium_v}
-    from pypdf import PdfReader as _PR
-    rd = _PR(io.BytesIO(pdf))
-    n = len(rd.pages)
     mem = prepress_mod.PageMemory(_prepress_path(pid))
-    todo = []
-    reasons: dict = {}
-    for pg in range(n):
-        mb = rd.pages[pg].mediabox
-        pw, ph = float(mb.width), float(mb.height)
-        places = prepress_mod.page_places(items, pg, pw, ph)
-        texts_pg = [it.get("text") or "" for it in items if it["page"] == pg]
-        keys = prepress_mod.page_keys(texts_pg, placed.get(pg) or [], prepress_mod.page_raster(pdf, pg), ver)
-        rec, why = mem.lookup(pg, keys)
-        reasons[why] = reasons.get(why, 0) + 1
-        if rec is None:
-            todo.append((pg, places, keys))
-    job["total"] = n
-    job["done"] = n - len(todo)
-    c.update({"pages": n, "fromMemory": n - len(todo), "reasons": reasons})
-    _job_persist(job)
-    spent = float(c.get("cost") or 0.0)
+    spent = [float(c.get("cost") or 0.0)]
     prev_t, prev_p = getattr(_JOB_TENANT, "id", None), getattr(_JOB_PROJECT, "id", None)
     _JOB_TENANT.id = QA_SERVICE_TENANT      # расход — сервису, не клиенту
     _JOB_PROJECT.id = None                  # и не в себестоимость файла клиента
+    final = base
     try:
-        k = 0
-        while k < len(todo):
-            if _job_should_stop():
-                job["status"] = "stopped"
-                break
-            if _SHUTDOWN.is_set():
-                mem.save()
-                _job_park(job)
-                return
-            if _job_should_yield(job):
-                mem.save()
-                _job_yield(job, [])
-                return
-            if spent >= PREPRESS_MAX_USD:
-                c["unchecked"] = len(todo) - k
-                c["capped"] = True
-                break
-            batch = todo[k:k + max(1, PREPRESS_PARALLEL)]
-            res = _run_parallel(batch, lambda t: _prepress_look(
-                inp["work"], pdf, t[0], t[1], project.get("src") or "", project.get("tgt") or "",
-                models), workers=PREPRESS_PARALLEL)
-            for (pg, places, keys), r in zip(batch, res):
-                spent += float(r.get("cost") or 0.0)
-                if r.get("verdict") is None:
-                    c["errors"] = int(c.get("errors") or 0) + 1
-                    c["lastError"] = r.get("error")
-                    continue
-                v = r["verdict"]
-                mem.store(pg, keys, {"ok": v["ok"], "defects": v["defects"], "model": r.get("model")})
-                c["looked"] = int(c.get("looked") or 0) + 1
-                for d in v["defects"]:
-                    if d.get("confidence", 0) >= prepress_mod.MIN_CONF:
-                        bc = c.setdefault("byCode", {})
-                        bc[d["code"]] = bc.get(d["code"], 0) + 1
-                        if d["code"] == "OTHER":
-                            c.setdefault("other", []).append(d.get("what") or "")
-            k += len(batch)
-            job["done"] = min(n, job["done"] + len(batch))
-            c["cost"] = round(spent, 4)
-            _job_persist(job)
+        try:
+            v1 = _prepress_pages(job, project, inp, base, inp["texts"], models, mem, ver, c, spent)
+        except _PrepressPause:
+            return
+        report = {"pages": len(v1) + int(c.get("unchecked") or 0), "fixed": 0}
+        c["pages"] = report["pages"]
+        v_final = v1
+        if mode == "fix" and not c.get("capped"):
+            tune0 = base[1].get("_tune") or {}
+            tune1, leave = prepress_mod.tune_from(v1, tune0)
+            if tune1 != tune0 or leave:
+                texts1 = dict(inp["texts"])
+                extra1 = _copy.deepcopy(inp["extra"])
+                for key in leave:
+                    if key.startswith("p"):
+                        try:
+                            texts1.pop(int(key[1:]), None)
+                        except ValueError:
+                            pass
+                    elif key.startswith("x"):
+                        try:
+                            extra1[int(key[1:])]["text"] = ""
+                        except (ValueError, IndexError):
+                            pass
+                inp1 = dict(inp, extra=extra1)
+                lay_, ext_ = _copy.deepcopy(inp["layout"]), _copy.deepcopy(extra1)
+                pdf2, st2 = layout_pdf_mod.build(inp["work"], lay_, texts1, extra=ext_,
+                                                 lang=project.get("tgt"), sources=inp["sources"],
+                                                 keep_overlay=True, tune=tune1 or None)
+                cand = (pdf2, st2, lay_, ext_)
+                try:
+                    v2 = _prepress_pages(job, project, inp1, cand, texts1, models, mem, ver, c, spent)
+                except _PrepressPause:
+                    return
+                s1 = sum(prepress_mod.page_score(v) for v in v1.values())
+                s2 = sum(prepress_mod.page_score(v) for v in v2.values())
+                p1 = _loop_score(_prepress_pixel(project, inp, base), base[1])
+                p2 = _loop_score(_prepress_pixel(project, inp1, cand), st2)
+                codes1 = {d["code"] for v in v1.values() for d in v.get("defects") or []
+                          if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF}
+                codes2 = {d["code"] for v in v2.values() for d in v.get("defects") or []
+                          if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF}
+                if s2 < s1 and p2[0] <= p1[0] and not (codes2 - codes1) and len(v2) >= len(v1):
+                    final, v_final = cand, v2
+                    # «Исправили сами: N мест» — число мест, а не вес.
+                    n1 = sum(1 for v in v1.values() for d in v.get("defects") or []
+                             if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF)
+                    n2 = sum(1 for v in v2.values() for d in v.get("defects") or []
+                             if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF)
+                    report["fixed"] = max(0, n1 - n2)
+                    report["left_orig"] = len(leave)
+                c["round2"] = {"before": s1, "after": s2, "used": final is cand}
+        left = []
+        for pg, v in sorted(v_final.items()):
+            for d in v.get("defects") or []:
+                if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF:
+                    left.append({"page": pg + 1, "code": d.get("code")})
+                    bc = c.setdefault("byCode", {})
+                    bc[d["code"]] = bc.get(d["code"], 0) + 1
+                    if d.get("code") == "OTHER" and d.get("what"):
+                        c.setdefault("other", []).append(d["what"][:160])
+        report.update({"checked": int(c.get("looked") or 0) + int(c.get("fromMemory") or 0),
+                       "unchecked": int(c.get("unchecked") or 0), "left": left[:50]})
+        mem.data["report"] = dict(report, at=datetime.now().strftime("%Y-%m-%d %H:%M"))
+        mem.save()
+        state = "checked" if not report["unchecked"] else "partial"
+        _prepress_cache_write(pid, fp, final[0], state, report, final[1])
+        c["report"] = report
+    except Exception as e:
+        # Сбой проверки не держит выгрузку: файл по правилам ложится в кэш
+        # с пометкой «не проверено», выгрузка соберёт его как раньше.
+        print("[backend] предпечатная проверка #%s упала: %s" % (pid, e), file=sys.stderr)
+        c["errors"] = int(c.get("errors") or 0) + 1
+        c["failed"] = 1
+        try:
+            _prepress_cache_write(pid, fp, base[0], "failed", {"why": "error"}, base[1])
+        except Exception:
+            pass
     finally:
         _JOB_TENANT.id, _JOB_PROJECT.id = prev_t, prev_p
-    mem.data["report"] = {k_: v_ for k_, v_ in c.items() if k_ != "cost"}
-    mem.data["report"]["at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-    mem.save()
     _prepress_tell(project, c)
 
 
@@ -37603,6 +37900,37 @@ def prepress_report(pid: int):
     except Exception:
         return {"ok": True, "report": None, "pages": {}}
     return {"ok": True, "report": data.get("report"), "pages": data.get("pages") or {}}
+
+
+@app.get("/api/projects/{pid}/prepress")
+def prepress_status(pid: int):
+    """Ы5: состояние проверки файла перед выдачей — для экрана «Скачать».
+    Только числа и коды: ни моделей, ни денег (инварианты 22а, 24а).
+    state: off (не включена) | running (идёт; done/total — страницы) |
+    ready (проверенный файл совпадает с нынешним переводом) | stale
+    (перевод менялся — проверим при выгрузке) | none (ещё не проверяли)."""
+    project = get_project(pid)
+    p_id = int(project["id"])
+    if (PREPRESS != "fix" or not _prepress_on(_tenant_of(project)) or not _prepress_models()
+            or (project.get("importKind") or "") != "pdf" or not project.get("sourceDocx")):
+        return {"ok": True, "state": "off"}
+    _refresh_jobs_from_db()
+    for j in list(_JOBS.values()):
+        if j.get("project") == p_id and j.get("kind") == "prepress" and j.get("status") in ("queued", "running"):
+            return {"ok": True, "state": "running", "job": j.get("id"), "urgent": not j.get("low"),
+                    "done": int(j.get("done") or 0), "total": int(j.get("total") or 0)}
+    meta = _prepress_cache(p_id)
+    if not meta:
+        return {"ok": True, "state": "none"}
+    try:
+        inp = _layout_inputs(project)
+    except Exception:
+        inp = None
+    fresh = inp is not None and meta.get("fp") == _prepress_fp(inp)
+    out = _prepress_public(meta)
+    out.update({"ok": True, "state": ("ready" if meta.get("state") in ("checked", "partial") else "unchecked")
+                if fresh else "stale"})
+    return out
 
 
 def _orig_page_width(project: dict) -> Optional[float]:
@@ -38322,7 +38650,9 @@ def _export_qa_run(pid: int, fmt: str, path: Path, sig: list, inp: dict, lang,
                 _qa_write(path, rep)
             pending = any(r.get("project") == pid and r.get("status") == "pending"
                           for r in (STATE.get("exportReviews") or []))
-            if EXPORT_QA_VISION == "first" and pending:
+            # С проверкой перед выдачей (Ы5) модель уже смотрела файл: второй
+            # взгляд после выгрузки — лишние деньги и смена отпечатка.
+            if EXPORT_QA_VISION == "first" and pending and not (PREPRESS == "fix" and _prepress_on(tenant)):
                 try:
                     vis = _export_qa_vision(pid, fmt, path, inp["work"], src, tgt)
                     if vis:
@@ -38568,6 +38898,9 @@ def export_project(pid: int, req: ExportRequest):
     try:
         path, stats = _generate_export(project, fmt, include_source=req.source,
                                        sheets="original" if req.sheets == "original" else "pages")
+    except PrepressPending as e:
+        # Ы5: файл проверяется перед выдачей — экран ждёт задачу и спросит снова.
+        return {"ok": False, "pending": True, "job": e.job_id}
     except ImportError as e:
         return {"ok": False, "error": f"На сервере нет библиотеки для {fmt.upper()}: {e}"}
     except HTTPException as e:
@@ -38603,6 +38936,15 @@ def export_project(pid: int, req: ExportRequest):
 
 @app.get("/api/projects/{pid}/export/download")
 def download_export(pid: int, format: str = "docx", source: bool = True):
+    get_project(pid)                     # чужой проект — 404 до всякой работы
+    try:
+        return _download_export(pid, format, source)
+    except PrepressPending:
+        # Ы5: файла ещё нет — он проверяется перед выдачей.
+        raise HTTPException(409, "Файл проверяется перед выдачей — подождите немного и скачайте снова")
+
+
+def _download_export(pid: int, format: str = "docx", source: bool = True):
     project = get_project(pid)
     fmt = format.lower()
     if fmt not in EXPORT_EXT:
@@ -40526,6 +40868,11 @@ def _job_public(job: dict) -> dict:
     не показывать."""
     out = {k: v for k, v in job.items() if k not in ("ids", "stop")}
     out.update(_queue_place(job))
+    if (out.get("kind") == "prepress" and isinstance(out.get("counters"), dict)
+            and (_hide_cost() or _hide_models())):
+        # Ы5: проверку оплачивает сервис — ни суммы, ни видов находок модели.
+        out["counters"] = {k: v for k, v in out["counters"].items()
+                           if k in ("pages", "looked", "fromMemory", "unchecked", "report", "skipped")}
     # Рубежа ДВА, и они режут РАЗНОЕ. Имена моделей (`sysModels`,
     # `modelsReplaced`, ключи моделей в `params`, разбивка `usage.models`)
     # не видит никто, кроме супера, — а `_hide_cost` для владельца ложен,

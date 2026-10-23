@@ -677,6 +677,7 @@ window.I18N.registerServer("en", {
  "Файл переведён не фрагментом — дописывать нечего": "The file is not a trial excerpt: there is nothing to add",
  "Файл перечитывается по улучшенным правилам разбора — это займёт минуту-другую. Нажмите «Перевести» чуть позже": "The file is being re-read with improved parsing rules — this takes a minute or two. Press «Translate» a little later",
  "Файл после склейки заменялся или пересобирался — вернуть строки нельзя": "The file was replaced or rebuilt after the join — the lines cannot be restored",
+ "Файл проверяется перед выдачей — подождите немного и скачайте снова": "The file is being checked before delivery — wait a moment and download again",
  "Файл пуст": "The file is empty",
  "Файл пустой": "The file is empty",
  "Файл уже переводили заново целиком (": "The whole file has already been re-translated (",

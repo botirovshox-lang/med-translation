@@ -124,7 +124,11 @@ main._store_original(pid, f.name, blob)
 main._project_by_id = lambda x: project if int(x) == pid else None
 
 
-def run():
+def run(keep_cache=False):
+    if not keep_cache:
+        for f_ in main._prepress_cache_paths(pid):
+            if f_.exists():
+                f_.unlink()
     job = {"id": 1, "kind": "prepress", "project": pid, "status": "running", "params": {},
            "counters": {}, "tenant": "default", "low": True, "total": 0, "done": 0}
     main._JOB_TENANT.id = "default"
@@ -149,6 +153,11 @@ n_calls = len(CALLS)
 j2 = run()
 check("все страницы из памяти", j2["counters"].get("fromMemory") == c1.get("pages"), j2["counters"])
 check("новых вызовов нет", len(CALLS) == n_calls)
+
+print("=== тот же вход и готовый файл — задача не работает второй раз ===")
+run()
+j2b = run(keep_cache=True)
+check("свежий кэш — пропуск", j2b["counters"].get("skipped") == "fresh", j2b["counters"])
 
 print("=== перевод поменялся — страница смотрится заново ===")
 segs[0]["target"] = segs[0]["target"] + " Extra"
@@ -177,6 +186,74 @@ check("обычная задача проверке не уступает",
 import inspect
 check("клиент задачу проверки поставить не может (create_job отказывает)",
       'req.kind == "prepress"' in inspect.getsource(main.create_job))
+
+print("=== режим «чинить»: правка, второй взгляд, файл в кэш ===")
+main.PREPRESS = "fix"
+main._queued_jobs = lambda: []
+main._prepress_path(pid).unlink()
+STEP = [0]
+
+
+class _Comp2:
+    def create(self, **kw):
+        CALLS.append(kw)
+        STEP[0] += 1
+        # первый взгляд — дефект с действием, второй (после правки) — чисто
+        if STEP[0] <= j1["counters"].get("pages", 1):
+            return _Resp('{"ok": false, "defects": [{"place": 1, "code": "OVERFLOW", '
+                         '"action": "tight", "confidence": 0.9, "what": "x"}]}')
+        return _Resp('{"ok": true, "defects": []}')
+
+
+class _Client2:
+    def __init__(self):
+        self.chat = type("C", (), {"completions": _Comp2()})()
+
+
+main._llm_client = lambda mdl, timeout=None, step=None, max_retries=None: _Client2()
+j5 = {"id": 2, "kind": "prepress", "project": pid, "status": "running", "params": {"mode": "fix"},
+      "counters": {}, "tenant": "default", "low": True, "total": 0, "done": 0}
+main._JOB_TENANT.id = "default"
+main._job_prepress(j5)
+c5 = j5["counters"]
+check("второй взгляд был", "round2" in c5, c5)
+meta = main._prepress_cache(pid)
+inp = main._layout_inputs(project)
+check("файл в кэше, отпечаток совпал", bool(meta) and meta.get("fp") == main._prepress_fp(inp), meta)
+check("кэш помечен проверенным", (meta or {}).get("state") in ("checked", "partial"), meta)
+check("pdf проверки лежит", (meta or {}).get("pdfPath") and meta["pdfPath"].exists())
+if c5.get("round2", {}).get("used"):
+    check("исправлено считается местами", (c5.get("report") or {}).get("fixed", 0) >= 1, c5.get("report"))
+
+print("=== выгрузка ждёт проверку ===")
+g = main._prepress_gate(project, inp)
+check("тот же перевод — выгрузка отдаёт проверенный файл", g and g.get("pdf") is not None, g)
+check("отчёт для человека без моделей и денег",
+      g and not any(k in json.dumps(g.get("public"), ensure_ascii=False) for k in ("claude", "gpt", "cost", "usd")),
+      g and g.get("public"))
+KICKS = []
+main._prepress_kick = lambda p_, why, urgent=False: KICKS.append((p_, why, urgent)) or {"id": 77}
+segs[1]["target"] = segs[1]["target"] + " More"
+inp2 = main._layout_inputs(project)
+try:
+    main._prepress_gate(project, inp2)
+    check("перевод поменялся — выгрузка ждёт новую проверку", False, "без PrepressPending")
+except main.PrepressPending as e:
+    check("перевод поменялся — выгрузка ждёт новую проверку", e.job_id == 77)
+check("проверка поставлена срочной", KICKS and KICKS[-1][2] is True, KICKS)
+main._prepress_cache_write(pid, main._prepress_fp(inp2), None, "failed", {"why": "error"})
+g2 = main._prepress_gate(project, inp2)
+check("сбой проверки — выгрузка не встаёт (сборка как раньше)", g2 is not None and g2.get("pdf") is None, g2)
+main.PREPRESS = "observe"
+check("в режиме наблюдения выгрузка не ждёт", main._prepress_gate(project, inp2) is None)
+main.PREPRESS = "fix"
+import inspect as _insp
+src_exp = _insp.getsource(main.export_project)
+check("экспорт отвечает pending, а не ошибкой", '"pending": True' in src_exp)
+check("скачивание непроверенного — 409", "PrepressPending" in _insp.getsource(main.download_export))
+src_st = _insp.getsource(main.prepress_status)
+check("статус для клиента без моделей и денег",
+      "model" not in src_st.split('"""')[2].replace("_prepress_models", "") and "cost" not in src_st)
 
 print()
 if FAILS:

@@ -437,5 +437,17 @@
   "стёрта печать, подпись или логотип": "muhr, imzo yoki logotip oʻchib ketgan",
   "над или под переводом остались следы оригинала": "tarjima ustida yoki ostida asl matn izlari qolgan",
   "видна заплатка другого цвета": "boshqa rangdagi yamoq koʻrinib turibdi",
-  "перевод плохо виден на фоне": "tarjima fonda yaxshi koʻrinmaydi"
+  "перевод плохо виден на фоне": "tarjima fonda yaxshi koʻrinmaydi",
+  "Готовим файл… ": "Faylni tayyorlayapmiz… ",
+  "Готовим файл…": "Faylni tayyorlayapmiz…",
+  "Файл ещё проверяется": "Fayl hali tekshirilmoqda",
+  "Файл проверен перед выдачей": "Fayl berishdan oldin tekshirildi",
+  "Посмотрите эти страницы": "Ushbu betlarni ko‘rib chiqing",
+  "Страницы: ": "Betlar: ",
+  " · не проверено страниц: ": " · tekshirilmagan betlar: ",
+  "Файл не удалось проверить": "Faylni tekshirib bo‘lmadi",
+  "Просмотрите его перед отправкой.": "Yuborishdan oldin uni ko‘rib chiqing.",
+  " и ещё ": " va yana ",
+  "Исправили сами: ": "O‘zimiz tuzatdik: ",
+  "Нажмите «Скачать» ещё раз — проверка продолжается.": "«Yuklab olish»ni yana bosing — tekshiruv davom etmoqda."
 }

@@ -276,6 +276,7 @@ HSCALE_WIDTH_MIN = float(os.environ.get("LAYOUT_HSCALE_WIDTH_MIN", "0.74"))
 WIDTH_MIN_CHARS = 40
 # Ниже этого суммарного сужения буквы читаются сплющенными.
 HSCALE_FLOOR = 0.7
+TUNE_COND_FLOOR = 0.78      # Ы5 «уже начертание»: ниже узкий набор не читается
 
 
 def _h0_of(slots: list) -> float:
@@ -1487,6 +1488,17 @@ def _dc_shift(v: dict, t: dict) -> None:
         v["x"] = max(v["x"], dz[2])
 
 
+def _lat_cyr(text: str) -> bool:
+    """Все буквы текста — латиница или кириллица (для смены гарнитуры)."""
+    import unicodedata as _ud
+    for ch in text or "":
+        if ch.isalpha():
+            n = _ud.name(ch, "")
+            if not (n.startswith("LATIN") or n.startswith("CYRILLIC") or n.startswith("MODIFIER")):
+                return False
+    return True
+
+
 def _tune_key(idx) -> str:
     """Ключ места, как его называет приёмка (`export_qa.printed_items`):
     абзац слоя — «p<номер>», надпись со страницы-картинки — «x<номер>»."""
@@ -1693,7 +1705,8 @@ def _fit_slots(text: str, slots: list, sw, font_of, align: str, split_ok: bool =
         if fits:
             return lines, cap, [], h0
     # Сперва — сужение при прежнем кегле.
-    hmin = max(HSCALE_FLOOR, h0 * HSCALE_MIN)
+    hmin = max(HSCALE_FLOOR, h0 * (TUNE_COND_FLOOR if any((sl.get("_tune") or {}).get("cond")
+                                                          for sl in slots) else HSCALE_MIN))
     hs[0] = hmin
     got, _rest, ok = lay(cap, split_ok, wide)
     if ok:
@@ -2113,6 +2126,11 @@ def _fit_flow(text: str, slots: list, sw, font_of, align: str, split_ok: bool = 
     lines, f, rest, hs = _fit_slots(text, slots, sw, font_of, align, split_ok, cap, floor,
                                     tail_hs)
     if (not rest and f >= cap - 0.005) or any(sl.get("rot") for sl in slots):
+        return slots, lines, f, rest, hs
+    if not rest and any((sl.get("_tune") or {}).get("keep_breaks") for sl in slots):
+        # Ы5: стихи, меню, реквизиты — строка оригинала = строка перевода,
+        # без перевёрстки абзаца. Не влезло и так — перевёрстка как обычно:
+        # выход за место хуже нарушенных строк.
         return slots, lines, f, rest, hs
     orig_slots = slots
     slots = _merge_line_slots(slots)
@@ -6639,6 +6657,8 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                             continue
                         if (sd.get("_tune") or {}).get("erase"):
                             pad *= TUNE_ERASE           # Ы1: остался хвост оригинала
+                        if (sd.get("_tune") or {}).get("keep_rule"):
+                            pad *= 0.4                  # Ы5: не задевать линию/печать рядом
                         lim = sd.get("lim")
                         if lim is not None and sd["x1"] > lim - 0.5 * pad:
                             sd["x1"] = max(sd["x"] + 0.5 * sd["size"], lim - 0.5 * pad)
@@ -6895,6 +6915,16 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
             sds = [sd for b in grp for sd in (b.get("_slots") or [])]
             if sds:
                 fam = grp[0].get("fam") or ""
+                tn_ = {}
+                for b_ in grp:
+                    tn_.update(b_.get("_tune") or {})
+                for f_ in ("serif", "sans", "mono"):
+                    if tn_.get(f_) and _lat_cyr(text):
+                        # Ы5: гарнитура как в оригинале (взгляд модели); засечки —
+                        # семейство по умолчанию (пустое имя). Только латиница
+                        # и кириллица: у семейств нет букв других письменностей.
+                        fam = f_ if f_ in FAMILY_CANDIDATES else ""
+                        break
 
                 def font_of(sd, fam=fam):
                     return _font_for(fonts, {"style": sd["style"], "fam": fam})
@@ -6921,6 +6951,10 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                         for sd in sds:
                             if not sd.get("rot"):
                                 sd["x1"] = r_
+                    for a_ in ("left", "right", "center"):
+                        if tn_.get("align_" + a_):
+                            align = a_          # Ы5: выключка как в оригинале
+                            break
                     orig_sds = sds
                     sds, lines, f, rest, hsc = _fit_flow(text, orig_sds, psw, font_of, align, nospace,
                                                          hy=None if (nospace or use_r) else hyph)
@@ -6937,8 +6971,14 @@ def _build(pdf_bytes: bytes, layout: dict, texts: dict, extra: "list | None" = N
                                   "scattered": scat, "fam": fam,
                                   "hy": None if (nospace or use_r) else hyph,
                                   "orig": [sd for b in grp for sd in (b.get("_slots") or [])],
-                                  "just": (not scat) and _justified(
-                                      [sd for b in grp for sd in (b.get("_slots") or [])])})
+                                  "just": (not scat) and not tn_.get("no_justify")
+                                  and not any(tn_.get("align_" + a_) for a_ in ("left", "right", "center"))
+                                  and (
+                                      # «по ширине» — только у абзаца от трёх строк:
+                                      # короткие строки по ширине дают дыры.
+                                      (bool(tn_.get("justify")) and len(orig_sds if not scat else sds) >= 3)
+                                      or _justified(
+                                          [sd for b in grp for sd in (b.get("_slots") or [])]))})
                 pages_used.update(int(sd["page"]) for sd in sds)
                 continue
             if grp[0].get("_paint") and not use_r:

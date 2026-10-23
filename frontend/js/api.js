@@ -635,6 +635,7 @@ function onUnauthorized() {
     batch:         (pid, segIds, force, limit, model) => call("POST", `/projects/${pid}/batch`, { segment_ids: segIds || null, force: !!force, limit: limit || 50, model: model || null }),
     checksBatch:(pid, segIds, bcModel)    => call("POST",   `/projects/${pid}/checks/batch`,   { segment_ids: segIds || null, run_backcheck: true, bc_model: bcModel || null }),
     preflight:     (pid)                    => call("POST",   `/projects/${pid}/preflight`),
+    prepressStatus: (pid)                    => call("GET",    `/projects/${pid}/prepress`),
     exportProject: (pid, format, source, sheets) => call("POST", `/projects/${pid}/export`,         { format, source: source !== false, sheets: sheets === "original" ? "original" : "pages" }),
     exportQa:      (pid, format)          => call("GET",    `/projects/${pid}/export/qa?format=${encodeURIComponent(format || "pdf")}`),
     exportQaLook:  (pid, format)          => call("POST",   `/admin/export-qa/${pid}?format=${encodeURIComponent(format || "pdf")}`),

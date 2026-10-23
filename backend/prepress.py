@@ -417,3 +417,87 @@ def pair_images(orig: bytes, out: bytes, page: int, places: list) -> list:
             pair.save(buf, "JPEG", quality=88)
             res.append((buf.getvalue(), mine))
     return res
+
+
+ZOOM_MAX = int(os.environ.get("PREPRESS_ZOOM_MAX", "6"))       # вырезок на страницу
+
+
+def zoom_images(orig: bytes, out: bytes, page: int, suspects: list) -> list:
+    """[(JPEG пары крупно, подпись)] — места, которые подозревают правила
+    по пикселям (точки над «Ё», разрыв линии, стёртая печать, выщербина):
+    на целой плитке модель их не видит (замер 23.10.2026), а увеличенная
+    вдвое вырезка с полем — видит. `suspects` — [{box (доли листа), code}]."""
+    import io
+    import export_qa
+    from PIL import Image
+    if not suspects:
+        return []
+    A, B = export_qa._Doc(orig), export_qa._Doc(out)
+    res = []
+    try:
+        w, h, _r = A.info(page)
+        for s in suspects[:ZOOM_MAX]:
+            bx = s.get("box")
+            if not bx:
+                continue
+            bw, bh = max(0.02, bx[2] - bx[0]), max(0.02, bx[3] - bx[1])
+            x0, y0 = max(0.0, bx[0] - bw), max(0.0, bx[1] - 1.5 * bh)
+            x1, y1 = min(1.0, bx[2] + bw), min(1.0, bx[3] + 1.5 * bh)
+            sc = min(6.0, 700.0 / max(1.0, (x1 - x0) * w), 700.0 / max(1.0, (y1 - y0) * h))
+            a = Image.fromarray(A.raster(page, sc))
+            b = Image.fromarray(B.raster(page, sc)).resize(a.size)
+            W, H = a.size
+            box = (int(x0 * W), int(y0 * H), int(x1 * W), int(y1 * H))
+            ca, cb = a.crop(box), b.crop(box)
+            pair = Image.new("RGB", (2 * ca.width + 12, ca.height), (230, 30, 80))
+            pair.paste(ca, (0, 0))
+            pair.paste(cb, (ca.width + 12, 0))
+            buf = io.BytesIO()
+            pair.save(buf, "JPEG", quality=90)
+            res.append((buf.getvalue(), s.get("code") or "?"))
+    finally:
+        A.close()
+        B.close()
+    return res
+
+
+# Вес вида дефекта для решения «стало лучше» (критик-верстальщик 23.10.2026).
+WEIGHT = {"OVERFLOW": 3, "OVERLAP": 3, "MISSING": 3, "UNTRANSLATED": 3, "RULE_CUT": 3,
+          "MARK_LOST": 3, "GHOST": 2, "PATCH": 2, "CONTRAST": 2, "FONT": 2, "MERGED": 2,
+          "FRAGMENT": 2, "SIZE": 1, "ALIGN": 1, "SMALL": 1, "BLUR": 1, "OTHER": 1}
+
+
+def page_score(verdict: dict) -> int:
+    return sum(WEIGHT.get(d.get("code"), 1) for d in (verdict or {}).get("defects") or []
+               if float(d.get("confidence") or 0) >= MIN_CONF)
+
+
+def tune_from(verdicts: dict, base: dict) -> tuple:
+    """Правки мест из вердиктов модели (поверх `base`) и места «оставить
+    оригиналом». «Шире» и «теснее» у места взаимоисключающие; «ещё строка»
+    исполняется как «шире» (запас бумаги и колонка до неё)."""
+    out = {k: dict(v) for k, v in (base or {}).items()}
+    leave = set()
+    # Взаимоисключающие правки: у места берётся первая из группы.
+    groups = [("wide", "tight"), ("align_left", "align_right", "align_center"),
+              ("justify", "no_justify"), ("serif", "sans", "mono"), ("erase", "keep_rule")]
+    excl = {a: [b for b in g if b != a] for g in groups for a in g}
+    for v in verdicts.values():
+        for d in (v or {}).get("defects") or []:
+            if float(d.get("confidence") or 0) < MIN_CONF or not d.get("key"):
+                continue
+            act = d.get("action")
+            if act == "lines2":
+                act = "wide"
+            if act == "shorter":
+                act = "tight"           # короткий перевод — этап 3; пока — ужать на месте
+            if act == "leave_orig":
+                leave.add(d["key"])
+                continue
+            if act not in TUNE_ACTIONS:
+                continue
+            cur = out.setdefault(d["key"], {})
+            if any(cur.get(x) for x in excl.get(act, [])):
+                continue
+            cur[act] = 1
+    return {k: v for k, v in out.items() if v}, leave

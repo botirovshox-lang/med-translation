@@ -38062,9 +38062,24 @@ def _prepress_split(project: dict, inp: dict, idx: int, cur: str, models: list, 
     if not isinstance(parts, list) or len(parts) != len(slots) or not all(isinstance(x, str) and x.strip() for x in parts):
         # модель сказала «не режется» (null) или ответила не тем — перевод по строкам
         return _prepress_split_retranslate(project, src, lines, models, c, spent)
-    if _pp_runs_of(parts, cur):
-        return [x.strip() for x in parts]
-    return _prepress_split_retranslate(project, src, lines, models, c, spent)
+    if not _pp_runs_of(parts, cur):
+        return _prepress_split_retranslate(project, src, lines, models, c, spent)
+    parts = [x.strip() for x in parts]
+    if len(slots) <= 6 and len(src) <= 300:
+        # Разрез «подряд» ещё не значит «по смыслу»: «0.7 L teapot | of dried
+        # fruit compote». Короткий блок сверяем с переводом каждой строки
+        # отдельно: части совпали со своими строками по словам — берём
+        # разрез (это проверенный перевод), нет — перевод по строкам.
+        alt = _prepress_split_retranslate(project, src, lines, models, c, spent)
+        if alt is not None:
+            def _w(t):
+                return {w.strip(".,;:!?()«»\"'").lower() for w in t.split()} - {""}
+            for a_, r_ in zip(parts, alt):
+                wa, wr = _w(a_), _w(r_)
+                if not wa or not wr or len(wa & wr) / float(len(wa | wr)) < 0.6:
+                    c["splitRecut"] = int(c.get("splitRecut") or 0) + 1
+                    return alt
+    return parts
 
 
 def _prepress_split_retranslate(project: dict, src: str, lines: list, models: list, c: dict,

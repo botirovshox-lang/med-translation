@@ -467,6 +467,11 @@ WEIGHT = {"OVERFLOW": 3, "OVERLAP": 3, "MISSING": 3, "UNTRANSLATED": 3, "RULE_CU
           "FRAGMENT": 2, "SIZE": 1, "ALIGN": 1, "SMALL": 1, "BLUR": 1, "OTHER": 1}
 
 
+# Что показывается человеку списком «посмотрите страницы»: видимый брак.
+USER_CODES = {"OVERFLOW", "OVERLAP", "MISSING", "UNTRANSLATED", "RULE_CUT", "MARK_LOST",
+              "GHOST", "PATCH", "CONTRAST", "MERGED", "FRAGMENT"}
+
+
 def page_score(verdict: dict) -> int:
     return sum(WEIGHT.get(d.get("code"), 1) for d in (verdict or {}).get("defects") or []
                if float(d.get("confidence") or 0) >= MIN_CONF)

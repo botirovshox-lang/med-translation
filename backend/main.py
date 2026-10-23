@@ -37409,8 +37409,8 @@ try:
 except Exception as _e:                 # pragma: no cover
     prepress_mod = None
     print("[backend] prepress не загружен: %s" % _e, file=sys.stderr)
-PREPRESS = os.environ.get("PREPRESS", "observe").strip().lower()      # off | observe | fix
-PREPRESS_TENANTS = os.environ.get("PREPRESS_TENANTS", "*super")
+PREPRESS = os.environ.get("PREPRESS", "fix").strip().lower()      # off | observe | fix
+PREPRESS_TENANTS = os.environ.get("PREPRESS_TENANTS", "*")
 PREPRESS_MODEL = os.environ.get("PREPRESS_MODEL", "claude-opus-5-5")
 PREPRESS_FALLBACK = os.environ.get("PREPRESS_FALLBACK", "gpt-5.6-sol")
 PREPRESS_MAX_USD = float(os.environ.get("PREPRESS_MAX_USD", "10"))
@@ -37833,12 +37833,15 @@ def _job_prepress_body(job: dict) -> None:
         for pg, v in sorted(v_final.items()):
             for d in v.get("defects") or []:
                 if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF:
-                    left.append({"page": pg + 1, "code": d.get("code")})
+                    # Человеку — только видимый брак; гарнитура, кегль, выключка
+                    # и резкость — сводка владельцу (на них человек не ответит).
+                    if d.get("code") in prepress_mod.USER_CODES:
+                        left.append({"page": pg + 1, "code": d.get("code")})
                     bc = c.setdefault("byCode", {})
                     bc[d["code"]] = bc.get(d["code"], 0) + 1
                     if d.get("code") == "OTHER" and d.get("what"):
                         c.setdefault("other", []).append(d["what"][:160])
-        report.update({"checked": int(c.get("looked") or 0) + int(c.get("fromMemory") or 0),
+        report.update({"checked": len(v_final),
                        "unchecked": int(c.get("unchecked") or 0), "left": left[:50]})
         mem.data["report"] = dict(report, at=datetime.now().strftime("%Y-%m-%d %H:%M"))
         mem.save()

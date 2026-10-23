@@ -38070,20 +38070,27 @@ def _prepress_split(project: dict, inp: dict, idx: int, cur: str, models: list, 
         # fruit compote». Короткий блок сверяем с переводом каждой строки
         # отдельно: части совпали со своими строками по словам — берём
         # разрез (это проверенный перевод), нет — перевод по строкам.
-        alt = _prepress_split_retranslate(project, src, lines, models, c, spent)
-        if alt is not None:
-            def _w(t):
-                return {w.strip(".,;:!?()«»\"'").lower() for w in t.split()} - {""}
-            for a_, r_ in zip(parts, alt):
-                wa, wr = _w(a_), _w(r_)
-                if not wa or not wr or len(wa & wr) / float(len(wa | wr)) < 0.6:
-                    c["splitRecut"] = int(c.get("splitRecut") or 0) + 1
-                    return alt
+        got = _prepress_split_retranslate(project, src, lines, models, c, spent, with_src=True)
+        if got is not None:
+            alt, srcs = got
+            q = ("Original lines and the parts of the translation printed on them:\n" + "\n".join(
+                "%d. %s => %s" % (i + 1, s_, p_) for i, (s_, p_) in enumerate(zip(srcs, parts))))
+            ans = _pp_ask(models, "Answer ONLY JSON {\"ok\": true|false}: ok=true only if EACH part is a "
+                          "complete translation of ITS OWN original line (no words that belong to "
+                          "another line, nothing missing).", q, c, spent, tokens=100) or ""
+            a_, b_ = ans.find("{"), ans.rfind("}")
+            try:
+                verdict = json.loads(ans[a_:b_ + 1]).get("ok") if a_ >= 0 and b_ > a_ else None
+            except Exception:
+                verdict = None
+            if verdict is False:
+                c["splitRecut"] = int(c.get("splitRecut") or 0) + 1
+                return alt
     return parts
 
 
 def _prepress_split_retranslate(project: dict, src: str, lines: list, models: list, c: dict,
-                                spent: list) -> Optional[list]:
+                                spent: list, with_src: bool = False):
     """Второй ход раскладки: перевод, сделанный по склеенному оригиналу,
     не делится на строки («0.7 L teapot of dried fruit compote» — описание
     чая и название компота стали одной фразой). Модель делит ОРИГИНАЛ на
@@ -38120,7 +38127,7 @@ def _prepress_split_retranslate(project: dict, src: str, lines: list, models: li
         if not _pp_meaning_ok(project, s_, "", t_, models, c, spent):
             return None
     c["splitRetranslated"] = int(c.get("splitRetranslated") or 0) + 1
-    return tgts
+    return (tgts, srcs) if with_src else tgts
 
 
 def _pp_runs_of(parts: list, cur: str) -> bool:

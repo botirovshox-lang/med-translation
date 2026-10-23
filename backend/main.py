@@ -34013,11 +34013,17 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                     stats["img_noseg"] += 1
                 continue
             target = (seg.get("target") or "").strip()
+            ov_ = (getattr(_IMG_OV, "v", None) or {}).get("%s|%d" % (name, i)) or {}
+            if ov_.get("leave"):
+                continue                     # Ы5: проверка решила оставить оригинал (печать, логотип)
+            if ov_.get("text"):
+                target = ov_["text"]         # Ы5: короче / переведено — только в файле
             if not target:
                 # Не переведён — надпись остаётся на языке оригинала. Стереть
                 # её «пока что» значило бы выбросить текст совсем.
                 stats["img_untranslated"] += 1
                 continue
+            n_items0 = len(items)
             items.extend(image_text.split_parts({"box": b["box"], "text": target, "align": _blk_align(b),
                           "breaks": b.get("breaks"),
                           # Высота строки и число строк: по ним считаются поля
@@ -34037,6 +34043,9 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                                 "lineBoxes": b.get("lineBoxes"),
                                 "fam": im_fam or ("serif" if b.get("serif") else ""),
                                 "src": (seg.get("source") or "").strip()}])
+            if ov_.get("tune"):
+                for it_ in items[n_items0:]:
+                    it_["tune"] = ov_["tune"]
         if not items:
             continue
         part = parts.get(name)
@@ -36982,6 +36991,105 @@ def _prepress_public(meta: Optional[dict], state: Optional[str] = None) -> dict:
                           for x in (rep_.get("shortened") or [])][:50]}
 
 
+_IMG_OV = threading.local()          # Ы5: поправки проверки к выгрузке картинок (по блоку)
+
+
+def _image_prepress_inputs(project: dict, with_work: bool = True) -> Optional[dict]:
+    """Входы проверки для картинки и скана: листы оригинала (PDF из
+    картинок пакета), надписи с переводом долями листа, отпечаток исходника."""
+    if (project.get("importKind") or "") not in ("scan", "image") or not project.get("sourceDocx"):
+        return None
+    page_w = _orig_page_width(project)
+    inp = _image_qa_inputs(project, page_w)
+    if inp is None:
+        return None
+    wp_, pw_ = inp["workSrc"]
+    blob = Path(wp_).read_bytes()
+    inp.update({"pid": int(project["id"]), "pair": "%s>%s" % (project.get("src"), project.get("tgt")),
+                "data": None, "workSha": hashlib.sha1(blob).hexdigest()})
+    if with_work:
+        inp["work"] = importers.images_to_file(importers.images_from_docx(blob), ".pdf", page_w_pt=pw_)
+    return inp
+
+
+def _pp_img_ov(inp: dict, extra: list, tune: dict) -> dict:
+    """Поправки к выгрузке картинок по адресу блока: текст, «оставить
+    оригинал», рычаги печати."""
+    ov = {}
+    base = inp.get("extra") or []
+    for n, e in enumerate(extra or []):
+        blk = (e or {}).get("blk")
+        if not blk:
+            continue
+        o = {}
+        t0 = (base[n].get("text") if n < len(base) else "") or ""
+        t1 = (e.get("text") or "")
+        if not t1.strip() and t0.strip():
+            o["leave"] = True
+        elif t1 != t0:
+            o["text"] = t1
+        tn = (tune or {}).get("x%d" % n)
+        if tn:
+            o["tune"] = {k: v for k, v in tn.items() if k in ("plate", "tight", "solo")}
+        if o:
+            ov[blk] = o
+    return ov
+
+
+def _pp_build_images(project: dict, inp: dict, extra: list, tune: dict) -> tuple:
+    """Сборка картинок с поправками (как выгрузка, но без гейта)."""
+    import copy as _copy
+    ov = _pp_img_ov(inp, extra, tune)
+    d = EXPORT_DIR / "_pp"
+    d.mkdir(parents=True, exist_ok=True)
+    tok = secrets.token_hex(6)
+    out, tmp = d / ("%s.pdf" % tok), d / ("%s.pdf.tmp" % tok)
+    prev = (getattr(_IMG_OV, "v", None), getattr(_IMG_OV, "building", False))
+    _IMG_OV.v, _IMG_OV.building = ov, True
+    try:
+        st = _export_images_file(project, out, tmp, ".pdf")
+        pdf = tmp.read_bytes()
+    finally:
+        _IMG_OV.v, _IMG_OV.building = prev
+        for f_ in (out, tmp):
+            try:
+                f_.unlink()
+            except OSError:
+                pass
+    st = dict(st or {}, _ov=ov, _tune=tune or {})
+    return pdf, st, {}, _copy.deepcopy(extra)
+
+
+def _prepress_gate_images(project: dict) -> Optional[dict]:
+    """Гейт выгрузки картинки и скана: проверенные поправки с тем же входом —
+    {ov, public}; не проверено — PrepressPending; проверка не включена — None."""
+    if PREPRESS != "fix" or not _prepress_on(_tenant_of(project)) or not _prepress_models():
+        return None
+    try:
+        inp = _image_prepress_inputs(project, with_work=False)
+    except Exception:
+        inp = None
+    if inp is None:
+        return None
+    pid = int(project["id"])
+    fp = _prepress_fp(inp)
+    meta = _prepress_cache(pid)
+    if meta and meta.get("fp") == fp:
+        if meta.get("state") in ("checked", "partial"):
+            return {"ov": meta.get("ov") or {}, "public": _prepress_public(meta)}
+        if meta.get("state") in ("unchecked", "failed"):
+            return {"ov": None, "public": _prepress_public(meta)}
+    k_ = (pid, fp)
+    seen = _PREPRESS_KICKS.setdefault(k_, set())
+    if len(seen) >= 3:
+        return None
+    job = _prepress_kick(pid, "export", urgent=True)
+    if job is None:
+        return None
+    seen.add(job.get("id"))
+    raise PrepressPending(job.get("id"))
+
+
 def _prepress_gate(project: dict, inp: dict) -> Optional[dict]:
     """Ы5: выгрузка PDF «как в оригинале» только проверенным файлом.
     None — проверка у организации не включена либо проверить нечем (тогда
@@ -37466,7 +37574,7 @@ def _prepress_kick(pid: int, why: str, urgent: bool = False) -> Optional[dict]:
     project = _project_by_id(pid)
     if project is None or not _prepress_on(_tenant_of(project)):
         return None
-    if (project.get("importKind") or "") != "pdf" or not project.get("sourceDocx"):
+    if (project.get("importKind") or "") not in ("pdf", "scan", "image") or not project.get("sourceDocx"):
         return None
     if not urgent:
         segs = [s_ for s_ in project.get("segments") or [] if not _anchorless_seg(s_)]
@@ -37567,7 +37675,8 @@ def _prepress_fp(inp: dict) -> str:
         pass
     # Режим входит в отпечаток: файл «наблюдения» не исправлен и выдаваться
     # как проверенный в режиме «чинить» не может.
-    raw = json.dumps([texts, extra, hashlib.sha1(work).hexdigest(), inp.get("pair") or "", tune, PREPRESS,
+    raw = json.dumps([texts, extra, inp.get("workSha") or hashlib.sha1(work).hexdigest(),
+                      inp.get("pair") or "", tune, PREPRESS,
                       _prepress_code_version(),
                       prepress_mod.PROMPT_VERSION if prepress_mod else ""],
                      ensure_ascii=False, sort_keys=True, default=str)
@@ -37589,7 +37698,7 @@ def _prepress_cache(pid: int) -> Optional[dict]:
 
 
 def _prepress_cache_write(pid: int, fp: str, pdf: Optional[bytes], state: str, report: dict,
-                          stats: Optional[dict] = None) -> None:
+                          stats: Optional[dict] = None, ov: Optional[dict] = None) -> None:
     pdf_p, meta_p = _prepress_cache_paths(pid)
     tid = threading.get_ident()
     if pdf is not None:
@@ -37599,7 +37708,7 @@ def _prepress_cache_write(pid: int, fp: str, pdf: Optional[bytes], state: str, r
     keep = {k: v for k, v in (stats or {}).items() if not str(k).startswith("_")
             and isinstance(v, (int, float, str, bool, list, dict, type(None)))}
     tmp = meta_p.with_suffix(".%d.%d.tmp" % (os.getpid(), tid))
-    tmp.write_text(json.dumps({"fp": fp, "state": state, "report": report, "stats": keep,
+    tmp.write_text(json.dumps({"fp": fp, "state": state, "report": report, "stats": keep, "ov": ov,
                                "hasPdf": pdf is not None or pdf_p.exists(),
                                "at": datetime.now().strftime("%Y-%m-%d %H:%M")},
                               ensure_ascii=False), encoding="utf-8")
@@ -37740,7 +37849,7 @@ def _job_prepress_body(job: dict) -> None:
         c["skipped"] = "no_project"
         return
     try:
-        inp = _layout_inputs(project)
+        inp = _layout_inputs(project) or _image_prepress_inputs(project)
     except HTTPException as e:
         c["skipped"] = "layout:%s" % e.status_code
         return
@@ -37763,7 +37872,10 @@ def _job_prepress_body(job: dict) -> None:
                                          sources=inp["sources"], keep_overlay=True, tune=tune or None)
         return pdf_, st_, lay_, ext_
 
-    base = _layout_loop(project, inp["work"], inp["layout"], inp["texts"], inp["extra"], inp["sources"])
+    if inp.get("images"):
+        base = _pp_build_images(project, inp, inp["extra"], {})
+    else:
+        base = _layout_loop(project, inp["work"], inp["layout"], inp["texts"], inp["extra"], inp["sources"])
     if not models:
         c["skipped"] = "no_model"
         _prepress_cache_write(pid, fp, base[0], "unchecked", {"why": "no_model"}, base[1])
@@ -37815,7 +37927,7 @@ def _job_prepress_body(job: dict) -> None:
         mem.data["report"] = dict(report, at=datetime.now().strftime("%Y-%m-%d %H:%M"))
         mem.save()
         state = "checked" if not report["unchecked"] else "partial"
-        _prepress_cache_write(pid, fp, final[0], state, report, final[1])
+        _prepress_cache_write(pid, fp, final[0], state, report, final[1], ov=final[1].get("_ov"))
         c["report"] = report
     except Exception as e:
         # Сбой проверки не держит выгрузку: файл по правилам ложится в кэш
@@ -37866,6 +37978,8 @@ def _pp_doc(inp: dict) -> str:
 
 def _pp_build(project: dict, inp: dict, texts: dict, extra: list, tune: dict) -> tuple:
     import copy as _copy
+    if inp.get("images"):
+        return _pp_build_images(project, inp, extra, tune)
     lay_, ext_ = _copy.deepcopy(inp["layout"]), _copy.deepcopy(extra)
     pdf_, st_ = layout_pdf_mod.build(inp["work"], lay_, texts, extra=ext_, lang=project.get("tgt"),
                                      sources=inp["sources"], keep_overlay=True, tune=tune or None)
@@ -38326,6 +38440,7 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
     texts_cur, extra_cur = dict(inp["texts"]), _copy.deepcopy(inp["extra"])
     tried: dict = {}
     changed: dict = {}                   # абзац → (было, стало, вид) — что поменяли в файле
+    changed_x: dict = {}                 # надпись картинки → (было, стало, вид, строка)
     rounds = []
     by_id = {s_["id"]: s_ for s_ in project.get("segments") or []}
     groups = dict(_para_groups(inp["data"] or {})) if inp.get("data") else {}
@@ -38386,8 +38501,27 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
         new_text = {}                    # абзац → (было, стало, вид)
         split_text = {}                  # абзац → (было, части через « / », «split»)
         done_keys = set()                # места, где текстовое действие удалось
+        xnew = {}                        # надпись картинки → (было, стало, вид, строка)
         for act, keys in (plan.get("text") or {}).items():
             for key in keys:
+                if key.startswith("x"):
+                    try:
+                        e_ = extra2[int(key[1:])]
+                    except (ValueError, IndexError):
+                        continue
+                    now = e_.get("text") or ""
+                    src_t = ((e_.get("boxes") or [{}])[0] or {}).get("src") or ""
+                    seg_ = by_id.get(e_.get("sid"))
+                    if seg_ is None or _human_text(seg_) or (seg_.get("target") or "").strip() != now.strip():
+                        continue                 # текст человека или уже правленный — не трогаем
+                    t_new, kd = None, ""
+                    if act == "shorter" and PREPRESS_SHORTEN:
+                        t_new, kd = _prepress_shorten(project, src_t, now, models, c, spent), "short"
+                    if t_new:
+                        e_["text"] = t_new
+                        xnew[key] = (now, t_new, kd, seg_["id"])
+                        done_keys.add(key)
+                    continue
                 if not key.startswith("p"):
                     continue
                 try:
@@ -38429,7 +38563,7 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
             if t_ and t_.get("parts"):
                 t_.pop("parts", None)
                 t_.pop("partsFor", None)
-        if tune2 == tune_cur and not plan["leave"] and not new_text:
+        if tune2 == tune_cur and not plan["leave"] and not new_text and not xnew:
             continue                     # действия не дали правки — следующий круг
         try:
             cand = _pp_build(project, dict(inp, extra=extra2), texts2, extra2, tune2)
@@ -38464,6 +38598,9 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                 for idx, (_f, t_, _kd) in new_text.items():
                     if "p%d" % idx in gk:
                         texts_g[idx] = t_
+                for k, (_f, t_, _kd, _sid) in xnew.items():
+                    if k in gk:
+                        extra_g[int(k[1:])]["text"] = t_
                 for k in plan["leave"] & gk:
                     if k.startswith("p"):
                         texts_g.pop(int(k[1:]), None)
@@ -38489,6 +38626,7 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                         cand, px2, dec = cand_g, px2_g, dec_g
                         tune2, texts2, extra2 = tune_g, texts_g, extra_g
                         new_text = {i: t for i, t in new_text.items() if "p%d" % i in gk}
+                        xnew = {k: t for k, t in xnew.items() if k in gk}
                         used_applied = good
         pxk1 = {(it.get("key"), it.get("code")) for it in px1.get("issues") or [] if it.get("key")}
         pxk2 = {(it.get("key"), it.get("code")) for it in px2.get("issues") or [] if it.get("key")}
@@ -38532,6 +38670,8 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                        "px": [p1[0], _loop_score(px2, cand[1])[0]]})
         if ok:
             cur, v_cur, tune_cur, texts_cur, extra_cur = cand, v2, tune2, texts2, extra2
+            for k, val in xnew.items():
+                changed_x[k] = (changed_x.get(k, val)[0],) + tuple(val[1:])
             for idx, val in split_text.items():
                 if (tune2.get("p%d" % idx) or {}).get("parts"):
                     changed[idx] = val
@@ -38547,6 +38687,10 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                                                          and (by_id[groups[idx][0]].get("target") or "").strip()
                                                          == frm.strip()) else []}
                             for idx, (frm, to, kd) in sorted(changed.items())][:50]
+    if changed_x:
+        rep.setdefault("shortened", [])
+        rep["shortened"] += [{"key": k, "from": frm, "to": to, "kind": kd, "segs": [sid]}
+                             for k, (frm, to, kd, sid) in sorted(changed_x.items())][:50]
     return cur, v_cur, rep
 
 
@@ -38602,7 +38746,7 @@ def prepress_status(pid: int):
     project = get_project(pid)
     p_id = int(project["id"])
     if (PREPRESS != "fix" or not _prepress_on(_tenant_of(project)) or not _prepress_models()
-            or (project.get("importKind") or "") != "pdf" or not project.get("sourceDocx")):
+            or (project.get("importKind") or "") not in ("pdf", "scan", "image") or not project.get("sourceDocx")):
         return {"ok": True, "state": "off"}
     _refresh_jobs_from_db()
     for j in list(_JOBS.values()):
@@ -38613,7 +38757,7 @@ def prepress_status(pid: int):
     if not meta:
         return {"ok": True, "state": "none"}
     try:
-        inp = _layout_inputs(project)
+        inp = _layout_inputs(project) or _image_prepress_inputs(project, with_work=False)
     except Exception:
         inp = None
     fresh = inp is not None and meta.get("fp") == _prepress_fp(inp)
@@ -38643,14 +38787,24 @@ def _export_images_file(project: dict, out: Path, tmp: Path, ext: str) -> dict:
     с расширением `ext` (исходным либо .pdf)."""
     kind = project.get("importKind") or "docx"
     inner = out.with_name(out.name + ".%s.src.docx" % secrets.token_hex(4))
+    gate = None
+    if not getattr(_IMG_OV, "building", False):
+        gate = _prepress_gate_images(project)        # Ы5: только проверенное; иначе PrepressPending
+    prev_ov = getattr(_IMG_OV, "v", None)
+    if gate is not None and gate.get("ov") is not None:
+        _IMG_OV.v = gate["ov"]
     try:
         stats = _export_docx_layout(project, inner)
         imgs = importers.images_from_docx(inner.read_bytes())
     finally:
+        if gate is not None and gate.get("ov") is not None:
+            _IMG_OV.v = prev_ov
         try:
             inner.unlink()
         except OSError:
             pass
+    if gate is not None:
+        stats = dict(stats, prepress=gate.get("public"))
     page_w = _orig_page_width(project) if ext == ".pdf" else None
     tmp.write_bytes(importers.images_to_file(imgs, ext, page_w_pt=page_w))
     out_stats = dict(stats, original=kind, images=len(imgs))
@@ -38699,7 +38853,8 @@ def _image_qa_inputs(project: dict, page_w) -> "dict | None":
             if not text:
                 continue
             x0, y0, x1, y1 = (float(v) for v in b["box"][:4])
-            extra.append({"text": text, "sid": (seg or {}).get("id"), "boxes": [{
+            extra.append({"text": text, "sid": (seg or {}).get("id"), "blk": "%s|%d" % (im.get("part"), i),
+                          "boxes": [{
                 "page": k, "frac": 1, "image": 1,
                 "src": ((seg or {}).get("source") or "").strip(),
                 "x0": x0 / w, "x1": x1 / w, "top": y0 / h, "bottom": y1 / h,

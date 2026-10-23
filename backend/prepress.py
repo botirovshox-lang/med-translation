@@ -39,7 +39,7 @@ from pathlib import Path
 
 # Версия ВОПРОСА к модели и списка действий: правишь промпт — поднимай,
 # иначе память отдаст ответ на прежний вопрос.
-PROMPT_VERSION = "pp3"
+PROMPT_VERSION = "pp4"
 LEARN_MIN_OK = int(os.environ.get("PREPRESS_LEARN_MIN_OK", "2"))
 LEARN_MAX = int(os.environ.get("PREPRESS_LEARN_MAX", "500"))
 
@@ -47,10 +47,10 @@ LEARN_MAX = int(os.environ.get("PREPRESS_LEARN_MAX", "500"))
 # либо особое действие, которое исполняет `main` (короче перевод, гарнитура, выключка).
 ACTIONS = ("tight", "wide", "solo", "erase", "keep_rule", "lines2", "keep_breaks", "cond",
            "leave_orig", "shorter", "align_left", "align_right", "align_center", "justify",
-           "no_justify", "serif", "sans", "mono", "color", "split_lines", "translate", "none")
+           "no_justify", "serif", "sans", "mono", "color", "split_lines", "translate", "plate", "none")
 TUNE_ACTIONS = {"tight", "wide", "solo", "erase", "keep_rule", "lines2", "keep_breaks", "cond",
                 "align_left", "align_right", "align_center", "justify", "no_justify",
-                "serif", "sans", "mono", "color"}
+                "serif", "sans", "mono", "color", "plate"}
 # Действия, которые исполняет `main` вызовом модели (текст меняется только в файле).
 TEXT_ACTIONS = {"shorter", "split_lines", "translate", "leave_orig"}
 MIN_CONF = float(os.environ.get("PREPRESS_MIN_CONF", "0.4"))
@@ -261,6 +261,8 @@ def prompt(src: str, tgt: str, places: list) -> str:
         "in 'text' with the same meaning, numbers, units and codes; align_left/align_right/"
         "align_center/justify/no_justify — alignment as in the original; serif/sans/mono — "
         "typeface class as in the original; color — print with the text colour of the original; "
+        "plate — on photos and textured backgrounds print the text on a plain plate of the "
+        "background colour (leftovers of the original glyphs stay otherwise); "
         "split_lines — separate items of the original (dish name and its description, label and "
         "form field, two lines of different style) were merged into one block: print each original "
         "line separately in its own style; translate — this place still shows source-language text "
@@ -728,10 +730,10 @@ LADDER = {
     "OVERLAP": ("tight", "solo", "cond", "shorter"),
     "SMALL": ("wide", "solo"),
     "SIZE": ("tight",),
-    "GHOST": ("erase",),
+    "GHOST": ("erase", "plate"),
     "RULE_CUT": ("keep_rule",),
     "MARK_LOST": ("keep_rule", "leave_orig"),
-    "PATCH": ("keep_rule",),
+    "PATCH": ("keep_rule", "plate"),
     "MERGED": ("split_lines", "solo", "keep_breaks"),
     "FRAGMENT": ("solo",),
     "COLOR": ("color",),

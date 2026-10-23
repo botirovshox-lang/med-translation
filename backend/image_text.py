@@ -3613,13 +3613,18 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
         pbox, vertical, text = pre[i]
         box = it.get("box") or [0, 0, 0, 0]
         pm = pms[i]
+        tn = it.get("tune") or {}
+        if tn.get("plate"):
+            pm = None               # Ы5: на плашке — следы букв на пёстром фоне не остаются
         pp = None
         if pm is not None:
-            pp = even.get(i)
+            pp = None if tn.get("solo") else even.get(i)
             if pp is None:
-                extra = _free_rows(pm, others_of(i), arr, w, h) if pm.get("geo") else 0
+                tight = bool(tn.get("tight"))
+                extra = _free_rows(pm, others_of(i), arr, w, h) if (pm.get("geo") and not tight) else 0
                 pp = _paint_layout(pm, draw, extra=extra)
-                pp = _one_line_grow(pm, pp, draw, others_of(i), arr, w, h)
+                if not tight:       # Ы5: «теснее» — без роста в свободные строки рядом
+                    pp = _one_line_grow(pm, pp, draw, others_of(i), arr, w, h)
         if pp is not None and vertical and abs(abs(pp["m"]["angle"]) - 90) > 20 \
                 and not pp["m"].get("arc"):
             # Детектор сказал «одна строка, рамка выше ширины», а буквы в ней

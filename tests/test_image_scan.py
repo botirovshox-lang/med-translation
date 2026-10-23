@@ -749,6 +749,38 @@ check(len(made) >= 1,
       "сегменты по УЖЕ прочитанным блокам заведены, хотя счёт поставщика пуст: %d" % len(made))
 check(all((s.get("source") or "").strip() for s in made), "и у каждого есть текст надписи")
 
+print("\n── Ы5: поправки проверки перед выдачей к выгрузке картинок ──")
+data = main._load_source_map(1)
+addr = []
+for im in data["images"]:
+    for i_, b in enumerate(im.get("blocks") or []):
+        if b.get("seg") and not b.get("skip"):
+            addr.append("%s|%d" % (im["part"], i_))
+for s_ in project["segments"]:
+    if (s_.get("origin") or {}).get("kind") == "image" and not (s_.get("target") or "").strip():
+        s_["target"] = "Translated caption"
+_pb, st_b = main._generate_export(project, "docx_layout")
+base_rep = st_b["img_repainted"]
+check(base_rep >= 1 and addr, "есть что перерисовывать: %s, адреса %s" % (base_rep, addr))
+main._IMG_OV.v = {addr[0]: {"leave": True}}
+try:
+    _pl, st_l = main._generate_export(project, "docx_layout")
+finally:
+    main._IMG_OV.v = None
+check(st_l["img_repainted"] == base_rep - 1, "«оставить оригинал» — надпись не перерисована: %s -> %s"
+      % (base_rep, st_l["img_repainted"]))
+main._IMG_OV.v = {addr[0]: {"text": "Short", "tune": {"plate": 1, "tight": 1}}}
+try:
+    _pt, st_t = main._generate_export(project, "docx_layout")
+finally:
+    main._IMG_OV.v = None
+check(st_t["img_repainted"] == base_rep, "текст и рычаги поправки печатаются: %s" % st_t["img_repainted"])
+inp_f = {"extra": [{"blk": "a|0", "text": "One"}, {"blk": "a|1", "text": "Two"}, {"blk": "b|0", "text": "Three"}]}
+ov = main._pp_img_ov(inp_f, [{"blk": "a|0", "text": ""}, {"blk": "a|1", "text": "Two!"},
+                             {"blk": "b|0", "text": "Three"}], {"x2": {"plate": 1, "wide": 1}})
+check(ov == {"a|0": {"leave": True}, "a|1": {"text": "Two!"}, "b|0": {"tune": {"plate": 1}}},
+      "поправки по адресу блока: оставить, текст, рычаги (только свои): %s" % ov)
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

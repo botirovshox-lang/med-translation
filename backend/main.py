@@ -38224,7 +38224,10 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
         def better(v2_, px2_, cand_):
             s2_ = sum(prepress_mod.page_score(v) for v in v2_.values())
             p2_ = _loop_score(px2_, cand_[1])
-            return (s2_ < s1 and p2_[0] <= p1[0] and not (codes(v2_) - codes(v_cur))
+            # Новый ВИД видимого брака — отказ; новая косметика (мельче,
+            # гарнитура, выключка) уже в весе и круг сама не отменяет.
+            return (s2_ < s1 and p2_[0] <= p1[0]
+                    and not ((codes(v2_) - codes(v_cur)) & prepress_mod.USER_CODES)
                     and len(v2_) >= len(v_cur)), s2_
         ok, s2 = better(v2, px2, cand)
         left_cur, left2 = kc(v_cur), kc(v2)

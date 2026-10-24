@@ -21,6 +21,7 @@
 import os, sys, types
 os.environ["APP_PASSWORD"] = "test-modelauto-password"
 os.environ["MODEL_AUTO"] = "0"
+os.environ["LANG_BENCH"] = "0"      # замер по языкам — свой тест (test_lang_bench.py)
 sys.path.insert(0, "backend")
 import main
 

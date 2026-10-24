@@ -863,5 +863,14 @@
   "проверено: ": "checked: ",
   "У поставщиков есть модели, которых нет в каталоге: ": "Providers offer models missing from the catalog: ",
   ". Подбор их не учитывает, пока в каталог не внесены цена и ранг.": ". Auto-pick ignores them until a price and rank are added to the catalog.",
-  "ключ отклонён": "key rejected"
+  "ключ отклонён": "key rejected",
+  "Переводчик по языку": "Translator per language",
+  "Замер языков запущен": "Language benchmark started",
+  "Перемерить языки": "Re-measure languages",
+  "Идёт замер: ": "Benchmark running: ",
+  "Замера ещё не было — он пройдёт сам при включённом подборе.": "No benchmark yet — it runs by itself while auto-pick is on.",
+  "языков: ": "languages: ",
+  "не все языки — кончился потолок денег": "not all languages — the spending cap was reached",
+  "Остальные языки: ": "Other languages: ",
+  "Каждый язык каталога проверяется на трудных фразах (доза, отрицание, сторона, узкий термин) двумя слепыми судьями. Берётся самая дешёвая модель, которая ошибается не чаще лучшей. Замер повторяется сам, когда меняется набор моделей.": "Every catalog language is tested on hard phrases (dose, negation, side, narrow term) by two blind judges. The cheapest model that makes no more errors than the best one is chosen. The benchmark repeats by itself when the set of models changes."
 }

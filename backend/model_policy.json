@@ -33,5 +33,14 @@
   "autoOn": true,
   "providerOrder": ["anthropic", "openai"],
   "strategy": "order",
-  "probeEverySec": 900
+  "probeEverySec": 900,
+  "_langBench": [
+    "Переводчик по языку перевода (backend/lang_bench.py): фоновый замер всех языков каталога,",
+    "когда меняется набор моделей. strong — сколько моделей сильнее общего переводчика мерить,",
+    "margin — на сколько строк из sentences дешёвая может ошибаться чаще лучшей и всё равно",
+    "быть выбрана (разница в одну строку — шум судьи), maxUsd — потолок денег на один замер,",
+    "cooldownH — не чаще, чем раз в столько часов при сменах набора. on: false — выключить."
+  ],
+  "langBench": {"on": true, "strong": 2, "margin": 1.0, "sentences": 12, "maxUsd": 30.0,
+                "cooldownH": 12, "parallel": 4}
 }

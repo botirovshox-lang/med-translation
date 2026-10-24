@@ -86,6 +86,7 @@ tm_mod = _safe_import("tm")
 # глоссарию — предметной области не касаются вовсе, а те, что касаются,
 # лежат таблицей DOMAIN_RULES по ключу «область + пара языков».
 checks_mod = _safe_import("checks")
+lang_bench_mod = _safe_import("lang_bench")
 # Внешние источники приказов: отраслевые справочники и корпуса целевого языка.
 # Без них термин может заверить только человек — а он целевого языка может
 # и не знать. См. шапку authorities.py.
@@ -4682,6 +4683,22 @@ def _openai_translate(text: str, src: str, tgt: str,
               file=sys.stderr)
         return ""
     out = (resp.choices[0].message.content or "").strip()
+    if not literal and lang_bench_mod is not None and lang_bench_mod.leak(text, out):
+        # Модель приклеила к переводу свою заметку («Let me provide the final
+        # answer in correct Cyrillic only:» — замер 24.10.2026, Sonnet 5.5 на
+        # узбекской кириллице): такой текст не перевод (инвариант 4). Один
+        # повтор с прямым запретом; снова заметка — «не вернула перевод»,
+        # строка не трогается и уйдёт в следующий прогон.
+        resp = client.chat.completions.create(
+            model=mdl["id"],
+            messages=[{"role": "system", "content": system + "\nOUTPUT ONLY THE TRANSLATION. "
+                       "No notes, no explanations, no second version.\n"},
+                      {"role": "user", "content": text}], **extra)
+        _note_usage(step or "translate", mdl["id"], resp)
+        out = (resp.choices[0].message.content or "").strip()
+        if getattr(resp.choices[0], "finish_reason", None) == "length" or lang_bench_mod.leak(text, out):
+            print(f"[backend] {mdl['id']}: заметка модели вместо перевода — не записано", file=sys.stderr)
+            return ""
     # Адрес из оригинала — буква в букву, даже если модель его переписала
     # своими буквами («хттпс://дои.орг/…», проект 14): ссылка в переводе
     # обязана работать. Обратный перевод (`literal`) не трогаем — он мера.
@@ -7643,7 +7660,7 @@ def admin_audit(request: Request, limit: int = 200, action: str = "", all: bool 
     # в админке («Модели и расход»), и это её работа, а не журнала.
     if _hide_models():
         rows = [{k: v for k, v in r.items() if k not in ("before", "after")}
-                if str(r.get("action") or "").startswith("system.models") else r
+                if str(r.get("action") or "").startswith(("system.models", "system.langModels")) else r
                 for r in rows]
     # Деньги — тоже: правки лимита, бюджета, цен оплаты и суммы смет пишет
     # суперпользователь, а ложатся они в организацию, где он работает (22а).
@@ -20053,7 +20070,7 @@ def translate_segment(pid: int, sid: int, req: TranslateRequest):
         translation = _openai_translate(src_text, project["src"], project["tgt"],
                                         gloss_hits=gloss_hits, tm_context=tm_hit,
                                         style=_prompt_style(project),
-                                        model=req.model, domain=project.get("domain"),
+                                        model=req.model or _lang_dm(project), domain=project.get("domain"),
                                         prev_src=prev_src, next_src=next_src,
                                         prev_pairs=pairs)
     except Exception as e:
@@ -25792,7 +25809,133 @@ def _word_script_of(word: str) -> str:
     return max(counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
 
 
+# Письменности, которыми законно пишет язык, когда их больше одной
+# (японский — кандзи и две азбуки, корейский — хангыль и ханча). Остальным —
+# письмо каталога. «MODIFIER» — вспомогательные буквы (узбекские «ʻ», «ʼ»),
+# «FULLWIDTH» — широкие формы латиницы в тексте на иероглифах: не письмо.
+_SCRIPT_ALLOW = {"JA": {"HAN", "HIRAGANA", "KATAKANA", "KATAKANA-HIRAGANA"},
+                 "KO": {"HANGUL", "HAN"}, "ZH": {"HAN"},
+                 # сербский и боснийский — кириллица и латиница на равных,
+                 # казахский — переход на латиницу (у узбекского два кода каталога)
+                 "SR": {"CYRILLIC", "LATIN"}, "BS": {"LATIN", "CYRILLIC"},
+                 "KK": {"CYRILLIC", "LATIN"}, "MN": {"CYRILLIC", "MONGOLIAN"}}
+_SCRIPT_NEUTRAL = {"MODIFIER", "FULLWIDTH", "HALFWIDTH"}
+# Письмо без пробелов между словами: латиница внутри «слова» — не смешение.
+_SCRIPT_NOSPACE = {"HAN", "HIRAGANA", "KATAKANA", "KATAKANA-HIRAGANA", "THAI", "KHMER", "LAO", "MYANMAR"}
+
+
+def _output_misses(seg: dict, project: Optional[dict]) -> list:
+    """Две бесплатные находки у перевода на ЛЮБОЙ язык каталога (kind="script"),
+    найденные замером 24.10.2026 (RU→UZ-CYRL), которых не видела ни одна
+    проверка:
+    1) служебная заметка модели в тексте («Let me provide the final answer…»,
+       второй вариант перевода после пустой строки) — `lang_bench.leak`;
+    2) слово ЧУЖИМ письмом посреди перевода: смешение внутри слова
+       («revматизм», «guruч») или целое слово письмом, которого нет ни у языка
+       перевода, ни у оригинала («kattalashuvi» в кириллице). `_script_misses`
+       это не ловит: он ищет буквы ОРИГИНАЛА, а тут чужое обоим. Слово,
+       стоящее в оригинале (латинское название, имя), с цифрой, с заглавной
+       (имя, аббревиатура, единица «mmHg»), короче четырёх букв — не находка;
+       омоглифы при общем письме называет правило 4 `_alphabet_misses`."""
+    if not project:
+        return []
+    src = (seg.get("source") or "").strip()
+    tgt = (seg.get("target") or "").strip()
+    if not tgt:
+        return []
+    out = []
+    if lang_bench_mod is not None and not _hand_written(seg) and lang_bench_mod.leak(src, tgt):
+        out.append({"kind": "script",
+                    "text": "в переводе служебная заметка модели или второй вариант — "
+                            "оставьте только перевод"})
+    want, _letters = _alphabet_info(project)
+    if not want:
+        return out
+    code = (project.get("tgt") or "").upper()
+    allow = _SCRIPT_ALLOW.get(code, {want})
+    s_script = _text_script_by_words(src)
+    src_words = {w.strip(_ALPHA_STRIP).lower() for w in src.split()}
+    homo = s_script == want and want in ("CYRILLIC", "LATIN") and _alphabet_active(project)
+    nospace = bool(allow & _SCRIPT_NOSPACE)
+    alien = []
+    toks = [r.strip(_ALPHA_STRIP) for r in tgt.split()]
+    latin = [bool(t) and _word_script_of(t) == "LATIN" for t in toks]
+    for ti, w in enumerate(toks):
+        # Латинское слово рядом с другим латинским — фраза («Daucus carota»,
+        # «herba Meliloti», «var. oleifera»): видовое и фармакопейное названия
+        # законно стоят латиницей посреди перевода.
+        taxon = (ti > 0 and latin[ti - 1]) or (ti + 1 < len(toks) and latin[ti + 1])
+        if not w or w.lower() in src_words or "/" in w or "@" in w or re.search(r"[^\W\d_]\.[^\W\d_]", w):
+            continue                     # из оригинала; адрес, почта, домен
+        hit = False
+        for part in w.split("-"):
+            # Отрезки одной письменности: в письме без пробелов (иероглифы,
+            # тайский) латиница посреди фразы — отдельное слово («基于mRNA的»).
+            runs, cur, cur_sc, st = [], "", None, 0
+            for k_, ch in enumerate(part):
+                sc = _script_of(ch)
+                if not sc or sc in _SCRIPT_NEUTRAL:
+                    if not ch.isalpha():
+                        if cur:
+                            runs.append((cur_sc, cur, st, k_))
+                        cur, cur_sc = "", None
+                    else:
+                        cur += ch
+                    continue
+                if cur and sc != cur_sc:
+                    runs.append((cur_sc, cur, st, k_))
+                    cur = ""
+                if not cur:
+                    st = k_
+                cur_sc = sc
+                cur += ch
+            if cur:
+                runs.append((cur_sc, cur, st, len(part)))
+            native = any(r_[0] in allow for r_ in runs)
+            for sc, t, a_, b_ in runs:
+                if sc in allow:
+                    continue
+                if (a_ > 0 and part[a_ - 1].isdigit()) or (b_ < len(part) and part[b_].isdigit()):
+                    continue             # вплотную к цифре — обозначение: ген «stat6», «Th2»
+                if native and not nospace:
+                    # Смешение внутри слова («revматизм», «guruч»). Аббревиатура
+                    # капсом с родным окончанием («IFNга») и одна буква-сноска — нет;
+                    # омоглифы при общем письме — правило 4 `_alphabet_misses`.
+                    if len(t) < 2 or t.upper() == t:
+                        continue
+                    if homo and all(c in _HOMOGLYPH_LAT or c in _HOMOGLYPH_CYR for c in t):
+                        continue
+                    hit = True
+                    break
+                if sc == s_script or len(t) < 4 or any(c.isupper() for c in t) or taxon                         or t.lower() in src_words:
+                    continue             # письмо оригинала — `_script_misses`; имя, единица
+                hit = True
+                break
+            if hit:
+                break
+        if hit:
+            alien.append(w)
+    alien = list(dict.fromkeys(alien))
+    if alien:
+        out.append({"kind": "script",
+                    "text": "слово чужим письмом в переводе: "
+                            + ", ".join("«" + w + "»" for w in alien[:_ALPHABET_LIST_MAX])
+                            + (" и ещё " + str(len(alien) - _ALPHABET_LIST_MAX)
+                               if len(alien) > _ALPHABET_LIST_MAX else "")})
+    return out
+
+
 def _alphabet_misses(seg: dict, project: Optional[dict] = None) -> list:
+    """Письмо и алфавит перевода: правила языка (`_alphabet_core`) у языков,
+    которым они заведены, и две находки у ЛЮБОГО языка (`_output_misses`).
+    Перевод целиком не тем письмом — одна находка, без подробностей."""
+    core = _alphabet_core(seg, project)
+    if core and core[0]["text"].startswith("перевод набран не тем письмом"):
+        return core + [x for x in _output_misses(seg, project) if "заметка" in x["text"]]
+    return core + _output_misses(seg, project)
+
+
+def _alphabet_core(seg: dict, project: Optional[dict] = None) -> list:
     """Письмо, алфавит и орфографические признаки ЯЗЫКА ПЕРЕВОДА.
 
     Четыре находки, все kind="script", все бесплатные:
@@ -25943,7 +26086,7 @@ def _alphabet_ids(project: Optional[dict]) -> set:
     и корзин разбора (см. комментарий выше). Кэш по содержимому сегментов
     (id + перевод + оригинал) и языку перевода: разбор состава зовётся
     на каждую смену модели, а проход по книге — секунды."""
-    if not _alphabet_active(project):
+    if not project or not (_alphabet_active(project) or lang_bench_mod is not None):
         return set()
     segs = project.get("segments") or []
     fp = hash(((project.get("tgt") or "").upper(),
@@ -33302,6 +33445,10 @@ def batch_translate(pid: int, req: BatchRequest):
         _ev("dead.retranslateOne", None, len(skipped_limit))
         _over = set(skipped_limit)
         all_targets = [s for s in all_targets if s["id"] not in _over]
+    if not req.model:
+        # Переводчик по языку перевода (в прогоне — снимок задачи): все места
+        # пакета ниже читают `req.model`, и модель с провайдером совпадут.
+        req.model = _lang_dm(project)
     if (all_targets and not _provider_ready(req.model)
             and not all(_free(s) for s in all_targets)):
         # 503 до работы, как у termcheck, back-check и ремонта: иначе отсутствие
@@ -41179,6 +41326,17 @@ def _job_freeze_models(job: dict) -> dict:
                     and _provider_of(_resolve_model(now)) not in dead and now != fixed[k]):
                 notes.append("%s: %s → %s (у поставщика нет счёта)" % (k, fixed[k], now))
                 fixed[k] = now
+    if "langTr" not in job and job.get("project") is not None and "_lang_translate_model" in globals():
+        # Переводчик по языку перевода — один раз, при первой заморозке:
+        # повторный запуск задачи (рестарт, уступка) не меняет модель посреди книги.
+        try:
+            pr_ = _project_by_id(job["project"])
+            lm_ = _lang_translate_model((pr_ or {}).get("tgt"), fixed) if pr_ else None
+        except Exception:
+            lm_ = None
+        if lm_ and lm_ != fixed.get("translate"):
+            fixed["translate"] = lm_
+        job["langTr"] = lm_ or ""
     job["sysModels"] = fixed
     params = job.get("params") or {}
     step_of = {v: k for k, v in FULL_STEP_MODEL.items()}
@@ -41601,6 +41759,11 @@ def _model_auto_run(apply: bool = True, probe: bool = True) -> dict:
             tg_mod.notify_admin_async("\n".join(lines))
         except Exception:
             pass
+    if on_now and apply:
+        try:
+            _lang_bench_maybe()
+        except Exception as e:
+            print(f"[backend] замер языков не поставлен: {e}", file=sys.stderr)
     return {"applied": applied, "changed": changed, **pick, "health": health, "newModels": new}
 
 
@@ -41642,7 +41805,346 @@ def _model_auto_public() -> dict:
                        for k, v in (a.get("health") or {}).items()},
             "newModels": a.get("newModels") or {},
             "policy": {"minRank": pol.get("minRank") or {}, "maxRank": pol.get("maxRank") or {}},
-            "ranks": {m["id"]: model_rank(m["id"]) for m in OPENAI_MODELS}}
+            "ranks": {m["id"]: model_rank(m["id"]) for m in OPENAI_MODELS},
+            "langModels": _lang_models_public() if "_lang_models_public" in globals() else None}
+
+
+# ─── Переводчик по языку перевода (backend/lang_bench.py) ───────────────
+# Замер 24.10.2026: на RU→EN Sonnet 5.5 и Opus 5.5 почти равны, на узбекской
+# кириллице у Sonnet серьёзная ошибка в 4–6 раз чаще. Поэтому у каждого языка
+# каталога свой переводчик — по замеру на трудных фразах (доза, отрицание,
+# сторона, узкий термин) двумя слепыми судьями и бесплатными сверками письма.
+# Законы:
+#  * замер идёт САМ в фоне, когда меняется набор моделей (кандидаты, судьи,
+#    версия фраз — отпечаток `fp`), не чаще `cooldownH`; платит сервис
+#    (служебная организация), потолок денег — `maxUsd` (данные — `langBench`
+#    в model_policy.json); кнопка в админке перемеряет сразу;
+#  * кандидаты — переводчик автоподбора и до `strong` моделей сильнее него
+#    под потолком цены; берётся САМАЯ ДЕШЁВАЯ, чей счёт ошибок не хуже
+#    лучшего больше чем на `margin` строк (`lang_bench.decide`);
+#  * выбор действует только на модель ПО УМОЛЧАНИЮ: явный выбор (организация
+#    в упрощённом режиме, закрепление шага человеком) сильнее; модель, чей
+#    поставщик без счёта или без ключа, и модель, совпавшая с моделью
+#    проверки (`distinct`), не берётся — остаётся общий переводчик;
+#  * прогон замораживает выбор при постановке (`_job_freeze_models`, след
+#    `langTr`), как и все модели шагов (инвариант 31).
+LANG_BENCH = os.environ.get("LANG_BENCH", "1") != "0"
+_LANG_BENCH_RUN = {"on": False, "lang": None, "done": 0, "total": 0}
+_LANG_BENCH_LOCK = threading.Lock()
+
+
+def _lang_bench_conf(pol: Optional[dict] = None) -> dict:
+    pol = pol if pol is not None else _model_policy()
+    c = {"on": True, "maxUsd": 30.0, "margin": 1.0, "sentences": 12, "strong": 2,
+         "cooldownH": 12, "parallel": 4}
+    c.update(pol.get("langBench") or {})
+    return c
+
+
+def _lang_models() -> dict:
+    v = STATE.get("langModels")
+    return v if isinstance(v, dict) else {}
+
+
+def _lang_translate_model(tgt: Optional[str], snap: Optional[dict] = None) -> Optional[str]:
+    """Переводчик, выбранный замером для языка `tgt`, — если им можно
+    пользоваться прямо сейчас; иначе None (действует общий переводчик)."""
+    lm = _lang_models()
+    mid = (lm.get("by") or {}).get((tgt or "").upper())
+    if not mid or mid not in _MODELS_BY_ID or not _provider_ready(mid):
+        return None
+    if lm.get("base") and lm["base"] != _effective_model("translate"):
+        return None                     # общий переводчик сменили (руками или подбором) — замер устарел
+    auto = _model_auto_conf()
+    if (auto.get("pinned") or {}).get("translate"):
+        return None                     # переводчика закрепил человек — его решение сильнее
+    h = (auto.get("health") or {}).get(_provider_of(_MODELS_BY_ID[mid])) or {}
+    if h.get("ok") is False:
+        return None
+    snap = snap or _system_models_snapshot()
+    for pair in _model_policy().get("distinct") or []:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2 or "translate" not in pair:
+            continue
+        other = pair[1] if pair[0] == "translate" else pair[0]
+        if snap.get(other) == mid:
+            return None                 # проверка себя — не проверка
+    return mid
+
+
+def _lang_dm(project: Optional[dict]) -> str:
+    """Переводчик ПО УМОЛЧАНИЮ для проекта: в прогоне — снимок задачи (выбор
+    по языку в нём уже учтён), вне прогона — выбор по языку или общий."""
+    snap = getattr(_JOB_MODELS, "m", None)
+    if snap and snap.get("translate"):
+        return snap["translate"]
+    return _lang_translate_model((project or {}).get("tgt")) or _dm("translate")
+
+
+def _lang_bench_plan(health: Optional[dict] = None) -> Optional[dict]:
+    """Что мерить: кандидаты, судьи, языки и отпечаток. None — мерить нечего
+    (одна годная модель, нет модуля)."""
+    if lang_bench_mod is None:
+        return None
+    conf = _model_auto_conf()
+    health = health if health is not None else (conf.get("health") or {})
+    pol = _model_policy()
+    c = _lang_bench_conf(pol)
+    lo = int((pol.get("minRank") or {}).get("translate", 0))
+    caps = pol.get("maxPrice") or {}
+    cap = caps.get("translate", caps.get("*"))
+
+    def alive(m):
+        h = health.get(_provider_of(m)) or {}
+        return _provider_ready(m["id"]) and h.get("ok") is not False and _model_listed(m["id"], h)
+
+    pool = [m for m in OPENAI_MODELS if alive(m) and (model_rank(m["id"]) or -1) >= lo
+            and (cap is None or _auto_price(m, pol) <= float(cap))]
+    if not pool:
+        return None
+    ids = {m["id"] for m in pool}
+    base = _effective_model("translate")
+    if base not in ids:
+        base = min(pool, key=lambda m: (_auto_price(m, pol), m["id"]))["id"]
+    br = model_rank(base) or 0
+    stronger = sorted((m for m in pool if (model_rank(m["id"]) or 0) > br),
+                      key=lambda m: (-(model_rank(m["id"]) or 0), _auto_price(m, pol), m["id"]))
+    cands = [base] + [m["id"] for m in stronger[:max(0, int(c["strong"]))]]
+    if len(cands) < 2:
+        return None
+    judges = [m["id"] for m in sorted((m for m in OPENAI_MODELS if alive(m) and model_rank(m["id"]) is not None),
+                                      key=lambda m: (-(model_rank(m["id"]) or 0), _auto_price(m, pol), m["id"]))][:2]
+    langs = [l["code"] for l in LANGUAGES]
+    n = max(1, min(int(c["sentences"]), len(lang_bench_mod.SENTENCES)))
+    fp = hashlib.sha1(json.dumps([lang_bench_mod.VERSION, cands, judges, langs, n],
+                                 ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
+    return {"base": base, "candidates": cands, "judges": judges, "langs": langs, "n": n, "fp": fp,
+            "prices": {m: round(_auto_price(_MODELS_BY_ID[m], pol), 4) for m in cands}}
+
+
+def _lang_bench_spent() -> float:
+    return float((_USAGE_TOTAL.get("steps") or {}).get("langbench", {}).get("cost") or 0.0)
+
+
+def _lang_bench_one(L: str, plan: dict, c: dict, t0_cost: float) -> Optional[dict]:
+    """Замер одного языка: {модель: строк с серьёзной ошибкой}, подробности.
+    None — потолок денег кончился раньше, чем язык домерили."""
+    from concurrent.futures import ThreadPoolExecutor
+    src = lang_bench_mod.source_lang(L)
+    its = lang_bench_mod.items(L, plan["n"])
+    cands = plan["candidates"]
+    cap = float(c["maxUsd"])
+
+    def svc():
+        _JOB_TENANT.id = QA_SERVICE_TENANT      # расход — сервису, не клиенту
+        _JOB_PROJECT.id = None
+        CURRENT_SESSION.set(None)               # и не организации того, кто нажал кнопку
+
+    def tr(job):
+        svc()
+        i, mid = job
+        if _lang_bench_spent() - t0_cost >= cap:
+            return job, False
+        text, dom = its[i]
+        try:
+            return job, _openai_translate(text, src, L, model=mid, domain=dom, step="langbench") or ""
+        except Exception as e:
+            print("[backend] замер языков %s %s: %s" % (L, mid, str(e)[:160]), file=sys.stderr)
+            return job, None
+
+    outs: dict = {}
+    with ThreadPoolExecutor(max(1, int(c["parallel"]))) as ex:
+        for (i, mid), out in ex.map(tr, [(i, m) for i in range(len(its)) for m in cands]):
+            if out is False:
+                return None
+            outs[(i, mid)] = out
+    det: dict = {}
+    proj = {"tgt": L, "src": src}
+    for (i, mid), out in outs.items():
+        bad = not (out or "").strip() or lang_bench_mod.leak(its[i][0], out)
+        if not bad:
+            try:
+                bad = bool(_alphabet_misses({"source": its[i][0], "target": out}, proj))
+            except Exception:
+                pass
+        det[(i, mid)] = bad
+
+    def judge(job):
+        svc()
+        i, jm = job
+        if _lang_bench_spent() - t0_cost >= cap:
+            return job, False
+        have = [m for m in cands if outs.get((i, m)) is not None]
+        if len(have) < 2:
+            return job, None
+        order = lang_bench_mod.shuffle_for("%s:%d:%s" % (L, i, jm), have)
+        mdl = _resolve_model(jm)
+        extra = ({"max_completion_tokens": 4000} if mdl["api"] == "modern" else {"max_tokens": 1500})
+        try:
+            r = _llm_client(mdl, timeout=120, step="langbench", max_retries=1).chat.completions.create(
+                model=mdl["id"], **extra,
+                messages=[{"role": "system", "content": lang_bench_mod.JUDGE_SYSTEM.format(
+                              src=_lang_prompt(src), tgt=_lang_prompt(L))},
+                          {"role": "user", "content": lang_bench_mod.judge_body(
+                              its[i][0], [outs[(i, m)] for m in order])}])
+            _note_usage("langbench", mdl["id"], r)
+            d = lang_bench_mod.parse_judge(r.choices[0].message.content, len(order))
+        except Exception as e:
+            print("[backend] судья замера %s %s: %s" % (L, jm, str(e)[:160]), file=sys.stderr)
+            d = None
+        if not d:
+            return job, None
+        return job, {m: d[lab] for m, lab in zip(order, lang_bench_mod.labels(len(order)))}
+
+    verdicts: dict = {}
+    with ThreadPoolExecutor(max(1, int(c["parallel"]))) as ex:
+        for (i, jm), d in ex.map(judge, [(i, j) for i in range(len(its)) for j in plan["judges"]]):
+            if d is False:
+                return None
+            if d:
+                verdicts[(i, jm)] = d
+    table, detail = {}, {}
+    for m in cands:
+        per_judge = []
+        for jm in plan["judges"]:
+            seen = [i for i in range(len(its)) if (i, jm) in verdicts and m in verdicts[(i, jm)]]
+            if len(seen) * 2 < len(its):
+                continue                 # судья ответил меньше чем на половину — не в счёт
+            bad = sum(1 for i in seen if det.get((i, m)) or lang_bench_mod.serious(verdicts[(i, jm)][m]))
+            per_judge.append(bad * len(its) / len(seen))
+        if per_judge:
+            table[m] = round(sum(per_judge) / len(per_judge), 2)
+        elif any((i, m) in outs for i in range(len(its))):
+            table[m] = float(sum(1 for i in range(len(its)) if det.get((i, m)) or outs.get((i, m)) is None))
+        detail[m] = {"det": sum(1 for i in range(len(its)) if det.get((i, m))),
+                     "failed": sum(1 for i in range(len(its)) if outs.get((i, m)) is None)}
+    pick, why = lang_bench_mod.decide(table, plan["prices"], float(c["margin"]))
+    return {"table": table, "detail": detail, "pick": pick, "why": why}
+
+
+def _lang_bench_run(plan: dict) -> None:
+    """Фоновый замер всех языков каталога. Пишет итог ОДНИМ куском в конце
+    (и промежуточно — каждые десять языков, чтобы рестарт не терял сделанное)."""
+    CURRENT_SESSION.set(None)
+    try:
+        c = _lang_bench_conf()
+        t0 = _lang_bench_spent()
+        prev = _lang_models()
+    except Exception as e:
+        print("[backend] замер языков не начат: %s" % e, file=sys.stderr)
+        _LANG_BENCH_RUN.update(on=False, lang=None)
+        return
+    # Прежние выборы НЕ выбрасываются: язык, до которого новый замер ещё не
+    # дошёл (потолок денег, рестарт), остаётся со своим выбором; язык помечен
+    # отпечатком набора моделей, которым его мерили (`langFp`).
+    by = dict(prev.get("by") or {})
+    table = dict(prev.get("table") or {})
+    lang_fp = dict(prev.get("langFp") or {})
+    todo = [L for L in plan["langs"] if lang_fp.get(L) != plan["fp"]]
+    _LANG_BENCH_RUN.update(on=True, done=0, total=len(todo), lang=None)
+    partial = False
+
+    def save(final: bool):
+        with _SAVE_LOCK:
+            cur = _lang_models()
+            left = [L for L in plan["langs"] if lang_fp.get(L) != plan["fp"]]
+            STATE["langModels"] = {
+                "by": by, "table": table, "langFp": lang_fp, "base": plan["base"],
+                "candidates": plan["candidates"], "judges": plan["judges"], "fp": plan["fp"],
+                "n": plan["n"], "version": lang_bench_mod.VERSION, "partial": bool(left),
+                "at": time.time(), "tried": cur.get("tried") or time.time(),
+                "partialRuns": (int(cur.get("partialRuns") or 0) + 1
+                                if final and left and cur.get("fp") == plan["fp"] else 0 if not left
+                                else int(cur.get("partialRuns") or 0)),
+                "cost": round(float(cur.get("cost") or 0) + _lang_bench_spent() - t0 - saved[0], 3)}
+            saved[0] = _lang_bench_spent() - t0
+            save_state(STATE)
+        if STORE.kind == "pg":
+            try:
+                STORE.bump_epoch("doc:langModels")
+            except Exception as e:
+                print("[backend] замер языков: эпоха не поднята: %s" % e, file=sys.stderr)
+
+    saved = [0.0]
+    try:
+        for k, L in enumerate(todo):
+            _LANG_BENCH_RUN.update(lang=L, done=k)
+            res = _lang_bench_one(L, plan, c, t0)
+            if res is None:
+                partial = True
+                break
+            table[L] = {"score": res["table"], "detail": res["detail"], "why": res["why"]}
+            lang_fp[L] = plan["fp"]
+            # Хранится только выбор, отличный от общего переводчика.
+            if res["pick"] and res["pick"] != plan["base"]:
+                by[L] = res["pick"]
+            else:
+                by.pop(L, None)
+            if (k + 1) % 10 == 0:
+                save(False)
+        save(True)
+        _audit("system.langModels", after={"by": {L: m for L, m in by.items() if m != plan["base"]},
+                                           "partial": partial})
+        if tg_mod:
+            strong = {}
+            for L, m in sorted(by.items()):
+                if m != plan["base"]:
+                    strong.setdefault(m, []).append(L)
+            lines = ["🌐 Переводчик по языкам — замер %s языков%s, $%.2f:" % (
+                len(table), " (потолок денег, не все)" if partial else "", _lang_bench_spent() - t0)]
+            lines += ["  %s: %s" % (m, ", ".join(ls)) for m, ls in strong.items()]
+            lines.append("  остальные: %s" % plan["base"])
+            try:
+                tg_mod.notify_admin_async("\n".join(lines))
+            except Exception:
+                pass
+    except Exception as e:
+        print("[backend] замер языков упал: %s" % e, file=sys.stderr)
+    finally:
+        _LANG_BENCH_RUN.update(on=False, lang=None)
+
+
+def _lang_bench_maybe(force: bool = False) -> bool:
+    """Запустить замер в фоне, если набор моделей сменился (или по кнопке)."""
+    if not LANG_BENCH or lang_bench_mod is None or IS_WORKER:
+        return False
+    c = _lang_bench_conf()
+    if not c.get("on") and not force:
+        return False
+    plan = _lang_bench_plan()
+    if not plan:
+        return False
+    with _LANG_BENCH_LOCK:
+        if _LANG_BENCH_RUN["on"]:
+            return False
+        lm = _lang_models()
+        if not force:
+            if lm.get("fp") == plan["fp"] and not lm.get("partial"):
+                return False
+            if time.time() - float(lm.get("tried") or 0) < float(c["cooldownH"]) * 3600:
+                return False
+        if not force and lm.get("fp") == plan["fp"] and int(lm.get("partialRuns") or 0) >= 3:
+            return False                 # трижды упёрлись в потолок денег — только по кнопке
+        _LANG_BENCH_RUN["on"] = True
+        try:
+            with _SAVE_LOCK:
+                STATE["langModels"] = dict(lm, tried=time.time())
+                save_state(STATE)
+            threading.Thread(target=_lang_bench_run, args=(plan,), name="mcat-lang-bench",
+                             daemon=True).start()
+        except Exception:
+            _LANG_BENCH_RUN["on"] = False
+            raise
+    return True
+
+
+def _lang_models_public() -> dict:
+    lm = _lang_models()
+    base = lm.get("base")
+    return {"by": {L: m for L, m in (lm.get("by") or {}).items() if m != base},
+            "base": base, "at": lm.get("at"), "cost": lm.get("cost"), "partial": bool(lm.get("partial")),
+            "langs": len(lm.get("table") or {}), "candidates": lm.get("candidates") or [],
+            "table": lm.get("table") or {},
+            "running": dict(_LANG_BENCH_RUN) if _LANG_BENCH_RUN.get("on") else None}
 
 
 class ModelAutoBody(BaseModel):
@@ -41652,6 +42154,7 @@ class ModelAutoBody(BaseModel):
     pinned: Optional[dict] = None
     run: bool = False
     dry: bool = False
+    langBench: bool = False
 
 
 @app.post("/api/admin/system-models/auto")
@@ -41681,6 +42184,8 @@ def admin_model_auto(req: ModelAutoBody, request: Request):
     res = None
     if req.run or req.dry or req.on:
         res = _model_auto_run(apply=not req.dry)
+    if req.langBench:
+        _lang_bench_maybe(force=True)
     out = admin_system_models(request)
     out["run"] = ({k: res[k] for k in ("applied", "changed", "picks", "why", "live")} if res else None)
     return out
@@ -41825,7 +42330,7 @@ def _plan_step(project: dict, step: str, params: dict, scope: list,
     elif step == "repair":
         mdl_id = _resolve_model(params.get("rp_model") or _dm("repair"))["id"]
     elif step == "translate":
-        mdl_id = _resolve_model(params.get("model"))["id"]
+        mdl_id = _resolve_model(params.get("model") or _lang_dm(project))["id"]
     elif step == "termaudit":
         mdl_id = _resolve_model(params.get("tcx_model") or _dm("termaudit"))["id"]
     elif step == "review":
@@ -42491,6 +42996,7 @@ def _job_public(job: dict) -> dict:
     if _hide_models():
         out.pop("sysModels", None)
         out.pop("modelsReplaced", None)
+        out.pop("langTr", None)          # переводчик по языку — имя модели (24а)
         # Текст ошибки СОЧИНЯЕТСЯ в потоке прогона, где роли нет и рубеж
         # не стоит: `_no_key_text` там честно называет поставщика и модель
         # («Нет ключа Anthropic: модель Claude Opus 5 недоступна»), текст

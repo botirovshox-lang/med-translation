@@ -1002,7 +1002,36 @@ function AdminModelAuto({ au, busy, onCall }) {
       last && React.createElement("span", { className: "dim" }, TR("проверено: ") + last)),
     fresh.length > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)" } },
       TR("У поставщиков есть модели, которых нет в каталоге: ") + fresh.join(", ")
-        + TR(". Подбор их не учитывает, пока в каталог не внесены цена и ранг.")));
+        + TR(". Подбор их не учитывает, пока в каталог не внесены цена и ранг.")),
+    on && React.createElement(AdminLangModels, { lm: au.langModels, busy, onCall }));
+}
+
+/* Переводчик по языку перевода: итог фонового замера (считает сервер,
+   backend/lang_bench.py). Языки, где выбран не общий переводчик, — списком
+   по моделям; остальные идут общим. */
+function AdminLangModels({ lm, busy, onCall }) {
+  lm = lm || {};
+  const groups = {};
+  Object.keys(lm.by || {}).sort().forEach(L => { (groups[lm.by[L]] = groups[lm.by[L]] || []).push(L); });
+  const run = lm.running;
+  const at = lm.at ? new Date(lm.at * 1000).toLocaleString() : null;
+  return React.createElement("div", { className: "col", style: { gap: 4, fontSize: 12.5, marginTop: 4 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+      React.createElement("span", { style: { fontWeight: 600 } }, TR("Переводчик по языку")),
+      React.createElement(Btn, { size: "sm", variant: "ghost", disabled: busy || !!run,
+        onClick: () => onCall({ langBench: true }, TR("Замер языков запущен")) }, TR("Перемерить языки"))),
+    run ? React.createElement("div", { className: "dim" },
+            TR("Идёт замер: ") + (run.done || 0) + " / " + (run.total || 0) + (run.lang ? " · " + run.lang : ""))
+      : !at ? React.createElement("div", { className: "dim" }, TR("Замера ещё не было — он пройдёт сам при включённом подборе."))
+      : React.createElement("div", { className: "dim" },
+          TR("Замер: ") + at + " · " + TR("языков: ") + (lm.langs || 0)
+            + (lm.cost != null ? " · $" + Number(lm.cost).toFixed(2) : "")
+            + (lm.partial ? " · " + TR("не все языки — кончился потолок денег") : "")),
+    Object.keys(groups).map(m => React.createElement("div", { key: m },
+      React.createElement("b", null, m), ": " + groups[m].join(", "))),
+    lm.base && React.createElement("div", { className: "dim" }, TR("Остальные языки: ") + lm.base),
+    React.createElement("div", { className: "dim" },
+      TR("Каждый язык каталога проверяется на трудных фразах (доза, отрицание, сторона, узкий термин) двумя слепыми судьями. Берётся самая дешёвая модель, которая ошибается не чаще лучшей. Замер повторяется сам, когда меняется набор моделей.")));
 }
 
 /* ── Виртуальный пересчёт ──────────────────────────────────────────────────

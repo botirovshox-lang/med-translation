@@ -863,5 +863,14 @@
   "проверено: ": "tekshirildi: ",
   "У поставщиков есть модели, которых нет в каталоге: ": "Provayderlarda katalogda yo‘q modellar bor: ",
   ". Подбор их не учитывает, пока в каталог не внесены цена и ранг.": ". Narx va daraja katalogga kiritilmaguncha avtotanlov ularni hisobga olmaydi.",
-  "ключ отклонён": "kalit rad etildi"
+  "ключ отклонён": "kalit rad etildi",
+  "Переводчик по языку": "Til bo‘yicha tarjimon",
+  "Замер языков запущен": "Tillar o‘lchovi boshlandi",
+  "Перемерить языки": "Tillarni qayta o‘lchash",
+  "Идёт замер: ": "O‘lchov davom etmoqda: ",
+  "Замера ещё не было — он пройдёт сам при включённом подборе.": "Hali o‘lchov bo‘lmagan — tanlash yoqilgan bo‘lsa, o‘zi o‘tadi.",
+  "языков: ": "tillar: ",
+  "не все языки — кончился потолок денег": "hamma tillar emas — pul chegarasi tugadi",
+  "Остальные языки: ": "Qolgan tillar: ",
+  "Каждый язык каталога проверяется на трудных фразах (доза, отрицание, сторона, узкий термин) двумя слепыми судьями. Берётся самая дешёвая модель, которая ошибается не чаще лучшей. Замер повторяется сам, когда меняется набор моделей.": "Katalogdagi har bir til qiyin iboralarda (doza, inkor, tomon, tor atama) ikki ko‘r hakam tomonidan tekshiriladi. Eng yaxshisidan ko‘proq xato qilmaydigan eng arzon model tanlanadi. Modellar to‘plami o‘zgarganda o‘lchov o‘zi takrorlanadi."
 }

@@ -212,7 +212,11 @@ seg_two = {"id": 8, "source": "Пчелиный яд.", "target": "Asalari zahar
 f = main._alphabet_misses(seg_two, proj)
 check(len(f) == 1 and "не тем письмом" in f[0]["text"], "два латинских слова из двух — уже не тем письмом")
 seg_one = {"id": 9, "source": "Пчелиный яд.", "target": "Асалари zahari.", "status": "translated"}
-check(main._alphabet_misses(seg_one, proj) == [], "одно латинское слово при одном кириллическом — ничья, молчим")
+f1 = main._alphabet_misses(seg_one, proj)
+check(not any("не тем письмом" in x["text"] for x in f1),
+      "одно латинское слово при одном кириллическом — ничья: «не тем письмом» молчит")
+check(any("чужим письмом" in x["text"] and "zahari" in x["text"] for x in f1),
+      "но само латинское слово в кириллице — находка (замер 24.10.2026: «kattalashuvi»)")
 seg_suffix = {"id": 10, "source": "Метод Щукина.", "target": "Щукиннинг усули.", "status": "translated"}
 check(main._alphabet_misses(seg_suffix, proj) == [], "фамилия с узбекским суффиксом — перенесена (общее начало), не находка")
 

@@ -34119,6 +34119,8 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                           "lineH": b.get("lineH"), "rows": b.get("rows"),
                           # Рамки строк: базы, шаг и отступ абзаца (Ф1).
                           "lineBoxes": b.get("lineBoxes"),
+                          # Э20: снимок под углом — выпрямленные строки для баз и шага.
+                          "lineBoxesR": b.get("lineBoxesR"),
                           # Э14: наклонная строка — её четырёхугольник.
                           "quad": b.get("quad"),
                           # Семейство: рукопись — на всю страницу; иначе
@@ -41284,15 +41286,39 @@ def _model_probe(provider: str) -> dict:
     return out
 
 
+def _model_family(mid: str):
+    """(семейство, версия) по id: «claude-sonnet-5-5» → ("claude-sonnet", (5, 5)),
+    «gpt-6.1-sol» → ("gpt", (6, 1)). Не разобрали — None."""
+    m = re.match(r"claude-([a-z]+)-(\d+)(?:-(\d+))?(?:-|$)", mid)
+    if m:
+        return "claude-" + m.group(1), (int(m.group(2)), int(m.group(3) or 0))
+    m = re.match(r"gpt-(\d+)(?:\.(\d+))?(?:-|$)", mid)
+    if m:
+        return "gpt", (int(m.group(1)), int(m.group(2) or 0))
+    return None
+
+
 def _model_new_ids(health: dict) -> dict:
+    """Модели поставщика, которые НОВЕЕ каталога: семейства, которого в нём
+    нет (Fable), или версии старше нашей в том же семействе (gpt-6 при 5.6).
+    Старые (gpt-4, claude-opus-4-8) и служебные (звук, картинки) — не новость."""
     known = set(_MODELS_BY_ID)
+    top: dict = {}
+    for k in known:
+        f = _model_family(k)
+        if f:
+            top[f[0]] = max(top.get(f[0], (0, 0)), f[1])
     res = {}
     for prov, h in health.items():
-        ids = (h or {}).get("ids") or []
-        pre = ("claude-",) if prov == "anthropic" else ("gpt-", "o1", "o3", "o4", "o5")
-        new = [i for i in ids if i.startswith(pre) and i not in known
-               and not any(w in i for w in _NOT_CHAT) and not re.search(r"\d{8}$|-\d{4}-\d{2}-\d{2}$", i)
-               and not any(i.startswith(k + "-") for k in known)]
+        new = []
+        for i in (h or {}).get("ids") or []:
+            if i in known or any(w in i for w in _NOT_CHAT) or any(i.startswith(k + "-") for k in known):
+                continue
+            if re.search(r"\d{8}$|-\d{4}-\d{2}-\d{2}$", i):
+                continue
+            f = _model_family(i)
+            if f and (f[0] not in top or f[1] > top[f[0]]):
+                new.append(i)
         if new:
             res[prov] = new
     return res

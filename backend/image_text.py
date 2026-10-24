@@ -553,6 +553,7 @@ def split_parts(item: dict) -> list:
         hs = sorted(x[3] - x[1] for x in grp)
         sub = dict(item)
         sub.pop("breaks", None)
+        sub.pop("lineBoxesR", None)     # Э20: у части свои строки — берёт исходные
         sub.update({"box": [min(x[0] for x in grp), min(x[1] for x in grp),
                             max(x[2] for x in grp), max(x[3] for x in grp)],
                     "lineBoxes": grp, "rows": len(grp), "lineH": hs[len(hs) // 2],
@@ -677,13 +678,15 @@ DIV_DELTA = int(os.environ.get("IMG_DIV_DELTA", "14"))
 DIV_SHARE = 0.7
 
 
-def divider_between(arr, a, b) -> bool:
+def divider_between(arr, a, b, ang: float = 0.0) -> bool:
     """Есть ли между строкой `a` (выше) и строкой `b` строка пикселей
     сплошного тона, отличного от фона ОБЕИХ (на 14+ из 255) поперёк ВНУТРЕННИХ
     80% их общей ширины. Рамки — [x0, y0, x1, y1] в пикселях. Нет общей
     ширины, нет numpy, любой сбой — False («разделителя не нашли»)."""
     try:
         h, w = arr.shape[:2]
+        a = [int(round(v)) for v in a]      # выпрямленные рамки (Э20) — дробные
+        b = [int(round(v)) for v in b]
         xl, xr = max(a[0], b[0]), min(a[2], b[2])
         if xr - xl < 6:
             return False
@@ -694,17 +697,38 @@ def divider_between(arr, a, b) -> bool:
         if y1 <= y0 or xr <= xl:
             return False
 
+        # Э20: на снимке под углом линия таблицы наклонена вместе со строками —
+        # строку пикселей берём ВДОЛЬ неё (y задан в середине общей ширины).
+        xs = _np.arange(xl, xr)
+        dy = _np.round((xs - (xl + xr) / 2.0) * math.tan(math.radians(ang))).astype(int) if ang else 0
+
+        def take(y):
+            ys = _np.clip(y + dy, 0, h - 1)
+            return arr[ys, xs] if ang else arr[max(0, min(h - 1, y)), xl:xr]
+
         def med(y):
-            return _np.median(arr[max(0, min(h - 1, y)), xl:xr].astype(int), axis=0)
+            return _np.median(take(y).astype(int), axis=0)
         up, dn = med(a[3] - 1), med(b[1] + 1)
+
+        def wmin(y):
+            return _np.stack([take(y + k).astype(int) for k in (-1, 0, 1)]).min(axis=0)
+        # Снимок: тёмная линия в 1–2 пикселя волнится и сглажена, в одну строку
+        # пикселей не укладывается — окно из трёх, по столбцу самый тёмный.
+        # Опора — то же окно у строк рядом с текстом: шум бумаги темнит минимум
+        # одинаково, и сдвиг гасится (иначе ровная бумага сходила за линию).
+        wup, wdn = ((_np.median(wmin(a[3] - 1), axis=0), _np.median(wmin(b[1] + 1), axis=0))
+                    if ang else (None, None))
         best = 0
         for y in range(y0, y1):
-            row = arr[y, xl:xr].astype(int)
-            mrow = _np.median(row, axis=0)
-            if float(_np.mean(_np.abs(row - mrow).max(axis=1) <= 10)) < DIV_SHARE:
-                continue
-            d2 = min(float(_np.abs(mrow - up).max()), float(_np.abs(mrow - dn).max()))
-            best = max(best, d2)
+            cand = [(take(y).astype(int), up, dn)]
+            if ang:
+                cand.append((wmin(y), wup, wdn))
+            for row, ru, rd in cand:
+                mrow = _np.median(row, axis=0)
+                if float(_np.mean(_np.abs(row - mrow).max(axis=1) <= 10)) < DIV_SHARE:
+                    continue
+                d2 = min(float(_np.abs(mrow - ru).max()), float(_np.abs(mrow - rd).max()))
+                best = max(best, d2)
         return best >= DIV_DELTA
     except Exception:
         return False
@@ -856,22 +880,42 @@ def _finish_lines(arr, out: list) -> list:
         if key is not None:
             l["key"] = key
     out.sort(key=lambda l: (l["box"][1], l["box"][0]))
+    # Э20: на снимке под углом рамки раздуты — геометрию соседей и полосу
+    # между ними берём по выпрямленным рамкам, линию ищем вдоль наклона.
+    skew = _page_skew(out) if IMG_DESKEW else 0.0
+    geo = [_deskew_box(l) if skew else l["box"] for l in out]
+
+    def _ang(l):
+        qs = _q4s(l)
+        return sorted(_quad_angle(q) for q in qs)[len(qs) // 2] if qs else 0.0
     # Т14: для каждой строки — ближайшая выше (в той же колонке), от
     # которой её отделяет линия-разделитель. Окно — `DIV_LOOKBACK` строк
     # выше, а не отказ на плотной странице.
     for j, l in enumerate(out):
-        x0, y0, x1, y1 = l["box"]
+        x0, y0, x1, y1 = geo[j]
         h = max(1, y1 - y0)
         for i in range(j - 1, max(-1, j - 1 - DIV_LOOKBACK), -1):
-            a = out[i]["box"]
+            a = geo[i]
             if y0 - a[3] > 1.0 * h + 4:
                 continue
             if min(x1, a[2]) - max(x0, a[0]) <= 0.35 * max(1, min(x1 - x0, a[2] - a[0])):
                 continue
             if a[3] > y0 + 0.4 * h:
                 continue
-            if divider_between(arr, a, l["box"]):
-                l["divFrom"] = list(a)
+            if skew and _q4s(out[i]) and _q4s(l):
+                # Выпрямленные рамки описывают y в центре СВОЕЙ строки —
+                # приводим обе к середине общей ширины.
+                ang = (_ang(out[i]) + _ang(l)) / 2.0 or 1e-6
+                xm = (max(x0, a[0]) + min(x1, a[2])) / 2.0
+                t = math.tan(math.radians(ang))
+                ya = a[3] + (xm - (a[0] + a[2]) / 2.0) * t
+                yb = y0 + (xm - (x0 + x1) / 2.0) * t
+                hit = divider_between(arr, [a[0], a[1], a[2], int(round(ya))],
+                                      [x0, int(round(yb)), x1, y1], ang)
+            else:
+                hit = divider_between(arr, a, l["box"])
+            if hit:
+                l["divFrom"] = list(out[i]["box"])
             break
     return out
 
@@ -1087,6 +1131,78 @@ def _rot_page_skew(lines: list) -> list:
     return lines
 
 
+# Э20 (корпус 2, «объявление в тени», 24.10.2026): лист снят под углом 2–3°.
+# Рамка детектора — ось-параллельная, и у строки шириной 700 px при наклоне 3°
+# она на 37 px выше самой строки. Сборка блоков считает допуски от высоты
+# рамки — первая строка абзаца прилипала к заголовку, а шапка таблицы и две её
+# строки — к абзацу; модель прочла в блоке только абзац, стёрт был весь блок:
+# строки таблицы пропали без перевода. На таком листе блоки собираются
+# в ВЫПРЯМЛЕННЫХ координатах (рамка = четырёхугольник, повёрнутый на −наклон,
+# высота — настоящая толщина строки; у снимка в перспективе угол у каждой
+# строки свой), а наружу уходят исходные рамки.
+IMG_DESKEW = os.environ.get("IMG_DESKEW", "1") != "0"
+IMG_SKEW_MIN = float(os.environ.get("IMG_SKEW_MIN", "1.0"))   # градусов: меньше — сборка как была
+
+
+def _q4s(l: dict) -> list:
+    return list(l.get("q4s") or ([l["q4"]] if l.get("q4") else []))
+
+
+def _page_skew(lines: list) -> float:
+    """Снят ли лист под углом: медиана МОДУЛЯ угла длинных строк (ширина от
+    четырёх толщин — у короткой угол шум детектора), градусы, или 0. Модуль,
+    а не угол: у снимка в перспективе верх листа наклонён на −3°, низ — на +2°,
+    общего угла нет, а рамки раздуты по всему листу."""
+    angs = []
+    for l in lines:
+        if l.get("quad"):
+            continue                    # Э14: наклонная надпись — сама по себе
+        for q in _q4s(l):
+            w = math.hypot(q[1][0] - q[0][0], q[1][1] - q[0][1])
+            h = math.hypot(q[3][0] - q[0][0], q[3][1] - q[0][1])
+            if w >= 4 * max(1.0, h):
+                angs.append(abs(_quad_angle(q)))
+    if len(angs) < 3:
+        return 0.0
+    angs.sort()
+    med = angs[len(angs) // 2]
+    return med if IMG_SKEW_MIN <= med < 45 else 0.0
+
+
+def _same_light(a, b) -> bool:
+    """Э20: тот же фон под другим светом. На снимке листа тень темнит бумагу
+    ПРОПОРЦИОНАЛЬНО по каналам (оттенок тот же), а плашка схемы отличается
+    оттенком. Граница тени между двумя строками абзаца иначе резала абзац."""
+    sa, sb = float(sum(a)) or 1.0, float(sum(b)) or 1.0
+    # Две серые любой яркости одного «оттенка» — тёмная шапка таблицы и
+    # светлое поле, полосы зебры; тень строки абзаца темнит не больше трети.
+    if not 0.7 <= sa / sb <= 1.43:
+        return False
+    return max(abs(x / sa - y / sb) for x, y in zip(a, b)) <= 0.02
+
+
+def _deskew_box(l: dict, _ang: float = 0.0) -> list:
+    """Выпрямленная рамка строки: каждый кусок поворачивается вокруг СВОЕГО
+    центра на свой угол — ширина вдоль строки, высота — толщина строки.
+    Между колонками при наклоне 3° это сдвиг в несколько пикселей."""
+    qs = _q4s(l)
+    if not qs:
+        return list(l["box"])
+    pts = [p_ for q in qs for p_ in q]
+    cx = sum(p_[0] for p_ in pts) / len(pts)
+    cy = sum(p_[1] for p_ in pts) / len(pts)
+    angs = sorted(_quad_angle(q) for q in qs)
+    a_ = math.radians(angs[len(angs) // 2])
+    c, s_ = math.cos(a_), math.sin(a_)
+    # Проекция ВСЕХ точек всех кусков на ось строки и поперёк неё — в одной
+    # системе координат: склеенная строка из кусков иначе снова выходила
+    # выше себя на ширину × наклон, а у изогнутой (разворот книги)
+    # четырёхугольник не прямоугольник, верхнее ребро короче строки.
+    us = [(p_[0] - cx) * c + (p_[1] - cy) * s_ for p_ in pts]
+    vs = [-(p_[0] - cx) * s_ + (p_[1] - cy) * c for p_ in pts]
+    return [cx + min(us), max(0.0, cy + min(vs)), cx + max(us), cy + max(vs)]
+
+
 def _quad_angle(pts) -> float:
     """Угол строки по верхнему краю четырёхугольника детектора, в градусах
     (y вниз: наклон «вверх вправо» — отрицательный)."""
@@ -1147,6 +1263,10 @@ def _detect_boxes(eng, arr, k: int) -> list:
         if box[2] - box[0] < 4 or box[3] - box[1] < 4:
             continue
         rec = {"box": box, "conf": round(score, 3) if score is not None else None, "flat": 0.0}
+        if len(pts) == 4:
+            # Э20: место строки на листе с общим наклоном (снимок под углом) —
+            # нужно и при малом угле, когда строка наклонной не считается.
+            rec["q4"] = [[round(float(p_[0]) / k, 1), round(float(p_[1]) / k, 1)] for p_ in pts]
         if IMG_ROT_LINES and len(pts) == 4:
             ang = _quad_angle(pts)
             if IMG_ROT_MIN <= abs(ang) <= 90 - IMG_ROT_MIN:
@@ -1630,6 +1750,8 @@ def _join_pieces(lines: list) -> list:
             # надёжнее самого сомнительного своего куска.
             cur["conf"] = _conf_worst(cur["conf"], ln["conf"])
             cur["flat"] = min(cur["flat"], ln["flat"])
+            cur["q4s"] = _q4s(cur) + _q4s(ln)       # Э20: место каждого куска
+            cur.pop("q4", None)
             joined = True
             break
         if not joined:
@@ -1692,7 +1814,7 @@ IMG_RHYTHM_GAP_MAX = float(os.environ.get("IMG_RHYTHM_GAP_MAX", "4"))   # цеп
 IMG_RHYTHM_SIZE = float(os.environ.get("IMG_RHYTHM_SIZE", "0.4"))          # разброс высоты строки: у хвоста без выносных букв («нах.») рамка ниже на треть
 
 
-def _rhythm_merge(blocks: list) -> list:
+def _rhythm_merge(blocks: list, skew: float = 0.0) -> list:
     """Склейка блоков одной колонки с ровным ритмом строк (см. `IMG_RHYTHM_*`).
     Порядок и состав строк не меняются — только их раскладка по блокам."""
     if len(blocks) < 2:
@@ -1713,7 +1835,8 @@ def _rhythm_merge(blocks: list) -> list:
             over = min(x1, lx1) - max(x0, lx0)
             lh = max(1.0, max(b["lineH"], last["lineH"]))
             if (over > 0.7 * narrow and 0 <= y0 - ly1 <= IMG_RHYTHM_GAP_MAX * lh
-                    and abs(b["lineH"] - last["lineH"]) <= IMG_RHYTHM_SIZE * lh):
+                    and abs(b["lineH"] - last["lineH"]) <= (IMG_RHYTHM_SIZE if not skew
+                                                            else min(IMG_RHYTHM_SIZE, 0.28)) * lh):
                 home = ch
                 break
         if home is None:
@@ -1742,7 +1865,8 @@ def _rhythm_merge(blocks: list) -> list:
             gap = b["box"][1] - max(l["box"][1] for l in cur["lines"])
             bgs = cur.get("bg"), b.get("bg")
             same_bg = (bgs[0] is None or bgs[1] is None
-                       or max(abs(p - q) for p, q in zip(bgs[0], bgs[1])) <= IMG_BG_SAME)
+                       or max(abs(p - q) for p, q in zip(bgs[0], bgs[1])) <= IMG_BG_SAME
+                       or (skew and _same_light(bgs[0], bgs[1])))
             # Короткая строка заканчивает абзац (хвост, заголовок, подпись):
             # к ней следующая не приклеивается.
             last = max(cur["lines"], key=lambda l: l["box"][1])["box"]
@@ -2085,6 +2209,10 @@ def group_blocks(lines: list) -> list:
     в `detect_lines` — там есть сама картинка, и плоскость фона считается уже
     по склеенной рамке."""
     blocks: list = []
+    skew = _page_skew(lines) if IMG_DESKEW else 0.0
+    if skew:
+        lines = [l if l.get("quad") else dict(l, obox=list(l["box"]), box=_deskew_box(l, skew))
+                 for l in lines]
     for ln in sorted(lines, key=lambda l: (l["box"][1], l["box"][0])):
         x0, y0, x1, y1 = ln["box"]
         h = max(1, y1 - y0)
@@ -2098,7 +2226,11 @@ def group_blocks(lines: list) -> list:
             bx0, by0, bx1, by1 = b["box"]
             over = min(x1, bx1) - max(x0, bx0)          # та же колонка
             narrow = max(1, min(x1 - x0, bx1 - bx0))
-            same_size = 0.6 <= (h / max(1, b["lineH"])) <= 1.7   # тот же кегль
+            # Тот же кегль. На снимке под углом (Э20) толщина строки
+            # выпрямлена и точна — допуск уже: заголовок с подзаголовком
+            # (41 и 28 пикселей) иначе шли одним блоком и одним кеглем.
+            same_size = ((0.72 <= (h / max(1, b["lineH"])) <= 1.38) if skew
+                         else 0.6 <= (h / max(1, b["lineH"])) <= 1.7)
             gap = y0 - by1                              # идут подряд
             tol = max(4.0, max(h, b["lineH"]))          # выключены по одному краю
             aligned = (abs(x0 - bx0) <= tol
@@ -2108,10 +2240,13 @@ def group_blocks(lines: list) -> list:
             # тексты, хотя стоят вплотную и выровнены по краю.
             bgs = b.get("bg"), ln.get("bg")
             same_bg = (bgs[0] is None or bgs[1] is None
-                       or max(abs(p - q) for p, q in zip(bgs[0], bgs[1])) <= IMG_BG_SAME)
+                       or max(abs(p - q) for p, q in zip(bgs[0], bgs[1])) <= IMG_BG_SAME
+                       or (skew and bgs[1] is not None and (b["lines"][-1].get("bg") or bgs[0]) is not None
+                           and _same_light(b["lines"][-1].get("bg") or bgs[0], bgs[1])))
             # Т14: тонкая линия-разделитель между строкой и строкой блока
             # выше (`detect_lines` → `divFrom`) — граница плашек и полос.
-            cut = bool(ln.get("divFrom")) and any(l_["box"] == ln["divFrom"] for l_ in b["lines"])
+            cut = bool(ln.get("divFrom")) and any((l_.get("obox") or l_["box"]) == ln["divFrom"]
+                                                  for l_ in b["lines"])
             if (over > 0.35 * narrow and same_size and aligned and same_bg and not cut
                     and -0.4 * h <= gap <= 1.0 * max(h, b["lineH"])):
                 b["box"] = [min(bx0, x0), min(by0, y0), max(bx1, x1), max(by1, y1)]
@@ -2129,9 +2264,14 @@ def group_blocks(lines: list) -> list:
                 nb["lineH"] = max(1.0, math.hypot(q[3][0] - q[0][0], q[3][1] - q[0][1]))
             blocks.append(nb)
     rot_b = [b for b in blocks if b.get("quad")]
-    blocks = _drop_inner(_rhythm_merge([b for b in blocks if not b.get("quad")])) + rot_b
+    blocks = _drop_inner(_rhythm_merge([b for b in blocks if not b.get("quad")], skew)) + rot_b
     out = []
     for b in blocks:
+        if skew:
+            # Наружу — исходные рамки: по ним стирают и режут кроп.
+            ob = [l.get("obox") or l["box"] for l in b["lines"]]
+            b["box"] = [min(o[0] for o in ob), min(o[1] for o in ob),
+                        max(o[2] for o in ob), max(o[3] for o in ob)]
         out.append({"box": [int(v) for v in b["box"]], "rows": len(b["lines"]),
                     # Высота СТРОКИ, а не блока. По ней считаются поля рамки
                     # и кропа: посчитанные от высоты блока, они у подписи
@@ -2144,8 +2284,19 @@ def group_blocks(lines: list) -> list:
                     # Рамки СТРОК блока: по ним сверка с текстовым слоем идёт
                     # построчно (`main._mark_layer_blocks`) — строка, которой
                     # в слое нет, не пропадает вместе с соседями из слоя.
-                    "lineBoxes": [[int(v) for v in l["box"]] for l in
+                    "lineBoxes": [[int(v) for v in (l.get("obox") or l["box"])] for l in
                                   sorted(b["lines"], key=lambda l: l["box"][1])]})
+        if skew:
+            out[-1]["skew"] = round(skew, 1)
+            # Э20: выпрямленные рамки строк (центр тот же, высота — настоящая
+            # толщина) — ТОЛЬКО для баз и шага раскладки абзаца: исходные
+            # раздутые рамки налезали друг на друга, и шаг выходил втрое
+            # больше. Кроп, маска и замеры букв идут по исходным (`lineBoxes`).
+            bx = out[-1]["box"]
+            out[-1]["lineBoxesR"] = [
+                [max(bx[0], int(round(l["box"][0]))), max(bx[1], int(round(l["box"][1]))),
+                 min(bx[2], int(round(l["box"][2]))), min(bx[3], int(round(l["box"][3])))]
+                for l in sorted(b["lines"], key=lambda l: l["box"][1])]
         if b.get("quad"):
             out[-1]["quad"], out[-1]["ang"] = b["quad"], b.get("ang")
         # Ключ `text` появляется ТОЛЬКО когда строки его несут. Пустая строка
@@ -2647,8 +2798,9 @@ def _paint_measure(arr, pbox, it: dict, k: int, draw) -> Optional[dict]:
         return cache[key]
 
     geo = None
-    if not m["angle"] and not m.get("arc") and rows >= 2 and len(lbs) == rows:
-        loc = [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in lbs]
+    glb = it.get("lineBoxesR") or lbs      # Э20: базы и шаг — по выпрямленным строкам
+    if not m["angle"] and not m.get("arc") and rows >= 2 and len(glb) == rows:
+        loc = [[lb[0] - x0, lb[1] - y0, lb[2] - x0, lb[3] - y0] for lb in glb]
         g = tp.line_geometry(loc, m["mask"], m["em"])
         if g and g["regular"]:
             geo = g

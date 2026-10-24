@@ -48,6 +48,15 @@ except Exception:                                   # pragma: no cover
 # На сколько (из 255, по самому далёкому каналу) точка отличается от своего
 # фона, чтобы считаться буквой.
 INK_DIFF = float(os.environ.get("PAINT_INK_DIFF", "48"))
+# Э21 (корпус 2, «объявление в тени»): тень УМНОЖАЕТ яркость — и бумаги,
+# и краски, разница между ними в глубокой тени сжимается ниже постоянного
+# порога, маска букв выходила пустой (покрытие 0.001 при бумаге 65), и абзац
+# уходил плашкой — тёмным прямоугольником поверх снимка. На НЕЙТРАЛЬНОЙ бумаге
+# темнее `INK_REL_REF` порог снижается пропорционально её яркости (не ниже
+# `INK_REL_MIN` прежнего). Светлая бумага и цветная плашка — как были.
+INK_REL = os.environ.get("PAINT_INK_REL", "1") != "0"
+INK_REL_REF = float(os.environ.get("PAINT_INK_REL_REF", "190"))
+INK_REL_MIN = float(os.environ.get("PAINT_INK_REL_MIN", "0.35"))
 # Х8: доля области у края вырезки внутри рамки надписи, с которой она своя.
 OWN_SHARE = float(os.environ.get("PAINT_OWN_SHARE", "0.35"))
 # Ровный фон: разброс фона под рамкой не больше этого — заливка, а не inpaint.
@@ -239,7 +248,19 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
         region = None
         bg_local = cv2.medianBlur(rgb, k) if min(h, w) > k else rgb.copy()
     diff = np.abs(rgb.astype(np.int16) - bg_local.astype(np.int16)).max(axis=2)
-    mask = diff > INK_DIFF
+    if INK_REL and plate is None:
+        lum = bg_local.max(axis=2).astype(np.float32)
+        neutral = (lum - bg_local.min(axis=2)) <= 0.25 * np.maximum(lum, 1.0)
+        fac = np.where(neutral, np.clip(lum / INK_REL_REF, INK_REL_MIN, 1.0), 1.0)
+        # Не ниже шума снимка: зерно ночной фотографии и блоки JPEG на тёмном
+        # фоне иначе стали бы «буквами» (порог — втрое выше медианы отличия).
+        noise = float(np.median(diff)) if diff.size else 0.0
+        thr = np.maximum(INK_DIFF * fac, 3.0 * noise)
+        lowered = bool((thr < INK_DIFF).any())
+        mask = diff > thr
+    else:
+        lowered = False
+        mask = diff > INK_DIFF
     # Буквы надписи — ОДНОГО цвета: ядро самых далёких от фона точек даёт
     # цвет краски, и маска сужается до точек, близких к нему. Без этого в
     # маску шёл край цветной плашки и кольца схемы (там точка отличается
@@ -334,7 +355,9 @@ def measure(rgb, src: str = "", rows: int = 1, line_h: float = 0.0, inner=None,
     # буквами, а соседняя графика, и «STRENGTHENING» под краем розового
     # кольца отбраковывалось как пёстрое (проект 14, стр. 12). Мелкие
     # крупинки шума фотографии остаются в замере — их и ловит порог.
-    nonfg = ~mask
+    # Текстура — по ПРЕЖНЕМУ порогу краски (Э21): сниженный порог вынул бы
+    # шум из замера фона, и пёстрый тёмный снимок прошёл бы проверку.
+    nonfg = ~(diff > INK_DIFF) if lowered else ~mask
     if letter and TEXTURE_BIG_SHARE > 0:
         raw = (diff > INK_DIFF) & ~mask
         n2, lab2, st2, _c2 = cv2.connectedComponentsWithStats(raw.astype(np.uint8), 8)

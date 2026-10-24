@@ -198,5 +198,84 @@ import zipfile  # noqa: E402
 xmlc = zipfile.ZipFile(_io.BytesIO(out)).read("ppt/charts/chart1.xml").decode("utf-8")
 check("RU Toneladas" in xmlc and "<c:v>RU Milho</c:v>" in xmlc, "перевод встал в диаграмму")
 
+print("── Э20: лист снят в перспективе — блоки по выпрямленным строкам ──")
+import math as _m
+import numpy as _np
+import image_text as IT  # noqa: E402
+import text_paint as TP  # noqa: E402
+
+
+def _ln(x0, yc, w, t, ang, bg=(200, 190, 170)):
+    """Строка детектора: четырёхугольник ширины w и толщины t под углом ang
+    от левого края на высоте yc, рамка — его ось-параллельный охват."""
+    c, s_ = _m.cos(_m.radians(ang)), _m.sin(_m.radians(ang))
+    q = [[x0, yc - t / 2], [x0 + w * c, yc - t / 2 + w * s_],
+         [x0 + w * c, yc + t / 2 + w * s_], [x0, yc + t / 2]]
+    xs, ys = [p_[0] for p_ in q], [p_[1] for p_ in q]
+    return {"box": [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys))], "q4": q,
+            "conf": 0.9, "flat": 0.9, "bg": list(bg)}
+
+
+# абзац из пяти строк (толщина 28, шаг 36, наклон −3°) и под ним три ячейки
+# таблицы строкой ниже — как «объявление в тени»
+para = [_ln(200, 320 + 36 * i, 650, 28, -3.0) for i in range(5)]
+cells = [_ln(190, 520, 110, 30, -3.0), _ln(370, 512, 130, 30, -2.5), _ln(625, 505, 70, 30, -2.4)]
+check(IT._page_skew(para + cells) >= 1.0, "наклон листа узнан по длинным строкам")
+bl = IT.group_blocks([dict(l) for l in para + cells])
+rows = sorted(b["rows"] for b in bl)
+check(rows == [1, 1, 1, 5], "абзац — один блок, ячейки таблицы — свои: %s" % rows)
+big = [b for b in bl if b["rows"] == 5][0]
+check(big["lineH"] <= 32, "высота строки — настоящая толщина, а не раздутая рамка: %s" % big["lineH"])
+check(big["box"][1] <= min(l["box"][1] for l in para), "наружу — исходные рамки (по ним стирают)")
+flat = [_ln(200, 320 + 36 * i, 650, 28, 0.0) for i in range(5)]
+check(IT._page_skew(flat) == 0.0, "ровный лист — сборка как была")
+# заголовок 41 и подзаголовок 28 на снимке под углом — разные блоки
+hd = [_ln(390, 200, 340, 41, -3.4), _ln(305, 245, 510, 28, -3.4)] + para
+check(len([b for b in IT.group_blocks([dict(l) for l in hd]) if b["rows"] == 1]) == 2,
+      "заголовок и подзаголовок разного кегля — разные блоки")
+# тень между строками абзаца — тот же фон (оттенок тот же, темнее)
+sh = [dict(l, bg=[187, 177, 155]) for l in para[:2]] + [dict(l, bg=[140, 133, 114]) for l in para[2:]]
+check(max(b["rows"] for b in IT.group_blocks(sh)) == 5, "граница тени абзац не режет")
+check(not IT._same_light((240, 240, 240), (230, 160, 160)), "а розовая плашка — другой фон")
+# наклонная линия таблицы между строками — разделитель
+img = _np.full((120, 300, 3), 160, _np.uint8)
+for x in range(300):
+    y = int(round(60 + (x - 150) * _m.tan(_m.radians(-3.0))))
+    img[y:y + 2, x] = 90
+check(IT.divider_between(img, [40, 20, 260, 50], [40, 70, 260, 100], -3.0),
+      "наклонная линия таблицы найдена вдоль наклона")
+check(IT.divider_between(img, [40.4, 20.2, 259.7, 50.3], [40.1, 70.6, 260.2, 100.0], -3.0),
+      "дробные (выпрямленные) рамки не роняют поиск")
+
+print("── Э21: буквы в глубокой тени — порог краски от яркости бумаги ──")
+from PIL import Image as _Im, ImageDraw as _Dr, ImageFont as _Ft
+_fp = IT.font_path()
+_fnt = _Ft.truetype(_fp, 30) if _fp else None
+cv = _Im.new("RGB", (420, 60), (66, 64, 54))
+_Dr.Draw(cv).text((10, 12), "Перед подачей воды", fill=(30, 27, 19), font=_fnt)
+m = TP.measure(_np.array(cv), "", 1, 40.0)
+check(m.get("found") and m.get("cover", 0) > 0.03, "тёмный текст на тёмной бумаге найден: %s" %
+      {k: m.get(k) for k in ("found", "cover")})
+cv2_ = _Im.new("RGB", (420, 60), (20, 40, 110))
+_Dr.Draw(cv2_).text((10, 12), "ABC", fill=(40, 60, 130), font=_fnt)
+m2 = TP.measure(_np.array(cv2_), "", 1, 40.0)
+check(not m2.get("found"), "на цветной плашке порог прежний (почти невидимое — не «буквы»)")
+
+# критик: строка из двух кусков на наклоне — высота настоящая, не раздутая
+two = _ln(200, 320, 300, 28, -3.0)
+two2 = _ln(520, 320 + 320 * _m.tan(_m.radians(-3.0)), 300, 28, -3.0)
+j = dict(two, q4s=[two["q4"], two2["q4"]], box=[two["box"][0], two2["box"][1], two2["box"][2], two["box"][3]])
+j.pop("q4")
+r_ = IT._deskew_box(j)
+check(r_[3] - r_[1] <= 32, "склеенная из кусков строка — высота одна толщина: %.1f" % (r_[3] - r_[1]))
+check(not IT._same_light((200, 200, 200), (110, 110, 110)), "две серые разной яркости — не «тот же свет»")
+bl2 = IT.group_blocks([dict(l) for l in para])
+check(bl2[0]["lineBoxes"][0] == para[0]["box"] and "lineBoxesR" in bl2[0],
+      "рамки строк — исходные, выпрямленные — отдельным полем для раскладки")
+_rng = _np.random.default_rng(7)
+night = _np.clip(_rng.normal(60, 9, (60, 420, 3)), 0, 255).astype(_np.uint8)
+m3 = TP.measure(night, "", 1, 40.0)
+check(not m3.get("found"), "шум ночного снимка на тёмном фоне — не буквы")
+
 print("\n" + ("ВСЕ ПРОВЕРКИ ПРОШЛИ" if not FAIL else "ПРОВАЛЕНО: %d" % len(FAIL)))
 sys.exit(1 if FAIL else 0)

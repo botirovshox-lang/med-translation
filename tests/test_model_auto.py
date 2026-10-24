@@ -161,6 +161,14 @@ os.environ.pop("OPENAI_API_KEY", None)
 h = main._model_probe("openai")
 check(h["ok"] is False and h["why"] == "nokey", "нет ключа — поставщик выбывает")
 
+print("(7а) «новые» — новее каталога, а не всё подряд")
+h = {"openai": {"ids": ["gpt-4", "gpt-3.5-turbo", "gpt-5.2-pro", "gpt-6-sol", "gpt-6.1-sol", "o3",
+                        "gpt-live-1", "gpt-6-sol-2026-09-01", "gpt-image-2"]},
+     "anthropic": {"ids": ["claude-opus-4-8", "claude-fable-5-1", "claude-sonnet-4-6", "claude-mega-9"]}}
+got = main._model_new_ids(h)
+check(got == {"openai": ["gpt-6-sol", "gpt-6.1-sol"], "anthropic": ["claude-fable-5-1", "claude-mega-9"]},
+      "новые: %s" % got)
+
 print("(7б) датированные id, задача из очереди, пропавшая модель")
 h = {"anthropic": {"ok": True, "ids": ["claude-sonnet-5-5-20261001", "claude-sonnet-5-20260601",
                                        "claude-haiku-5-5-20261001", "claude-opus-5-5-20261001"]},

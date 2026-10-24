@@ -1,0 +1,46 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "Маша, привет!",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "ушла в магазин, вернусь к шести.",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Не забудь покормить кота",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "и позвонить бабушке!",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "Целую, мама",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "Суп в холодильнике, разогрей.",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  }
+ ]
+}

@@ -781,6 +781,26 @@ ov = main._pp_img_ov(inp_f, [{"blk": "a|0", "text": ""}, {"blk": "a|1", "text": 
 check(ov == {"a|0": {"leave": True}, "a|1": {"text": "Two!"}, "b|0": {"tune": {"plate": 1}}},
       "поправки по адресу блока: оставить, текст, рычаги (только свои): %s" % ov)
 
+print("\n── Ю1: перевод = оригинал — надпись не трогаем ──")
+# e-mail, телефон, латинское название: стёртая и перепечатанная, такая надпись
+# ложилась мимо места на соседние строки (визитка 66 корпуса 2).
+same = [s_ for s_ in project["segments"]
+        if (s_.get("origin") or {}).get("kind") == "image" and (s_.get("source") or "").strip()][0]
+keep_t = same.get("target")
+same["target"] = " " + same["source"].replace("\n", "  ") + " "
+_ps, st_s = main._generate_export(project, "docx_layout")
+check(st_s.get("img_same") == 1 and st_s["img_repainted"] == base_rep - 1,
+      "надпись, равная оригиналу, осталась как на снимке и посчитана: %s"
+      % {k: st_s.get(k) for k in ("img_same", "img_repainted")})
+main.IMG_SAME_KEEP = False
+try:
+    _ps2, st_s2 = main._generate_export(project, "docx_layout")
+finally:
+    main.IMG_SAME_KEEP = True
+check(not st_s2.get("img_same") and st_s2["img_repainted"] == base_rep,
+      "выключатель IMG_SAME_KEEP=0 возвращает прежнюю перерисовку: %s" % st_s2["img_repainted"])
+same["target"] = keep_t
+
 shutil.rmtree(TMP, ignore_errors=True)
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

@@ -427,6 +427,40 @@ src_st = _insp.getsource(main.prepress_status)
 check("статус для клиента без моделей и денег",
       "model" not in src_st.split('"""')[2].replace("_prepress_models", "") and "cost" not in src_st)
 
+print("\n── Д1: потолок денег проверки — доля выручки файла ──")
+_cfg0 = main.STATE.get("payConfig")
+main.STATE["payConfig"] = {"pricePage": "0.5"}
+try:
+    check("20 страниц × $0.5 × 0.3 = $3", abs(main._prepress_cap({"pages": 20, "tenant": "default"}) - 3.0) < 1e-6,
+          str(main._prepress_cap({"pages": 20, "tenant": "default"})))
+    check("книга упирается в общий потолок", main._prepress_cap({"pages": 5000, "tenant": "default"})
+          == main.PREPRESS_MAX_USD)
+    check("одна страница — не ниже PREPRESS_MIN_USD",
+          main._prepress_cap({"pages": 0.2, "tenant": "default"}) == main.PREPRESS_MIN_USD)
+    check("объём неизвестен — общий потолок", main._prepress_cap({"tenant": "default"}) == main.PREPRESS_MAX_USD)
+    check("_pp_cap читает потолок задачи", main._pp_cap({"cap": 1.25}) == 1.25 and
+          main._pp_cap({}) == main.PREPRESS_MAX_USD)
+finally:
+    if _cfg0 is None:
+        main.STATE.pop("payConfig", None)
+    else:
+        main.STATE["payConfig"] = _cfg0
+
+print("\n── Д2: ожидание «Готовим файл» ограничено ──")
+_w0 = main.PREPRESS_WAIT_S
+main.PREPRESS_WAIT_S = 60
+try:
+    k_ = ("late-test", "fp")
+    check("первое ожидание — не поздно", main._prepress_late(k_) is False)
+    main._PREPRESS_WAIT0[k_][0] -= 61
+    check("дольше PREPRESS_WAIT_S — файл выдаётся как есть", main._prepress_late(k_) is True)
+    main.PREPRESS_WAIT_S = 0
+    check("PREPRESS_WAIT_S=0 — ждать без предела", main._prepress_late(k_) is False)
+    check("пометка «late» уходит человеку состоянием", main._prepress_public(None, "late")["state"] == "late")
+finally:
+    main.PREPRESS_WAIT_S = _w0
+    main._PREPRESS_WAIT0.pop(("late-test", "fp"), None)
+
 print()
 if FAILS:
     print("ПРОВАЛЕНО: %d" % len(FAILS))

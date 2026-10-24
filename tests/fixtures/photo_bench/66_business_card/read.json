@@ -1,0 +1,102 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "ООО «Северный мост»\nпроектирование и надзор",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "ООО «Северны[…]\nпроектирование и надзор",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Игорь Самойлов\nВедущий инженер-сметчик",
+   "overlay": false,
+   "hand": false,
+   "serif": true
+  },
+  {
+   "i": 3,
+   "text": "Игорь Сам[…]\nВедущий инженер-сметчик",
+   "overlay": false,
+   "hand": false,
+   "serif": true
+  },
+  {
+   "i": 4,
+   "text": "+7 (912) 405-18-77",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "+7 (912) 405-18-77\ni.samoylov@sevmost-proekt.ru",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "i.samoylov@sevmost-pro[…]\nг. Пермь, ул. Лесная, 14, оф. 302",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "Наши услуги",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "Сметы на строительство и ремонт\nТехнический надзор за об[…]",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 9,
+   "text": "[…]строительство и ремонт\nТехнический надзор за объектами\nОбсле[…]",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 10,
+   "text": "[…]ский надзор за объектами\nОбследование мостов и эстакад\nЭкспертиза проектной до[…]",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 11,
+   "text": "[…]ование мостов и эстакад\nЭкспертиза проектной документации\nКонсультации по ценообразо[…]",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 12,
+   "text": "[…]проектной документации\nКонсультации по ценообразованию",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 13,
+   "text": "Работаем по всему Уралу · Пн–Пт 9:00–18:00",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  }
+ ]
+}

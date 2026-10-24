@@ -1,0 +1,228 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "Outpatient visits by district, 2025",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "60",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Quarter",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "53.8",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "Q1 (Jan–Mar)",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "49.2",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "50",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "Q2 (Apr–Jun)",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "42.5",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 9,
+   "text": "40",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 10,
+   "text": "38.1",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 11,
+   "text": "35.7",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 12,
+   "text": "31.0",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 13,
+   "text": "29.9",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 14,
+   "text": "30",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 15,
+   "text": "27.4",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 16,
+   "text": "22.6",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 17,
+   "text": "21.3",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 18,
+   "text": "19.4",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 19,
+   "text": "20",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 20,
+   "text": "18.9",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 21,
+   "text": "10",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 22,
+   "text": "0",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 23,
+   "text": "Pinecrest",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 24,
+   "text": "Old Harbour",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 25,
+   "text": "Millford Plains",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 26,
+   "text": "North Valley",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 27,
+   "text": "Riverside South",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 28,
+   "text": "Eastbrook Heights",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 29,
+   "text": "District",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 30,
+   "text": "Thousands of visits per quarter (provisional data)",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 31,
+   "text": "Source: Westmarch Regional Health Office, quarterly bulletin No. 7 (2026). Figures rounded.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  }
+ ]
+}

@@ -95,6 +95,9 @@ def main_():
                                                    ensure_ascii=False, indent=1), encoding="utf-8")
             raise _Ask()
 
+    # Одна порция чтения на картинку: заглушка отвечает за ВСЕ блоки сразу
+    # (порции по IMAGE_READ_MAX_BLOCKS нумеруют блоки заново с нуля).
+    main.IMAGE_READ_MAX_BLOCKS = 10 ** 6
     main._llm_client = lambda *x, **k: _Client()
     main._provider_ready = lambda *x, **k: True
     for k, m in enumerate(man):

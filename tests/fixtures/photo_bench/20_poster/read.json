@@ -1,0 +1,32 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "ФЕСТИВАЛЬ УЛИЧНОЙ\nЕДЫ\n18–20 октября",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "Более 60 кухонь мира, живая музыка\nи мастер-классы для детей",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Вход свободный",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "Парк Горького",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  }
+ ]
+}

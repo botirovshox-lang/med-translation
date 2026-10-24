@@ -1,0 +1,123 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "График дежурств на ноябрь",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "Врач",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Дата",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "Отделение",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "Соколов А. А.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "01.11",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "Терапия",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "Мирзаева Д. К.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "Хирургия",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 9,
+   "text": "02.11",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 10,
+   "text": "03.11",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 11,
+   "text": "Лим В. О.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 12,
+   "text": "Кардиология",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 13,
+   "text": "Зуева Т. П.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 14,
+   "text": "04.11",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 15,
+   "text": "Неврология",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 16,
+   "text": "Замены согласовывать с заведующим.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  }
+ ]
+}

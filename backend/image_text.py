@@ -3739,18 +3739,193 @@ def _restore_structures(big, orig_big, regions: list) -> int:
     return total
 
 
-def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = None) -> tuple:
+# Ю3: сторож наложений. Печать блока, легшая на ЧУЖУЮ надпись (рамку соседа
+# вне своей рамки) или на печать соседа, — текст на тексте, худший брак для
+# клиента (65, 66 корпуса 2). off — не смотреть; measure — только отчёт
+# (`collide` в отчёте блока); fix — «теснее» без роста, иначе оригинал
+# нетронутым (не подписью: подписи под фото клиенту не нужны).
+IMG_COLLIDE = os.environ.get("IMG_COLLIDE", "fix").strip().lower()
+IMG_COLLIDE_H = float(os.environ.get("IMG_COLLIDE_H", "0.35"))   # высота наложения — доля строки соседа
+IMG_COLLIDE_W = float(os.environ.get("IMG_COLLIDE_W", "1.2"))    # ширина наложения — в высотах строки
+IMG_COLLIDE_MAX_MPX = float(os.environ.get("IMG_COLLIDE_MAX_MPX", "16"))  # больше — место печати по рамке
+
+
+def _printed_rect(size, p: dict) -> Optional[tuple]:
+    """Где на самом деле легла печать блока (по краске слоя), в точках
+    увеличенной картинки. Слой рисуется тем же `_paint_put`, что и выгрузка:
+    угол, дуга, сжатие и строки ниже рамки учтены сами."""
+    if size[0] * size[1] > IMG_COLLIDE_MAX_MPX * 1e6:
+        # Холст во всю увеличенную картинку — сотни мегабайт у единственного
+        # воркера; на такой картинке место печати — её рамка.
+        x0, y0, x1, y1 = p["pbox"]
+        k = p.get("k") or 1
+        return (x0 * k, y0 * k, x1 * k, y1 * k)
+    try:
+        can = Image.new("RGBA", size, (0, 0, 0, 0))
+        _paint_put(can, dict(p))
+        return can.getchannel("A").getbbox()
+    except Exception:
+        return None
+
+
+def _hits(r, box, own, lh: float) -> bool:
+    """Печать `r` накрыла чужую надпись `box` за пределами своей рамки `own`
+    настолько, что это читается как текст на тексте (выше доли строки и шире
+    пары букв)."""
+    ix0, iy0, ix1, iy1 = max(r[0], box[0]), max(r[1], box[1]), min(r[2], box[2]), min(r[3], box[3])
+    if ix1 <= ix0 or iy1 <= iy0:
+        return False
+    # Часть наложения, лежащая в своей рамке, не в счёт: соседние рамки законно
+    # задевают друг друга, а своё место стирается своим же стиранием.
+    if own is not None:
+        ox0, oy0, ox1, oy1 = max(ix0, own[0]), max(iy0, own[1]), min(ix1, own[2]), min(iy1, own[3])
+        if ox1 > ox0 and oy1 > oy0:
+            if (ox0, ox1) == (ix0, ix1):
+                iy0, iy1 = (oy1, iy1) if oy0 <= iy0 else (iy0, oy0)
+            elif (oy0, oy1) == (iy0, iy1):
+                ix0, ix1 = (ox1, ix1) if ox0 <= ix0 else (ix0, ox0)
+        if ix1 <= ix0 or iy1 <= iy0:
+            return False
+    return (iy1 - iy0) >= IMG_COLLIDE_H * lh and (ix1 - ix0) >= IMG_COLLIDE_W * lh
+
+
+def _letters_out(arr, r, own, lh: float) -> bool:
+    """Часть печати `r` за пределами своей рамки `own` ложится на БУКВЫ
+    оригинала — строку, которой детектор не нашёл (разворот 65: перевод
+    сполз на ненайденные строки). Проверка — та же `has_letters`, что
+    сторожит «свободные строки» (`_free_rows`)."""
+    tp = _tp()
+    if tp is None or arr is None or own is None:
+        return False
+    h, w = arr.shape[:2]
+    # Только выше и ниже своей рамки — как у «свободных строк»: печать растёт
+    # строками вниз; боковые полосы на текстуре фото дают ложные «буквы».
+    strips = [(r[0], r[1], r[2], min(r[3], own[1])),        # выше своей рамки
+              (r[0], max(r[1], own[3]), r[2], r[3])]        # ниже
+    for x0, y0, x1, y1 in strips:
+        if y1 - y0 < IMG_COLLIDE_H * lh or x1 - x0 < IMG_COLLIDE_W * lh:
+            continue
+        reg = arr[max(0, int(y0)):min(h, int(math.ceil(y1))), max(0, int(x0)):min(w, int(math.ceil(x1)))]
+        if reg.size == 0:
+            continue
+        try:
+            if tp.has_letters(_np.ascontiguousarray(_visible(reg)[..., :3].astype(_np.uint8)), 0.8 * lh):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _collide_guard(paint: list, plan: list, items: list, pms: list, report: list, boxes_all: list,
+                   others_of, draw, size, k: int, arr=None) -> tuple:
+    """Ю3: печать, легшая на чужую надпись или на печать соседа. Части одного
+    блока (Ш19) и рамка своего же блока — не чужие. В режиме fix блок сперва
+    раскладывается «теснее» (без роста в строки ниже и без общего кегля
+    страницы); не помогло — остаётся оригиналом нетронутым (`collide`)."""
+    def sib(i, j):
+        a, b = items[i].get("blkItem"), items[j].get("blkItem")
+        return a is not None and a is b
+
+    def lh_of(i):
+        it = items[i]
+        bx = it.get("box") or [0, 0, 0, 0]
+        return float(it.get("lineH") or 0) or (bx[3] - bx[1]) / max(1, int(it.get("rows") or 1))
+
+    def inside(own, o, tol):
+        return (own[0] >= o[0] - tol and own[1] >= o[1] - tol and own[2] <= o[2] + tol
+                and own[3] <= o[3] + tol)
+
+    sib_boxes = {i: {tuple(list(items[j].get("box") or [])[:4]) for j in range(len(items)) if sib(i, j)}
+                 for i in range(len(items)) if items[i].get("blkItem") is not None}
+    rects: dict = {}
+    for p in paint:
+        r = _printed_rect(size, p)
+        if r:
+            rects[p["i"]] = tuple(v / k for v in r)
+    for p in plan:
+        rects[p["i"]] = tuple(v / k for v in p["sbox"])
+
+    def hit(i, r):
+        own = list(items[i].get("box") or [0, 0, 0, 0])[:4]
+        lh = lh_of(i)
+        for o in boxes_all:
+            o4 = o[:4]
+            if o4 == own or inside(own, o4, 0.5 * lh):
+                continue                    # свой блок (часть лежит внутри него)
+            if tuple(o4) in sib_boxes.get(i, ()):
+                continue
+            if _hits(r, o4, own, lh):
+                return True
+        for j, r2 in rects.items():
+            if j != i and not sib(i, j) and _hits(r, r2, own, lh):
+                return True
+        # Своя рамка — с полем стирания: буквы в нём стёрты своим же стиранием.
+        # У части блока (Ш19) своё — весь блок: соседние части стираются сами.
+        blk = items[i].get("blkItem")
+        ob = list((blk or {}).get("box") or own)[:4]
+        pad = 0.2 * lh
+        return _letters_out(arr, r, (ob[0] - pad, ob[1] - pad, ob[2] + pad, ob[3] + pad), lh)
+
+    bad = [i for i, r in rects.items() if hit(i, r)]
+    for i in bad:
+        if report[i] is not None:
+            report[i]["collide"] = 1
+    if IMG_COLLIDE != "fix" or not bad:
+        return paint, plan
+    by_i = {p["i"]: p for p in paint}
+    for i in bad:
+        p = by_i.get(i)
+        pm = pms[i]
+        if p is not None and pm is not None:
+            try:
+                pp = _paint_layout(pm, draw, extra=0)
+            except Exception:
+                pp = None
+            if pp is not None:
+                pp["i"] = i
+                pp["patch"] = p.get("patch")
+                r = _printed_rect(size, pp)
+                if r:
+                    r = tuple(v / k for v in r)
+                    rects[i] = r
+                    if not hit(i, r):
+                        by_i[i] = pp
+                        report[i] = dict(report[i], size=round(float(pp["size"]) / k, 1),
+                                         rows=len(pp["lines"]), collide=1, tight=1)
+                        report[i].pop("even", None)
+                        continue
+        report[i] = {"i": i, "ok": False, "why": "collide", "keep": 1}
+        rects.pop(i, None)
+        by_i.pop(i, None)
+    gone = {i for i in bad if report[i] is not None and report[i].get("why") == "collide"}
+    # Блок, разделённый на части (Ш19), остаётся оригиналом ЦЕЛИКОМ: часть по-
+    # русски и часть по-английски в одном абзаце — хуже любого из двух.
+    for i in list(gone):
+        for j in range(len(items)):
+            if j not in gone and sib(i, j) and report[j] is not None and report[j].get("ok"):
+                report[j] = {"i": j, "ok": False, "why": "collide", "keep": 1}
+                by_i.pop(j, None)
+                gone.add(j)
+    keep_paint = [by_i[p["i"]] for p in paint if p["i"] in by_i]
+    keep_plan = [p for p in plan if p["i"] not in gone]
+    return keep_paint, keep_plan
+
+
+def render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = None,
+                  guard: Optional[list] = None) -> tuple:
     """Стереть исходные надписи и написать перевод — см. `_render_target`.
+    `guard` — рамки надписей, на которые печатать нельзя (Ю3); нет — `obstacles`.
     Стирание нейросетью (Ф9) идёт под потолком времени на всю картинку:
     блоков бывают десятки, а воркер один."""
     tp = _tp()
     if tp is None or not hasattr(tp, "lama_budget"):
-        return _render_target(img_bytes, items, obstacles)
+        return _render_target(img_bytes, items, obstacles, guard)
     with tp.lama_budget():
-        return _render_target(img_bytes, items, obstacles)
+        return _render_target(img_bytes, items, obstacles, guard)
 
 
-def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = None) -> tuple:
+def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = None,
+                   guard: Optional[list] = None) -> tuple:
     """Стереть исходные надписи и написать перевод. (новые байты | None, отчёт).
 
     Отчёт по каждому блоку обязателен: перерисовать удаётся не всё, а молча
@@ -4007,6 +4182,14 @@ def _render_target(img_bytes: bytes, items: list, obstacles: Optional[list] = No
                      "fill": fill, "ink": ink, "bg": bgimg,
                      "align": _start_align(it.get("align"), it.get("text"))})
         report[i] = {"i": i, "ok": True, "size": round(size / k, 1), "rows": len(rows)}
+    if IMG_COLLIDE in ("measure", "fix") and (paint or plan):
+        g_boxes = [list(o) for o in (guard if guard is not None else (obstacles or [])) if o and len(o) >= 4]
+        g_boxes += [list(x["box"]) for x in items if x.get("box")]
+        try:
+            paint, plan = _collide_guard(paint, plan, items, pms, report, g_boxes, others_of,
+                                         draw, big.size, k, arr)
+        except Exception as e:          # сторож не роняет выгрузку картинки
+            print("[image_text] сторож наложений: %s" % e, file=sys.stderr)
     report = [r for r in report if r is not None]
     if not plan and not paint:
         return None, report

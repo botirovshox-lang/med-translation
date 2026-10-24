@@ -1,0 +1,67 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "Понедельник, 8:15.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "Вот теперь\nты их нашёл.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Ты не видела\nмои ключи?",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "Какой ещё\nкактус?..",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "На полке, рядом\nс кактусом.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "И кактус\nтоже…",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "ГРОХ!",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "Конец выпуска.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "© Студия «Ёжик», 2026",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  }
+ ]
+}

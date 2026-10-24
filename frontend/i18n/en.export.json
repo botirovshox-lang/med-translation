@@ -456,5 +456,7 @@
   "Поправили текст, чтобы влезло: ": "Text adjusted to fit: ",
   "перевели": "translated",
   "сократили, чтобы влезло": "shortened to fit",
-  "перевели по строкам оригинала": "translated line by line as in the original"
+  "перевели по строкам оригинала": "translated line by line as in the original",
+  "Файл выдан до конца проверки": "File delivered before the check finished",
+  "Проверка продолжается. Скачайте файл ещё раз через несколько минут — он будет проверен.": "The check is still running. Download the file again in a few minutes — it will be checked."
 }

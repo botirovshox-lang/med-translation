@@ -335,7 +335,8 @@ def printed_items(layout: dict, texts: dict, extra: "list | None",
             by_page.setdefault(int(b.get("page", 0)), []).append(b)
         for pg, bs in by_page.items():
             items.append({"key": "x%d" % k, "page": pg, "boxes": bs, "text": it.get("text") or "",
-                          "known": True, "src": " ".join(b.get("src") or "" for b in bs)})
+                          "known": True, "src": " ".join(b.get("src") or "" for b in bs),
+                          "keep": bool(it.get("keep"))})
     return items
 
 
@@ -346,7 +347,7 @@ def duplicates(items: list, sizes: dict) -> list:
     out = []
     by_page: dict = {}
     for it in items:
-        if (it["text"] or "").strip():
+        if (it["text"] or "").strip() and not it.get("keep"):
             by_page.setdefault(it["page"], []).append(it)
     for pg, its in by_page.items():
         pw, ph = sizes.get(pg, (612.0, 792.0))
@@ -566,6 +567,11 @@ def _inspect_page(A, B, O, oi, i: int, pw: float, ph: float, items: list, lang, 
             lh = float(bx.get("size") or 0) * (H if bx.get("frac") else sc) or (r[3] - r[1])
             lh = max(2.0, min(lh, r[3] - r[1] + 2.0))
             pad = int(0.4 * lh)
+            if it.get("keep"):
+                # Ю1: место оставлено оригиналом НАМЕРЕННО (перевод равен
+                # оригиналу) — его строки объяснены, печати тут не ждём.
+                own[max(0, r[1] - pad):r[3] + pad, max(0, r[0] - pad):r[2] + pad] = True
+                continue
             tgt = own if (it["text"] or "").strip() else lost
             tgt[max(0, r[1] - pad):r[3] + pad, max(0, r[0] - pad):r[2] + pad] = True
             rects.append(r)

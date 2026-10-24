@@ -1177,7 +1177,11 @@ function TabExport({ store, toast }) {
       /* Проверка перед выдачей: что посмотрели и что исправили сами. */
       /* Молчим, когда всё чисто: тост на каждую выгрузку — шум. */
       const pp = st.prepress;
-      if (pp && (pp.state === "failed" || pp.state === "unchecked")) {
+      if (pp && pp.state === "late") {
+        /* Д2: проверка не уложилась в ожидание — файл выдан как есть, она идёт дальше. */
+        toast.warning(TR("Файл выдан до конца проверки"),
+          TR("Проверка продолжается. Скачайте файл ещё раз через несколько минут — он будет проверен."));
+      } else if (pp && (pp.state === "failed" || pp.state === "unchecked")) {
         toast.warning(TR("Файл не удалось проверить"), TR("Просмотрите его перед отправкой."));
       } else if (pp && pp.pages) {
         const pages = Array.from(new Set((pp.left || []).map(x => x.page).filter(Boolean)));

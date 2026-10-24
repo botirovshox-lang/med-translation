@@ -1,0 +1,144 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "BANK·ONE",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "Личный кабинет",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Главная",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "Баланс\n12 450,00 ₽",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "Заказы",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "История операций",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "Пополнить",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "Платежи",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "Настройки\nВыход",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 9,
+   "text": "Последние операции",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 10,
+   "text": "15.10",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 11,
+   "text": "−1 200,00",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 12,
+   "text": "Оплата заказа № 5521",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 13,
+   "text": "14.10",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 14,
+   "text": "Пополнение картой",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 15,
+   "text": "+5 000,00",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 16,
+   "text": "Возврат за отменённый заказ",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 17,
+   "text": "+340,00",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 18,
+   "text": "12.10",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 19,
+   "text": "Уведомления о платежах приходят на почту и в мобильное приложение.",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  }
+ ]
+}

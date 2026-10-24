@@ -1,0 +1,137 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "МАГАЗИН «ПРОДУКТЫ 24»",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "г. Самарканд, ул. Регистан, 3",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "КАССОВЫЙ ЧЕК № 0457",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "14 500",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "Молоко 3,2 % 1 л",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "6 000",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "Хлеб белый",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "600",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "21",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 9,
+   "text": "Яблоки 1,2 кг",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 10,
+   "text": "38 400",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 11,
+   "text": "Сыр твёрдый 0,3 кг",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 12,
+   "text": "80 500",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 13,
+   "text": "ИТОГО",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 14,
+   "text": "100 000",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 15,
+   "text": "наличными",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 16,
+   "text": "19 500",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 17,
+   "text": "сдача",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 18,
+   "text": "Спасибо за покупку!",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  }
+ ]
+}

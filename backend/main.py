@@ -10220,6 +10220,8 @@ METRICS_WASTE_TEXT = {
     "jobStopped:limit": "прогонов остановлено лимитом",
     "jobStopped:provider_quota": "прогонов остановлено пустым счётом поставщика",
     "jobStopped:fnlimit": "прогонов остановлено правилом функции",
+    "prepressCap": "проверок перед выдачей упёрлось в потолок денег файла",
+    "prepressLate": "файлов выдано до конца проверки (ожидание дольше 3 минут)",
 }
 METRICS_PROVIDER_TEXT = {
     "quota": "кончились деньги у поставщика",
@@ -34199,6 +34201,9 @@ def _blk_align(b: dict) -> str:
     return image_text.block_align(b)
 
 
+IMG_SAME_KEEP = os.environ.get("IMG_SAME_KEEP", "1") != "0"      # Ю1: перевод = оригинал — не трогать
+
+
 def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
     """Перевод, вписанный обратно в картинки.
 
@@ -34258,6 +34263,13 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                 # её «пока что» значило бы выбросить текст совсем.
                 stats["img_untranslated"] += 1
                 continue
+            if IMG_SAME_KEEP and not ov_.get("text") and _same_as_source(target, seg.get("source") or ""):
+                # Ю1: перевод буква в букву равен оригиналу (e-mail, телефон,
+                # латинское название) — надпись остаётся как на снимке. Стёртая
+                # и перепечатанная, она ложилась мимо своего места на соседние
+                # строки (визитка 66: e-mail поверх телефона).
+                stats["img_same"] = stats.get("img_same", 0) + 1
+                continue
             n_items0 = len(items)
             items.extend(image_text.split_parts({"box": b["box"], "text": target, "align": _blk_align(b),
                           "breaks": b.get("breaks"),
@@ -34299,7 +34311,11 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
             stats["img_stale"] += len(items)
             continue
         stats["img_parts"] += 1
-        new_bytes, report = image_text.render_target(part.blob, items, obstacles=obstacles)
+        # Ю3: печатать нельзя только на надписи документа; печать, подпись
+        # и шум (`skip`) — не преграда: оригинал под ними лежал и сам.
+        guard = [list(b["box"]) for b in (im.get("blocks") or [])
+                 if b.get("box") and (b.get("text") or "").strip() and not b.get("skip")]
+        new_bytes, report = image_text.render_target(part.blob, items, obstacles=obstacles, guard=guard)
         captions = []
         for r in report:
             if r.get("ok"):
@@ -34312,6 +34328,11 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                     stats["img_hand_fallback"] = stats.get("img_hand_fallback", 0) + 1
                 continue
             why = r.get("why") or ""
+            if r.get("keep"):
+                # Ю3: печать легла бы на чужую надпись — оригинал нетронутым,
+                # без подписи под фото (порядок предпочтений клиента).
+                stats["img_collide"] = stats.get("img_collide", 0) + 1
+                continue
             if why == "flat":
                 stats["img_flat"] += 1
             elif why == "tiny_font":
@@ -37394,6 +37415,7 @@ def _prepress_gate_images(project: dict) -> Optional[dict]:
     fp = _prepress_fp(inp)
     meta = _prepress_cache(pid)
     if meta and meta.get("fp") == fp:
+        _PREPRESS_WAIT0.pop((pid, fp), None)
         if meta.get("state") in ("checked", "partial"):
             return {"ov": meta.get("ov") or {}, "public": _prepress_public(meta)}
         if meta.get("state") in ("unchecked", "failed"):
@@ -37402,6 +37424,9 @@ def _prepress_gate_images(project: dict) -> Optional[dict]:
     seen = _PREPRESS_KICKS.setdefault(k_, set())
     if len(seen) >= 3:
         return None
+    if _prepress_late(k_):
+        _prepress_kick(pid, "export", urgent=True)      # проверка догоняет (одна задача на проект)
+        return {"ov": None, "public": _prepress_public(None, "late")}
     job = _prepress_kick(pid, "export", urgent=True)
     if job is None:
         return None
@@ -37422,6 +37447,7 @@ def _prepress_gate(project: dict, inp: dict) -> Optional[dict]:
     fp = _prepress_fp(inp)
     meta = _prepress_cache(pid)
     if meta and meta.get("fp") == fp:
+        _PREPRESS_WAIT0.pop((pid, fp), None)
         if meta.get("state") in ("checked", "partial") and meta["pdfPath"].exists():
             return {"pdf": meta["pdfPath"].read_bytes(), "stats": meta.get("stats") or {},
                     "public": _prepress_public(meta)}
@@ -37434,6 +37460,9 @@ def _prepress_gate(project: dict, inp: dict) -> Optional[dict]:
         print("[backend] предпечатная проверка #%s не дала итога трижды — сборка без неё" % pid,
               file=sys.stderr)
         return None
+    if _prepress_late(k_):
+        _prepress_kick(pid, "export", urgent=True)      # проверка догоняет (одна задача на проект)
+        return {"public": _prepress_public(None, "late")}
     job = _prepress_kick(pid, "export", urgent=True)
     if job is None:
         return None
@@ -37957,6 +37986,28 @@ PREPRESS_TENANTS = os.environ.get("PREPRESS_TENANTS", "*")
 PREPRESS_MODEL = os.environ.get("PREPRESS_MODEL", "claude-opus-5-5")
 PREPRESS_FALLBACK = os.environ.get("PREPRESS_FALLBACK", "gpt-5.6-sol")
 PREPRESS_MAX_USD = float(os.environ.get("PREPRESS_MAX_USD", "10"))
+# Д1: потолок проверки файла — доля выручки за него (страницы × цена страницы
+# продажи), но не выше PREPRESS_MAX_USD и не ниже PREPRESS_MIN_USD: проверка
+# книги в 20 страниц за $10 при выручке $2 — убыток впятеро (критик 24.10.2026).
+PREPRESS_REV_SHARE = float(os.environ.get("PREPRESS_REV_SHARE", "0.3"))
+PREPRESS_MIN_USD = float(os.environ.get("PREPRESS_MIN_USD", "0.1"))
+
+
+def _prepress_cap(project: dict) -> float:
+    """Потолок денег предпечатной проверки файла, $."""
+    try:
+        pages = float(project.get("pages") or 0)
+        if pages <= 0 or PREPRESS_REV_SHARE <= 0:
+            return PREPRESS_MAX_USD
+        pp_, _pm = _pay_prices(_pay_cfg(), _tenant_of(project))
+        cap = PREPRESS_REV_SHARE * pages * float(pp_)
+        return round(max(PREPRESS_MIN_USD, min(PREPRESS_MAX_USD, cap)), 4)
+    except Exception:
+        return PREPRESS_MAX_USD
+
+
+def _pp_cap(c: dict) -> float:
+    return float((c or {}).get("cap") or PREPRESS_MAX_USD)
 PREPRESS_PARALLEL = int(os.environ.get("PREPRESS_PARALLEL", "3"))
 
 
@@ -38215,8 +38266,10 @@ def _prepress_pages(job: dict, project: dict, inp: dict, res: tuple, texts: dict
             mem.save()
             _job_yield(job, [])
             raise _PrepressPause("yield")
-        if spent[0] >= PREPRESS_MAX_USD:
+        if spent[0] >= _pp_cap(c):
             c["unchecked"] = int(c.get("unchecked") or 0) + len(todo) - k
+            if not c.get("capped"):
+                _ev("waste.prepressCap")         # Д1: проверка упёрлась в потолок денег файла
             c["capped"] = True
             break
         batch = todo[k:k + max(1, PREPRESS_PARALLEL)]
@@ -38241,6 +38294,29 @@ def _prepress_pages(job: dict, project: dict, inp: dict, res: tuple, texts: dict
 
 
 _PREPRESS_KICKS: dict = {}       # (проект, отпечаток) → сколько раз выгрузка ставила проверку
+# Д2: сколько человек ждёт «Готовим файл». Дольше — выгрузка идёт как есть
+# с пометкой «late», проверка доделывается в фоне, и следующая выгрузка с тем
+# же входом берёт проверенный файл (клиент с дедлайном не ждёт наш потолок).
+PREPRESS_WAIT_S = float(os.environ.get("PREPRESS_WAIT_S", "180"))
+_PREPRESS_WAIT0: dict = {}        # (проект, отпечаток) → когда выгрузка впервые встала ждать
+
+
+def _prepress_late(k_) -> bool:
+    now = time.time()
+    rec = _PREPRESS_WAIT0.get(k_)
+    if rec is None or now - rec[0] > 6 * max(PREPRESS_WAIT_S, 60):
+        # Отметка ожидания — про ЭТО нажатие «Скачать»: оставшаяся со вчера
+        # (задача упала без итога) отдала бы «late» сразу, без ожидания.
+        rec = _PREPRESS_WAIT0[k_] = [now, False]
+    if len(_PREPRESS_WAIT0) > 2000:
+        for kk in sorted(_PREPRESS_WAIT0, key=lambda x: _PREPRESS_WAIT0[x][0])[:1000]:
+            _PREPRESS_WAIT0.pop(kk, None)
+    if PREPRESS_WAIT_S > 0 and now - rec[0] > PREPRESS_WAIT_S:
+        if not rec[1]:
+            rec[1] = True
+            _ev("waste.prepressLate")
+        return True
+    return False
 
 
 def _job_prepress(job: dict) -> None:
@@ -38292,6 +38368,7 @@ def _job_prepress_body(job: dict) -> None:
         return
     fp = _prepress_fp(inp)
     job["ppFp"] = fp
+    c["cap"] = _prepress_cap(project)           # Д1: потолок денег файла (виден суперу в задаче)
     old = _prepress_cache(pid)
     if old and old.get("fp") == fp and old.get("state") in ("checked", "partial") and old["pdfPath"].exists():
         c["skipped"] = "fresh"          # проверено другой задачей с тем же входом
@@ -38875,7 +38952,9 @@ def _prepress_ab(project: dict, inp: dict, res_a: tuple, res_b: tuple, texts_a: 
     rd = _PR(io.BytesIO(pdf_b))
     out: dict = {}
     for pg in range(len(rd.pages)):
-        if spent[0] >= PREPRESS_MAX_USD:
+        if spent[0] >= _pp_cap(c):
+            if not c.get("capped"):
+                _ev("waste.prepressCap")         # Д1: проверка упёрлась в потолок денег файла
             c["capped"] = True
             break
         if prepress_mod.page_raster(pdf_a, pg) == prepress_mod.page_raster(pdf_b, pg):
@@ -38904,7 +38983,9 @@ def _prepress_ab(project: dict, inp: dict, res_a: tuple, res_b: tuple, texts_a: 
             overview = None
         system = prepress_mod.ab_prompt(project.get("src"), project.get("tgt"))
         for ch in range(0, len(shown), prepress_mod.AB_MAX):
-            if spent[0] >= PREPRESS_MAX_USD:
+            if spent[0] >= _pp_cap(c):
+                if not c.get("capped"):
+                    _ev("waste.prepressCap")         # Д1: проверка упёрлась в потолок денег файла
                 c["capped"] = True
                 # Не показанное модели «хуже» по умолчанию: вслепую не берём.
                 for _j, p, _sw in shown[ch:]:
@@ -39388,8 +39469,11 @@ def _image_qa_inputs(project: dict, page_w) -> "dict | None":
             text = ((seg or {}).get("target") or "").strip()
             if not text:
                 continue
+            # Ю1: оставлено как на снимке намеренно — место объяснено, печати не ждём.
+            keep_ = IMG_SAME_KEEP and _same_as_source(text, (seg or {}).get("source") or "")
             x0, y0, x1, y1 = (float(v) for v in b["box"][:4])
             extra.append({"text": text, "sid": (seg or {}).get("id"), "blk": "%s|%d" % (im.get("part"), i),
+                          **({"keep": 1} if keep_ else {}),
                           "boxes": [{
                 "page": k, "frac": 1, "image": 1,
                 "src": ((seg or {}).get("source") or "").strip(),

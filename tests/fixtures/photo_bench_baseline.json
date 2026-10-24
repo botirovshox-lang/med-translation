@@ -1,0 +1,258 @@
+{
+ "19_ui": {
+  "counts": {
+   "SMALL": 1,
+   "UNTRANSLATED": 3
+  },
+  "noTr": 0,
+  "segments": 14,
+  "stats": {
+   "img_repainted": 15
+  },
+  "unread": 0,
+  "weight": 11
+ },
+ "20_poster": {
+  "counts": {
+   "UNTRANSLATED": 3
+  },
+  "noTr": 1,
+  "segments": 3,
+  "stats": {
+   "img_repainted": 2,
+   "img_untranslated": 1
+  },
+  "unread": 0,
+  "weight": 9
+ },
+ "21_burnt_letter": {
+  "counts": {},
+  "noTr": 0,
+  "segments": 3,
+  "stats": {
+   "img_repainted": 3
+  },
+  "unread": 0,
+  "weight": 0
+ },
+ "22_hand_note": {
+  "counts": {
+   "UNTRANSLATED": 2
+  },
+  "noTr": 1,
+  "segments": 5,
+  "stats": {
+   "img_repainted": 4,
+   "img_untranslated": 1
+  },
+  "unread": 0,
+  "weight": 6
+ },
+ "23_prescription": {
+  "counts": {
+   "SMALL": 1,
+   "UNTRANSLATED": 6
+  },
+  "noTr": 2,
+  "segments": 6,
+  "stats": {
+   "img_repainted": 4,
+   "img_untranslated": 2
+  },
+  "unread": 0,
+  "weight": 20
+ },
+ "25_photocopy": {
+  "counts": {
+   "RULE_CUT": 1,
+   "SMALL": 3
+  },
+  "noTr": 0,
+  "segments": 13,
+  "stats": {
+   "img_repainted": 13
+  },
+  "unread": 0,
+  "weight": 8
+ },
+ "26_receipt": {
+  "counts": {
+   "BLANK": 1,
+   "SMALL": 1,
+   "UNTRANSLATED": 4
+  },
+  "noTr": 0,
+  "segments": 11,
+  "stats": {
+   "img_repainted": 11
+  },
+  "unread": 0,
+  "weight": 16
+ },
+ "27_old_newspaper": {
+  "counts": {},
+  "noTr": 0,
+  "segments": 4,
+  "stats": {
+   "img_repainted": 4
+  },
+  "unread": 0,
+  "weight": 0
+ },
+ "28_sign_photo": {
+  "counts": {},
+  "noTr": 0,
+  "segments": 1,
+  "stats": {
+   "img_repainted": 4
+  },
+  "unread": 0,
+  "weight": 0
+ },
+ "29_fax": {
+  "counts": {},
+  "noTr": 0,
+  "segments": 1,
+  "stats": {
+   "img_repainted": 1
+  },
+  "unread": 0,
+  "weight": 0
+ },
+ "30_water": {
+  "counts": {
+   "UNTRANSLATED": 1
+  },
+  "noTr": 0,
+  "segments": 3,
+  "stats": {
+   "img_repainted": 3
+  },
+  "unread": 0,
+  "weight": 3
+ },
+ "61_comic": {
+  "counts": {
+   "RULE_CUT": 3
+  },
+  "noTr": 0,
+  "segments": 9,
+  "stats": {
+   "img_repainted": 10
+  },
+  "unread": 0,
+  "weight": 6
+ },
+ "62_chart_png": {
+  "counts": {
+   "UNTRANSLATED": 11
+  },
+  "noTr": 2,
+  "segments": 11,
+  "stats": {
+   "img_repainted": 9,
+   "img_untranslated": 2
+  },
+  "unread": 0,
+  "weight": 33
+ },
+ "63_whiteboard": {
+  "counts": {
+   "MARK_LOST": 1
+  },
+  "noTr": 0,
+  "segments": 9,
+  "stats": {
+   "img_repainted": 9
+  },
+  "unread": 0,
+  "weight": 2
+ },
+ "64_chat_screenshot": {
+  "counts": {
+   "UNTRANSLATED": 10
+  },
+  "noTr": 1,
+  "segments": 13,
+  "stats": {
+   "img_repainted": 12,
+   "img_untranslated": 1
+  },
+  "unread": 0,
+  "weight": 30
+ },
+ "65_book_curl": {
+  "counts": {
+   "BLANK": 2,
+   "RULE_CUT": 3
+  },
+  "noTr": 0,
+  "segments": 9,
+  "stats": {
+   "img_repainted": 9
+  },
+  "unread": 0,
+  "weight": 10
+ },
+ "66_business_card": {
+  "counts": {
+   "DUPLICATE": 6,
+   "SMALL": 4
+  },
+  "noTr": 0,
+  "segments": 13,
+  "stats": {
+   "img_repainted": 13
+  },
+  "unread": 0,
+  "weight": 26
+ },
+ "67_shadow_doc": {
+  "counts": {
+   "BLANK": 4,
+   "UNTRANSLATED": 7
+  },
+  "noTr": 1,
+  "segments": 13,
+  "stats": {
+   "img_repainted": 14,
+   "img_untranslated": 1
+  },
+  "unread": 0,
+  "weight": 29
+ },
+ "68_street_bilingual": {
+  "counts": {},
+  "noTr": 0,
+  "segments": 2,
+  "stats": {
+   "img_repainted": 2
+  },
+  "unread": 0,
+  "weight": 0
+ },
+ "69_stamp_overlap": {
+  "counts": {
+   "SMALL": 1,
+   "UNTRANSLATED": 4
+  },
+  "noTr": 1,
+  "segments": 10,
+  "stats": {
+   "img_repainted": 9,
+   "img_untranslated": 1
+  },
+  "unread": 0,
+  "weight": 14
+ },
+ "70_wine_label": {
+  "counts": {},
+  "noTr": 0,
+  "segments": 3,
+  "stats": {
+   "img_repainted": 5
+  },
+  "unread": 0,
+  "weight": 0
+ }
+}

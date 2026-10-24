@@ -456,5 +456,7 @@
   "Поправили текст, чтобы влезло: ": "Sig‘ishi uchun matnni tuzatdik: ",
   "перевели": "tarjima qildik",
   "сократили, чтобы влезло": "sig‘ishi uchun qisqartirdik",
-  "перевели по строкам оригинала": "asl satrlari bo‘yicha tarjima qildik"
+  "перевели по строкам оригинала": "asl satrlari bo‘yicha tarjima qildik",
+  "Файл выдан до конца проверки": "Fayl tekshiruv tugashidan oldin berildi",
+  "Проверка продолжается. Скачайте файл ещё раз через несколько минут — он будет проверен.": "Tekshiruv davom etmoqda. Bir necha daqiqadan keyin faylni qayta yuklab oling — u tekshirilgan bo‘ladi."
 }

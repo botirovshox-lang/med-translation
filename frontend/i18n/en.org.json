@@ -872,5 +872,7 @@
   "языков: ": "languages: ",
   "не все языки — кончился потолок денег": "not all languages — the spending cap was reached",
   "Остальные языки: ": "Other languages: ",
-  "Каждый язык каталога проверяется на трудных фразах (доза, отрицание, сторона, узкий термин) двумя слепыми судьями. Берётся самая дешёвая модель, которая ошибается не чаще лучшей. Замер повторяется сам, когда меняется набор моделей.": "Every catalog language is tested on hard phrases (dose, negation, side, narrow term) by two blind judges. The cheapest model that makes no more errors than the best one is chosen. The benchmark repeats by itself when the set of models changes."
+  "Каждый язык каталога проверяется на трудных фразах (доза, отрицание, сторона, узкий термин) двумя слепыми судьями. Берётся самая дешёвая модель, которая ошибается не чаще лучшей. Замер повторяется сам, когда меняется набор моделей.": "Every catalog language is tested on hard phrases (dose, negation, side, narrow term) by two blind judges. The cheapest model that makes no more errors than the best one is chosen. The benchmark repeats by itself when the set of models changes.",
+  "проверок перед выдачей упёрлось в потолок денег файла": "pre-delivery checks hit the file's money cap",
+  "файлов выдано до конца проверки — ожидание дольше 3 минут": "files delivered before the check finished — waited over 3 minutes"
 }

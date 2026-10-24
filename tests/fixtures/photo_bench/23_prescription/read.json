@@ -1,0 +1,67 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "Городская поликлиника № 12",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "РЕЦЕПТ",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Пациент: Ахмедов Т. р., 54 года",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "Амоксициллин 500 мг",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "по 1 таблетке 3 раза в день 7 дней\nИбупрофен 200 мг при боли",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "Врач: Петрова",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "ДЛЯ РЕЦЕПТОВ",
+   "overlay": true,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "ул. Чехова, 8 · тел. 22-14-05",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "Повторный приём через неделю",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  }
+ ]
+}

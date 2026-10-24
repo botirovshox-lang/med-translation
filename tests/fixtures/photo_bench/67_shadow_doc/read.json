@@ -1,0 +1,151 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "ОБЪЯВЛЕНИЕ",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "для жителей домов № 12, 14 и 16 по ул. Садовой",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Уважаемые жильцы! В связи с плановой заменой труб\nгорячего водоснабжения подача воды будет временно\nпрекращена по следующему графику. Просим заранее\nсделать запас воды и не оставлять открытыми краны. По\nвсем вопросам обращайтесь в диспетчерскую",
+   "overlay": false,
+   "hand": false,
+   "serif": true
+  },
+  {
+   "i": 3,
+   "text": "Дома",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "Время",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "Дата",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "№ 12",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "09:00 – 18:00",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "14 октября",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 9,
+   "text": "№ 14",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 10,
+   "text": "09:00 – 20:00",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 11,
+   "text": "15 октября",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 12,
+   "text": "№ 16",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 13,
+   "text": "10:00 – 17:00",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 14,
+   "text": "16 октября",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 15,
+   "text": "все дома",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 16,
+   "text": "17 октября",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 17,
+   "text": "09:00 – 13:00",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 18,
+   "text": "Во время работ возможны кратковременные отключения\nхолодной воды. Перед подачей горячей воды рекомендуем\nслить воду в течение 3–5 минут. Приносим извинения за\nвременные неудобства.",
+   "overlay": false,
+   "hand": false,
+   "serif": true
+  },
+  {
+   "i": 19,
+   "text": "Диспетчерская: 8 (843) 277-41-09 (круглосуточно)\nООО «УК Уютный квартал»\n10.10.2026",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 20,
+   "text": "управляющей компании.",
+   "overlay": false,
+   "hand": false,
+   "serif": true
+  }
+ ]
+}

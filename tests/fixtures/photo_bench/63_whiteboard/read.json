@@ -1,0 +1,67 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "План запуска – март",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "Тест",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 2,
+   "text": "Прототип\n(2 недели)",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 3,
+   "text": "Исследование\nрынка",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 4,
+   "text": "с пользователями",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 5,
+   "text": "Срок: до 14.03 !!",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 6,
+   "text": "Кто что делает:\n– бюджет: 120 тыс.\n– Катя Лунина: дизайн\n– Олег Пастухов: сервер\n– созвон по вторникам, 10:00",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 7,
+   "text": "риск: мало",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  },
+  {
+   "i": 8,
+   "text": "участников",
+   "overlay": false,
+   "hand": true,
+   "serif": false
+  }
+ ]
+}

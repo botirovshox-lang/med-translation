@@ -1,0 +1,18 @@
+{
+ "blocks": [
+  {
+   "i": 0,
+   "text": "",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  },
+  {
+   "i": 1,
+   "text": "ВНИМАНИЕ!\nПроход по территории\nстроительной площадки\nЗАПРЕЩЁН\nОбход справа по тротуару",
+   "overlay": false,
+   "hand": false,
+   "serif": false
+  }
+ ]
+}

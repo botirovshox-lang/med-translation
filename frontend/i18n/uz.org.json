@@ -872,5 +872,7 @@
   "языков: ": "tillar: ",
   "не все языки — кончился потолок денег": "hamma tillar emas — pul chegarasi tugadi",
   "Остальные языки: ": "Qolgan tillar: ",
-  "Каждый язык каталога проверяется на трудных фразах (доза, отрицание, сторона, узкий термин) двумя слепыми судьями. Берётся самая дешёвая модель, которая ошибается не чаще лучшей. Замер повторяется сам, когда меняется набор моделей.": "Katalogdagi har bir til qiyin iboralarda (doza, inkor, tomon, tor atama) ikki ko‘r hakam tomonidan tekshiriladi. Eng yaxshisidan ko‘proq xato qilmaydigan eng arzon model tanlanadi. Modellar to‘plami o‘zgarganda o‘lchov o‘zi takrorlanadi."
+  "Каждый язык каталога проверяется на трудных фразах (доза, отрицание, сторона, узкий термин) двумя слепыми судьями. Берётся самая дешёвая модель, которая ошибается не чаще лучшей. Замер повторяется сам, когда меняется набор моделей.": "Katalogdagi har bir til qiyin iboralarda (doza, inkor, tomon, tor atama) ikki ko‘r hakam tomonidan tekshiriladi. Eng yaxshisidan ko‘proq xato qilmaydigan eng arzon model tanlanadi. Modellar to‘plami o‘zgarganda o‘lchov o‘zi takrorlanadi.",
+  "проверок перед выдачей упёрлось в потолок денег файла": "berishdan oldingi tekshiruvlar fayl pul chegarasiga yetdi",
+  "файлов выдано до конца проверки — ожидание дольше 3 минут": "fayllar tekshiruv tugashidan oldin berildi — kutish 3 daqiqadan oshdi"
 }

@@ -904,6 +904,7 @@ def _delete_project_record(pid: int) -> None:
         shutil.rmtree(str(EXPORT_DIR / re.sub(r"[^A-Za-z0-9_-]+", "_", _tenant_of(gone))
                           / str(int(pid))), ignore_errors=True)
         _export_reviews_forget(pid, _tenant_of(gone))
+        shutil.rmtree(str(_pp_cases_dir(_tenant_of(gone), pid)), ignore_errors=True)   # вырезки — с проектом
     # Исходник уходит вместе с проектом. Учебник весит 21 МБ, и оставлять его
     # на диске после удаления значит копить мусор, который никто уже не найдёт:
     # имя файла — номер проекта, а проекта больше нет.
@@ -8234,6 +8235,8 @@ def admin_tenant_delete(tid: str, request: Request):
     if rec.get("partner") is not None:
         _partner_leave(rec, "deleted")
     _tenants().remove(rec)
+    import shutil as _sh
+    _sh.rmtree(str(_pp_cases_dir(tid)), ignore_errors=True)
     _invalidate_gloss_index()
     _audit("tenant.delete", tenant_target=tid, users=len(users), members=orphans,
            referrals=ref_orphans)
@@ -38501,6 +38504,12 @@ def _job_prepress_body(job: dict) -> None:
                         c.setdefault("other", []).append(d["what"][:160])
         report.update({"checked": len(v_final),
                        "unchecked": int(c.get("unchecked") or 0), "left": left[:50]})
+        if left:
+            _ev("waste.prepressLeft", _tenant_of(project), len(left))
+            try:
+                c["cases"] = _prepress_cases_write(project, inp, final, v_final)
+            except Exception as e:      # случай — для разбора; проверку и выгрузку он не держит
+                print("[backend] случаи проверки #%s: %s" % (pid, e), file=sys.stderr)
         mem.data["report"] = dict(report, at=datetime.now().strftime("%Y-%m-%d %H:%M"))
         mem.save()
         state = "checked" if not report["unchecked"] else "partial"
@@ -38532,6 +38541,142 @@ def _job_prepress_body(job: dict) -> None:
     finally:
         _JOB_TENANT.id, _JOB_PROJECT.id = prev_t, prev_p
     _prepress_tell(project, c)
+
+
+# ─── Случаи: места, которые проверка не решила (ТЗ, этап 4) ───────────
+# Каждое место, оставшееся после кругов правок с видимым браком, — файл
+# случая и вырезка «оригинал | итог» рядом с исходниками. Их разбирает
+# агент в начале сессии (docs/rules/export-review.md): правило в код + тест
+# → бенч и эталоны не хуже → выкат. Вырезки — данные клиента: срок
+# PREPRESS_CASES_DAYS (политика, п. 6.2.3), удаление с проектом, читать —
+# только суперпользователю. В случае нет ни текста перевода, ни модели,
+# ни денег: код дефекта, признаки места, версия кода.
+PREPRESS_CASES = os.environ.get("PREPRESS_CASES", "1") != "0"
+PREPRESS_CASES_MAX = int(os.environ.get("PREPRESS_CASES_MAX", "5"))            # на файл за проверку
+PREPRESS_CASES_TENANT_MAX = int(os.environ.get("PREPRESS_CASES_TENANT_MAX", "20"))   # неразобранных
+PREPRESS_CASES_DAYS = float(os.environ.get("PREPRESS_CASES_DAYS", "30"))
+_CASE_SLUG = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_PP_SWEEP_AT = [0.0]
+
+
+def _pp_slug(tid: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "_", str(tid or "default"))
+
+
+def _pp_cases_dir(tid: Optional[str] = None, pid: Optional[int] = None) -> Path:
+    d = SOURCE_DIR / "prepress_cases"
+    if tid is not None:
+        d = d / _pp_slug(tid)
+        if pid is not None:
+            d = d / str(int(pid))
+    return d
+
+
+def _pp_cases_open(tid: str) -> int:
+    n = 0
+    for f in _pp_cases_dir(tid).glob("*/*.json"):
+        try:
+            if json.loads(f.read_text(encoding="utf-8")).get("status", "open") == "open":
+                n += 1
+        except Exception:
+            continue
+    return n
+
+
+def _prepress_cases_write(project: dict, inp: dict, final: tuple, v_final: dict) -> int:
+    """Записать случаи по местам с видимым браком. Сбой не трогает проверку."""
+    if not PREPRESS_CASES or prepress_mod is None:
+        return 0
+    if time.time() - _PP_SWEEP_AT[0] > 3600:
+        _PP_SWEEP_AT[0] = time.time()
+        _prepress_cases_sweep()         # срок соблюдается и без загрузок (их ждёт `_media_sweep_maybe`)
+    tid = _tenant_of(project)
+    trec = _tenant_rec(tid)
+    if (trec is None and tid != DEFAULT_TENANT) or (trec or {}).get("guest"):
+        return 0                        # гость (или неизвестная организация) — согласия на хранение нет
+    room = min(PREPRESS_CASES_MAX, PREPRESS_CASES_TENANT_MAX - _pp_cases_open(tid))
+    if room <= 0:
+        return 0
+    pdf, _st, lay, ext = final
+    items = export_qa_mod.printed_items(lay, inp.get("texts") or {}, ext, inp.get("sources"))
+    feats = _pp_feats(inp, inp.get("texts") or {}, inp.get("extra") or [])
+    from pypdf import PdfReader as _PR
+    rd = _PR(io.BytesIO(pdf))
+    d = _pp_cases_dir(tid, int(project["id"]))
+    d.mkdir(parents=True, exist_ok=True)
+    have = [int(f.stem) for f in d.glob("*.*") if f.stem.isdigit()]     # и .json, и .jpg: номер не повторяется
+    n = max(have) if have else 0
+    made = 0
+    for pg, v in sorted(v_final.items()):
+        if made >= room or pg >= len(rd.pages):
+            break
+        mb = rd.pages[pg].mediabox
+        places = {p_["key"]: p_ for p_ in prepress_mod.page_places(items, pg, float(mb.width), float(mb.height))}
+        for dfc in v.get("defects") or []:
+            if made >= room:
+                break
+            if (float(dfc.get("confidence") or 0) < prepress_mod.MIN_CONF
+                    or dfc.get("code") not in prepress_mod.USER_CODES):
+                continue
+            pl = places.get(dfc.get("key"))
+            if not pl:
+                continue
+            try:
+                shots = prepress_mod.zoom_images(inp["work"], pdf, pg, [{"box": pl["box"], "code": dfc.get("code")}])
+            except Exception:
+                shots = []
+            if not shots:
+                continue
+            n += 1
+            d.mkdir(parents=True, exist_ok=True)      # уборка могла снять пустую папку между записями
+            (d / ("%d.jpg" % n)).write_bytes(shots[0][0])
+            rec = {"n": n, "project": int(project["id"]), "tenant": tid, "page": pg + 1,
+                   "code": dfc.get("code"), "key": dfc.get("key"), "box": [round(x, 4) for x in pl["box"]],
+                   "kind": project.get("importKind") or "", "pair": "%s>%s" % (project.get("src"), project.get("tgt")),
+                   "features": feats.get(dfc.get("key")) or {}, "confidence": dfc.get("confidence"),
+                   "code_version": _prepress_code_version(), "status": "open",
+                   "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+            (d / ("%d.json" % n)).write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+            made += 1
+    if made:
+        _ev("waste.prepressCase", tid, made)
+    return made
+
+
+def _prepress_cases_sweep(now: Optional[float] = None) -> int:
+    """Случаи старше срока — прочь парой «.json + .jpg» (политика, п. 6.2.3).
+    Возраст — по вырезке: её не переписывают, а .json переписывает отметка
+    «разобрано». Зовут API (`_media_sweep_maybe`) и воркер (раз в час при
+    записи), поэтому свежие папки (моложе часа) не снимаются: туда могут
+    писать прямо сейчас."""
+    root = _pp_cases_dir()
+    if not root.exists():
+        return 0
+    now = now or time.time()
+    lim = PREPRESS_CASES_DAYS * 86400
+    gone = 0
+    for dd in list(root.glob("*/*")):
+        stems = {f.stem for f in dd.glob("*.*") if f.stem.isdigit()}
+        for st_ in stems:
+            jpg, js = dd / (st_ + ".jpg"), dd / (st_ + ".json")
+            try:
+                age = now - (jpg if jpg.exists() else js).stat().st_mtime
+            except OSError:
+                continue
+            if age > lim:
+                for f in (jpg, js):
+                    try:
+                        f.unlink()
+                        gone += 1
+                    except OSError:
+                        pass
+    for dd in sorted(root.glob("*/*"), reverse=True) + sorted(root.glob("*"), reverse=True):
+        try:
+            if dd.is_dir() and not any(dd.iterdir()) and now - dd.stat().st_mtime > 3600:
+                dd.rmdir()
+        except OSError:
+            pass
+    return gone
 
 
 PREPRESS_ROUNDS = int(os.environ.get("PREPRESS_ROUNDS", "3"))        # кругов правок после первого взгляда
@@ -40029,6 +40174,66 @@ def export_review_set(rid: int, req: ExportReviewPatch, request: Request):
             save_state(STATE)
             return {"ok": True, "item": r}
     raise HTTPException(404, "Нет такой строки очереди")
+
+
+# ─── Случаи проверки для разбора (ТЗ, этап 4) — только суперпользователю ──
+PREPRESS_CASE_STATUSES = ("open", "done", "wont")
+
+
+def _pp_case_path(tenant: str, project: int, n: int, ext: str) -> Path:
+    if not _CASE_SLUG.match(tenant or ""):
+        raise HTTPException(404, "Нет такого случая")
+    f = _pp_cases_dir(tenant, int(project)) / ("%d.%s" % (int(n), ext))
+    if not f.is_file():
+        raise HTTPException(404, "Нет такого случая")
+    return f
+
+
+@app.get("/api/admin/prepress-cases")
+def prepress_cases(request: Request, status: str = "open", limit: int = 200):
+    """Места, которые проверка перед выдачей не решила. Вырезки — отдельной
+    дверью (в списке их нет), текста перевода в случае нет."""
+    _super_or_403(request)
+    out, by_code = [], {}
+    for f in sorted(_pp_cases_dir().glob("*/*/*.json")):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if status and rec.get("status", "open") != status:
+            continue
+        by_code[rec.get("code") or "?"] = by_code.get(rec.get("code") or "?", 0) + 1
+        if len(out) < max(1, min(1000, int(limit))):
+            out.append(dict(rec, tenantDir=f.parent.parent.name))
+    return {"items": out, "byCode": by_code, "total": sum(by_code.values())}
+
+
+@app.get("/api/admin/prepress-cases/{tenant}/{project}/{n}/image")
+def prepress_case_image(tenant: str, project: int, n: int, request: Request):
+    _super_or_403(request)
+    return Response(_pp_case_path(tenant, project, n, "jpg").read_bytes(), media_type="image/jpeg")
+
+
+class PrepressCasePatch(BaseModel):
+    status: str
+    rule: str = ""
+    note: str = ""
+
+
+@app.post("/api/admin/prepress-cases/{tenant}/{project}/{n}")
+def prepress_case_set(tenant: str, project: int, n: int, req: PrepressCasePatch, request: Request):
+    """Отметка разбора: done (правило — код правила справочника), wont (не наш брак)."""
+    me = _super_or_403(request)
+    if req.status not in PREPRESS_CASE_STATUSES:
+        raise HTTPException(400, "Неизвестное состояние случая")
+    f = _pp_case_path(tenant, project, n, "json")
+    rec = json.loads(f.read_text(encoding="utf-8"))
+    rec.update({"status": req.status, "rule": (req.rule or "")[:40], "note": (req.note or "")[:2000],
+                "by": me.get("id"), "doneAt": datetime.now().strftime("%Y-%m-%d %H:%M")})
+    tmp = f.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rec, ensure_ascii=False), encoding="utf-8")
+    os.replace(str(tmp), str(f))
+    return {"ok": True, "item": rec}
 
 
 # ─── Приёмка выгрузки (Ч5, backend/export_qa.py) ───────────────────────
@@ -44393,6 +44598,10 @@ def _media_sweep_maybe() -> None:
         _media_sweep()
     except Exception as e:
         print("[backend] уборка видео не удалась: %s" % e, file=sys.stderr)
+    try:
+        _prepress_cases_sweep()
+    except Exception as e:
+        print("[backend] уборка случаев проверки не удалась: %s" % e, file=sys.stderr)
 
 
 class MediaUploadInit(BaseModel):

@@ -501,6 +501,58 @@ finally:
     for n_, v_ in _saved.items():
         setattr(main, n_, v_)
 
+print("\n── этап 4 ТЗ: случаи — места, которые проверка не решила ──")
+import io as _io2
+import time as _time2
+from pypdf import PdfWriter as _PW
+_w = _PW()
+_w.add_blank_page(width=600, height=800)
+_b = _io2.BytesIO()
+_w.write(_b)
+_pdf = _b.getvalue()
+_saved2 = {n_: getattr(main.prepress_mod, n_) for n_ in ("zoom_images", "page_places")}
+_saved3 = {n_: getattr(main, n_) for n_ in ("_pp_feats", "PREPRESS_CASES_TENANT_MAX")}
+try:
+    main.prepress_mod.zoom_images = lambda orig, out, page, sus: [(b"\xff\xd8JPEG", sus[0]["code"])]
+    main.prepress_mod.page_places = lambda items, pg, pw, ph: [{"n": 1, "key": "p1", "box": [0.1, 0.2, 0.5, 0.3]},
+                                                               {"n": 2, "key": "p2", "box": [0.1, 0.4, 0.5, 0.5]}]
+    main._pp_feats = lambda inp, texts, extra: {"p1": {"kind": "slot", "lines": 2}}
+    _proj = {"id": 7701, "tenant": "default", "importKind": "pdf", "src": "RU", "tgt": "EN"}
+    _inp = {"texts": {1: "x"}, "extra": [], "sources": {}, "work": _pdf}
+    _vf = {0: {"defects": [{"key": "p1", "code": "OVERLAP", "confidence": 0.9},
+                           {"key": "p2", "code": "SIZE", "confidence": 0.9},      # не видимый брак — мимо
+                           {"key": "p2", "code": "OVERFLOW", "confidence": 0.2}]}}  # неуверенно — мимо
+    _n = main._prepress_cases_write(_proj, _inp, (_pdf, {}, {}, []), _vf)
+    _d = main._pp_cases_dir("default", 7701)
+    _rec = json.loads((_d / "1.json").read_text(encoding="utf-8")) if (_d / "1.json").exists() else {}
+    check("случай записан: только видимый и уверенный брак", _n == 1 and (_d / "1.jpg").exists(), str(_n))
+    check("в случае код, признаки и версия кода — без текста, модели и денег",
+          _rec.get("code") == "OVERLAP" and _rec.get("features") == {"kind": "slot", "lines": 2}
+          and _rec.get("code_version") and not ({"text", "model", "cost", "usd"} & set(_rec)), str(_rec))
+    main.PREPRESS_CASES_TENANT_MAX = 1
+    check("потолок неразобранных на организацию", main._prepress_cases_write(_proj, _inp, (_pdf, {}, {}, []), _vf) == 0)
+    main.PREPRESS_CASES_TENANT_MAX = 20
+    main.STATE.setdefault("tenants", []).append({"id": "guest-pp", "guest": True})
+    check("гость — вырезки не храним (согласия нет)",
+          main._prepress_cases_write(dict(_proj, tenant="guest-pp"), _inp, (_pdf, {}, {}, []), _vf) == 0)
+    main.STATE["tenants"] = [t_ for t_ in main.STATE["tenants"] if t_.get("id") != "guest-pp"]
+    _old = _time2.time() - (main.PREPRESS_CASES_DAYS + 1) * 86400
+    for f_ in _d.iterdir():
+        os.utime(f_, (_old, _old))
+    check("старше срока — убраны парой (политика, п. 6.2.3)",
+          main._prepress_cases_sweep() >= 2 and not list(_d.glob("*.*")))
+    check("неизвестная организация — вырезки не храним",
+          main._prepress_cases_write(dict(_proj, tenant="no-such-org"), _inp, (_pdf, {}, {}, []), _vf) == 0)
+    main._prepress_cases_write(_proj, _inp, (_pdf, {}, {}, []), _vf)
+    main.STATE["projects"].append({"id": 7701, "tenant": "default", "segments": []})
+    main._delete_project_record(7701)
+    check("удаление проекта уносит его случаи", not main._pp_cases_dir("default", 7701).exists())
+finally:
+    for n_, v_ in _saved2.items():
+        setattr(main.prepress_mod, n_, v_)
+    for n_, v_ in _saved3.items():
+        setattr(main, n_, v_)
+
 print()
 if FAILS:
     print("ПРОВАЛЕНО: %d" % len(FAILS))

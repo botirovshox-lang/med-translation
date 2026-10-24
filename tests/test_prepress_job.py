@@ -362,6 +362,41 @@ check("слово потеряно — нельзя", not main._pp_runs_of(["c",
 check("в проекте перевод не тронут", all("Total 12 kg paid" != s_.get("target") for s_ in segs))
 main._llm_client = lambda mdl, timeout=None, step=None, max_retries=None: _Client2()
 
+print("=== сокращение переносится и в проект (машинный текст) ===")
+import copy as _cp
+pw = _cp.deepcopy(project)
+pw["id"] = 9399
+sg = pw["segments"]
+sg[0]["target"], sg[0]["status"] = "Total of 12 kg has been paid in full", "translated"
+sg[1]["target"], sg[1]["status"] = "Payment accepted by the bank today", "confirmed"
+sg[2]["target"] = "Line three as printed"
+rep_w = {"shortened": [
+    {"key": "p0", "from": sg[0]["target"], "to": "Total 12 kg paid", "kind": "short", "segs": [sg[0]["id"]]},
+    {"key": "p1", "from": sg[1]["target"], "to": "Payment accepted", "kind": "short", "segs": [sg[1]["id"]]},
+    {"key": "p2", "from": "Other text printed earlier", "to": "Short", "kind": "short", "segs": [sg[2]["id"]]},
+    {"key": "p3", "from": "a", "to": "a / b", "kind": "split", "segs": []}]}
+cw = {}
+n_w = main._prepress_writeback(pw, rep_w, main._prepress_models(), cw)
+check("машинная строка получила сокращение", sg[0]["target"] == "Total 12 kg paid", sg[0])
+check("прежний текст — в prevTarget, след printFit",
+      sg[0].get("prevTarget") == "Total of 12 kg has been paid in full" and (sg[0].get("printFit") or {}).get("kind") == "short",
+      sg[0])
+check("заверенная человеком строка не тронута", sg[1]["target"] == "Payment accepted by the bank today"
+      and sg[1]["status"] == "confirmed", sg[1])
+check("строку правили после печати — не тронута", sg[2]["target"] == "Line three as printed", sg[2])
+check("перенесено ровно одно, отметка applied", n_w == 1 and rep_w["shortened"][0].get("applied")
+      and not rep_w["shortened"][1].get("applied"), (n_w, rep_w))
+check("отчёт человеку несёт отметку", main._prepress_public({"report": rep_w})["shortened"][0]["applied"] is True)
+t1 = {0: "Total of 12 kg has been paid in full", 1: "x"}
+t2 = {0: "Total 12 kg paid", 1: "x"}
+check("вход после переноса совпал с напечатанным",
+      main._pp_same_print({"texts": t1, "extra": []}, {"texts": t2, "extra": []}, rep_w))
+check("правило печати изменило текст — отпечаток не переносим",
+      not main._pp_same_print({"texts": t1, "extra": []}, {"texts": {0: "Total 12 kg paid.", 1: "x"}, "extra": []}, rep_w))
+main.PREPRESS_WRITEBACK = False
+check("выключатель — только в файле", main._prepress_writeback(pw, rep_w, [], {}) == 0)
+main.PREPRESS_WRITEBACK = True
+
 print("=== выгрузка ждёт проверку ===")
 g = main._prepress_gate(project, inp)
 check("тот же перевод — выгрузка отдаёт проверенный файл", g and g.get("pdf") is not None, g)

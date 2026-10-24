@@ -37158,7 +37158,8 @@ def _prepress_public(meta: Optional[dict], state: Optional[str] = None) -> dict:
             "pages": rep_.get("pages"), "checked": rep_.get("checked"),
             "unchecked": rep_.get("unchecked"), "fixed": rep_.get("fixed"),
             "left": [{"page": x.get("page"), "code": x.get("code")} for x in (rep_.get("left") or [])][:20],
-            "shortened": [{"segs": x.get("segs") or [], "from": x.get("from"), "to": x.get("to")}
+            "shortened": [{"segs": x.get("segs") or [], "from": x.get("from"), "to": x.get("to"),
+                           "kind": x.get("kind"), "applied": bool(x.get("applied"))}
                           for x in (rep_.get("shortened") or [])][:50]}
 
 
@@ -37433,14 +37434,20 @@ def _export_pdf_layout(project: dict, tmp: Path, sheets: str = "pages") -> Optio
 #  * пересборка принимается, только если тяжёлых находок СТРОГО меньше
 #    и не появилось новых видов (размен OVERFLOW на SMALL — не работа);
 #  * у места правки взаимоисключающие: «теснее» после «шире» не назначается;
-#  * только короткие документы (`LAYOUT_LOOP_MAX_PAGES`): книга на единственном
-#    воркере — минуты, там работают правила;
+#  * на кнопке выгрузки — только короткие документы (`LAYOUT_LOOP_MAX_PAGES`):
+#    там человек ждёт ответа. Книга (сотни страниц) проходит петлю в ФОНОВОЙ
+#    предпечатной проверке (`big_ok`): бюджет — секунды на страницу
+#    (`LAYOUT_LOOP_SEC_PER_PAGE`), попыток меньше (`LAYOUT_LOOP_BIG_TRIES`):
+#    сборка книги — полторы минуты единственного воркера, а находки
+#    пикселей у книги редки и местны;
 #  * денег не тратит: вызовов модели в петле нет.
 LAYOUT_LOOP = os.environ.get("LAYOUT_LOOP", "1") != "0"
 PREPRESS_QBASE = 10 ** 12          # билеты задач низкого приоритета (предпечатная проверка)
 LAYOUT_LOOP_TRIES = int(os.environ.get("LAYOUT_LOOP_TRIES", "2"))
 LAYOUT_LOOP_MAX_PAGES = int(os.environ.get("LAYOUT_LOOP_MAX_PAGES", "12"))
 LAYOUT_LOOP_TIME = float(os.environ.get("LAYOUT_LOOP_TIME", "90"))
+LAYOUT_LOOP_BIG_TRIES = int(os.environ.get("LAYOUT_LOOP_BIG_TRIES", "1"))
+LAYOUT_LOOP_SEC_PER_PAGE = float(os.environ.get("LAYOUT_LOOP_SEC_PER_PAGE", "2.5"))
 # Код находки → правка места: сперва первая, не помогла — вторая.
 LOOP_ACTIONS = {"OVERFLOW": ("tight", "solo"), "SMALL": ("wide", "solo"),
                 "SPILL": ("tight", "solo"), "OVERPRINT": ("tight", "solo"),
@@ -37539,6 +37546,91 @@ def _loop_score(rep: dict, st: "dict | None" = None) -> tuple:
     return hi, lo
 
 
+def _pdf_page_sigs(pdf: bytes) -> list:
+    """Отпечаток содержимого каждой страницы собранного PDF (поток страницы
+    со слоем перевода). None — страницу прочитать не удалось (считаем
+    изменившейся)."""
+    from pypdf import PdfReader as _PR
+
+    def res_hash(h, res, depth):
+        # Имя в потоке («/Fm3 Do») то же, а тело формы или картинки другое —
+        # глифы контурами (HarfBuzz) и картинки скана лежат именно так.
+        try:
+            xo = (res or {}).get("/XObject")
+            xo = xo.get_object() if xo is not None else {}
+        except Exception:
+            return
+        for name in sorted(xo or {}):
+            try:
+                ob = xo[name].get_object()
+                h.update(str(name).encode())
+                h.update(ob.get_data())
+                if depth < 2 and ob.get("/Subtype") == "/Form":
+                    res_hash(h, ob.get("/Resources"), depth + 1)
+            except Exception:
+                h.update(b"?")
+        try:
+            fo = (res or {}).get("/Font")
+            fo = fo.get_object() if fo is not None else {}
+            for name in sorted(fo or {}):
+                h.update(("%s=%s" % (name, fo[name].get_object().get("/BaseFont"))).encode())
+        except Exception:
+            pass
+
+    out = []
+    for p in _PR(io.BytesIO(pdf)).pages:
+        try:
+            h = hashlib.sha1()
+            c_ = p.get_contents()
+            h.update(c_.get_data() if c_ is not None else b"")
+            res_hash(h, p.get("/Resources"), 0)
+            out.append(h.hexdigest())
+        except Exception:
+            out.append(None)
+    return out
+
+
+def _qa_delta(look_full, look_pages, cand_pdf: bytes, prev_pdf: bytes, prev_rep: dict) -> dict:
+    """Приёмка пересборки ТОЛЬКО на страницах, которые разошлись с прежней
+    сборкой (книга: сотни страниц, приёмка — полторы секунды на страницу, а
+    правка мест трогает единицы). Страница с тем же потоком печати — та же
+    страница: её находки берутся из прежнего отчёта. Кегль «однотипного
+    текста» (SIZE_MIX) — мера по всему документу; в этом режиме он считается
+    по изменившимся страницам, а у остальных берётся прежний — приближение,
+    названное вслух; финальная приёмка выгрузки смотрит всё. Не прочли
+    страницы, другое число страниц или прежний отчёт неполный — полная приёмка."""
+    try:
+        a, b = _pdf_page_sigs(prev_pdf), _pdf_page_sigs(cand_pdf)
+    except Exception:
+        a = b = None
+    if not a or not b or len(a) != len(b) or not prev_rep or prev_rep.get("partial") \
+            or any(it.get("page") is None for it in prev_rep.get("issues") or []):
+        return look_full()
+    changed = [i for i, (x, y) in enumerate(zip(a, b)) if x is None or x != y]
+    if not changed:
+        import copy as _cp
+        rep = _cp.deepcopy(prev_rep)
+        rep["delta"] = {"pages": 0}
+        return rep
+    if len(changed) * 2 > len(a):
+        return look_full()
+    ch = set(changed)
+    rep = look_pages(changed)
+    keep = [it for it in prev_rep.get("issues") or [] if it.get("page") not in ch]
+    # Часть проверок (повтор перевода, кегль однотипного) идёт по всему
+    # документу даже при выборке страниц: у неизменившихся они уже в `keep`.
+    rep["issues"] = keep + [it for it in rep.get("issues") or []
+                            if it.get("page") in ch or it.get("page") is None]
+    rep["pages"] = prev_rep.get("pages", rep.get("pages"))
+    rep["checked"] = prev_rep.get("checked", rep.get("checked"))
+    rep["partial"] = bool(prev_rep.get("partial") or rep.get("partial"))
+    rep["counts"] = {}
+    for it in rep["issues"]:
+        rep["counts"][it["code"]] = rep["counts"].get(it["code"], 0) + 1
+    rep["delta"] = {"pages": len(changed)}
+    return rep
+
+
 def _hard_codes(rep: dict) -> set:
     """Виды тяжёлых подтверждённых находок — «новый вид» считается по ним."""
     return {it.get("code") for it in rep.get("issues") or []
@@ -37577,11 +37669,12 @@ def _loop_tune(rep: dict, tune: dict, tried: "dict | None" = None) -> dict:
 
 
 def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: list,
-                 sources: dict) -> tuple:
+                 sources: dict, big_ok: bool = False) -> tuple:
     """(pdf, отчёт, раскладка, extra) — сборка, проверенная и при нужде
     переверстанная. Раскладка и `extra` — те копии, по которым собран
     отданный файл (сборка правит рамки на месте: раздвигает по краске,
-    раскрывает доли листа), — их и проверяет приёмка после экспорта."""
+    раскрывает доли листа), — их и проверяет приёмка после экспорта.
+    `big_ok` — зовёт фоновая проверка: петля и у книги, с бюджетом по страницам."""
     import copy
     keep = export_qa_mod is not None
 
@@ -37597,7 +37690,8 @@ def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: l
         n_pages = len(_PR(io.BytesIO(work)).pages)
     except Exception:
         n_pages = 0
-    if not (LAYOUT_LOOP and keep) or not n_pages or n_pages > LAYOUT_LOOP_MAX_PAGES:
+    big = n_pages > LAYOUT_LOOP_MAX_PAGES
+    if not (LAYOUT_LOOP and keep) or not n_pages or (big and not big_ok):
         # Книга — без петли и без копий раскладки: сборка на оригиналах, как
         # прежде (копия на 378 страниц — память и секунды единственного воркера).
         pdf_, st_ = layout_pdf_mod.build(work, layout, texts, extra=extra, lang=project.get("tgt"),
@@ -37608,18 +37702,27 @@ def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: l
     first = one(None)
     pdf, st, lay_, ext_ = first
     tries_max = max(0, LAYOUT_LOOP_TRIES)
+    time_cap = LAYOUT_LOOP_TIME
+    if big:
+        tries_max = min(tries_max, max(0, LAYOUT_LOOP_BIG_TRIES))
+        time_cap = max(LAYOUT_LOOP_TIME, LAYOUT_LOOP_SEC_PER_PAGE * n_pages)
     if st.get("eraseLama"):
         tries_max = min(tries_max, 1)   # стирание сетью — дорогая сборка: одна попытка
     segs = project.get("segments") or []
     lang = export_qa_mod.Lang([x.get("source") or "" for x in segs],
                               [x.get("target") or "" for x in segs])
 
-    def look(res):
+    def look(res, pages=None):
         pdf_, st_, l_, e_ = res
         return export_qa_mod.inspect_pdf(work, pdf_, l_, texts, e_, lang,
                                          overlay=st_.get("_overlay"),
                                          overlay_order=st_.get("_overlayOrder"),
+                                         pages=pages,
                                          time_budget=1e9, detect=None, sources=sources)
+
+    def look_vs(cand, prev, prev_rep):
+        # Пересборка смотрится только там, где страница изменилась.
+        return _qa_delta(lambda: look(cand), lambda pg: look(cand, pg), cand[0], prev[0], prev_rep)
     try:
         rep = look(first)
     except Exception as e:
@@ -37630,13 +37733,23 @@ def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: l
     tries = 0
     hints = _tune_hints(int(project["id"]), texts, extra)
     hinted = False
-    if hints:
+    if big:
+        # Первая сборка и полный взгляд у книги — работа и без петли (по их
+        # итогу смотрит и предпечатная проверка): бюджет — на пересборки.
+        t0 = time.time()
+        if not _hard_codes(rep) and not hints:
+            best[1]["loop"] = {"tries": 0, "before": before, "after": before, "fixed": {},
+                               "used": False, "hints": 0, "hinted": False, "pages": n_pages, "big": True}
+            best[1]["_tune"] = {}
+            best[1]["_pixel"] = rep
+            return best
+    if hints and not (big and time.time() - t0 > time_cap):
         # Ы3: подсказки модели с прошлой выгрузки — отдельной попыткой; берутся,
         # только если пиксельная приёмка не хуже (модель подсказывает, решают пиксели).
         tries += 1
         cand = one(hints)
         try:
-            crep = look(cand)
+            crep = look_vs(cand, first, rep)
             new_codes = _hard_codes(crep) - _hard_codes(rep)
             if _loop_score(crep, cand[1]) < _loop_score(rep, first[1]) and not new_codes:
                 best, best_rep, tune, hinted = cand, crep, hints, True
@@ -37647,13 +37760,13 @@ def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: l
         nxt = _loop_tune(best_rep, tune, tried)
         if nxt == tune:
             break
-        if time.time() - t0 > LAYOUT_LOOP_TIME:
+        if time.time() - t0 > time_cap:
             first[1]["loop"] = {"aborted": True, "before": before}
             return first
         tries += 1
         cand = one(nxt)
         try:
-            crep = look(cand)
+            crep = look_vs(cand, best, best_rep)
         except Exception:
             break
         new_codes = _hard_codes(crep) - _hard_codes(best_rep)
@@ -37665,14 +37778,16 @@ def _layout_loop(project: dict, work: bytes, layout: dict, texts: dict, extra: l
                 for a_ in acts_:
                     if not (tune.get(k_) or {}).get(a_):
                         tried.setdefault(k_, set()).add(a_)
-    if time.time() - t0 > LAYOUT_LOOP_TIME:
+    if not big and time.time() - t0 > time_cap:
+        # Короткий документ: сверх времени — первая сборка (детерминизм). У книги
+        # попытки и так сосчитаны, а принятую пересборку выбрасывать незачем.
         first[1]["loop"] = {"aborted": True, "before": before}
         return first
     after = dict(best_rep.get("counts") or {})
     fixed = {c: n - after.get(c, 0) for c, n in before.items() if n - after.get(c, 0) > 0}
     best[1]["loop"] = {"tries": tries, "before": before, "after": after, "fixed": fixed,
                        "used": best is not first, "hints": len(hints), "hinted": hinted,
-                       "seconds": round(time.time() - t0, 1)}
+                       "seconds": round(time.time() - t0, 1), "pages": n_pages, "big": big}
     best[1]["_tune"] = tune if best is not first else {}       # внутреннее: prepress достраивает
     best[1]["_pixel"] = best_rep                                # внутреннее: находки по пикселям
     return best
@@ -38047,7 +38162,8 @@ def _job_prepress_body(job: dict) -> None:
     if inp.get("images"):
         base = _pp_build_images(project, inp, inp["extra"], {})
     else:
-        base = _layout_loop(project, inp["work"], inp["layout"], inp["texts"], inp["extra"], inp["sources"])
+        base = _layout_loop(project, inp["work"], inp["layout"], inp["texts"], inp["extra"], inp["sources"],
+                            big_ok=True)
     if not models:
         c["skipped"] = "no_model"
         _prepress_cache_write(pid, fp, base[0], "unchecked", {"why": "no_model"}, base[1])
@@ -38099,6 +38215,19 @@ def _job_prepress_body(job: dict) -> None:
         mem.data["report"] = dict(report, at=datetime.now().strftime("%Y-%m-%d %H:%M"))
         mem.save()
         state = "checked" if not report["unchecked"] else "partial"
+        # Сокращение и перевод места ложатся и В ПРОЕКТ (машинный текст):
+        # иначе файл и проект расходятся — следующий экспорт, .docx, поиск
+        # и проверки видели бы прежний текст. После переноса вход выгрузки
+        # тот же, что напечатан, — кэш помечается новым отпечатком.
+        if _prepress_writeback(project, report, models, c):
+            try:
+                inp2 = (_image_prepress_inputs(project) if (project.get("importKind") or "") in ("scan", "image")
+                        else _layout_inputs(project))
+                if inp2 is not None and _pp_same_print(inp, inp2, report):
+                    fp = _prepress_fp(inp2)
+                    job["ppFp"] = fp
+            except Exception as e:
+                print("[backend] отпечаток после переноса #%s: %s" % (pid, e), file=sys.stderr)
         _prepress_cache_write(pid, fp, final[0], state, report, final[1], ov=final[1].get("_ov"))
         c["report"] = report
     except Exception as e:
@@ -38117,7 +38246,89 @@ def _job_prepress_body(job: dict) -> None:
 
 
 PREPRESS_ROUNDS = int(os.environ.get("PREPRESS_ROUNDS", "3"))        # кругов правок после первого взгляда
-PREPRESS_SHORTEN = os.environ.get("PREPRESS_SHORTEN", "1") != "0"     # короткий перевод только в файл
+PREPRESS_SHORTEN = os.environ.get("PREPRESS_SHORTEN", "1") != "0"     # короткий перевод, чтобы влезло
+# Сокращение и перевод места переносятся в проект (решение владельца
+# 24.10.2026: «менять и в проекте»). 0 — только в файле, как прежде.
+PREPRESS_WRITEBACK = os.environ.get("PREPRESS_WRITEBACK", "1") != "0"
+_PP_WB_KINDS = ("short", "translate")
+
+
+def _prepress_writeback(project: dict, report: dict, models: list, c: dict) -> int:
+    """Перенос текстовых правок проверки (Ы5) в сегменты проекта. Законы:
+    * только место ровно с ОДНОЙ строкой проекта и только если в строке всё
+      ещё тот текст, который печатали (`from`): правили после — не трогаем;
+    * текст человека (подпись или набранный руками, `_human_text`) машина
+      не переписывает (инвариант 14а) — там остаётся кнопка «Применить
+      к переводу», человек решает сам;
+    * «по строкам оригинала» (`split`) — раскладка, а не перевод: не переносим;
+    * прежний текст — в `prevTarget`, след — `printFit`, статус `translated`:
+      хеши проверок разошлись с текстом, и следующий прогон перепроверит
+      строку (переписан текст — значит и проверки про него устарели).
+    Пишет под `_SAVE_LOCK`, проект берётся заново (рядом может работать API)."""
+    if not PREPRESS_WRITEBACK:
+        return 0
+    items = [x for x in (report.get("shortened") or [])
+             if x.get("kind") in _PP_WB_KINDS and len(x.get("segs") or []) == 1 and (x.get("to") or "").strip()]
+    if not items:
+        return 0
+    prov = (models[0]["id"] if models else None) or "prepress"
+    n = 0
+    with _SAVE_LOCK:
+        proj = _project_by_id(project["id"]) or project
+        by = {s_.get("id"): s_ for s_ in proj.get("segments") or []}
+        for it in items:
+            seg = by.get(it["segs"][0])
+            if seg is None or _human_text(seg):
+                continue
+            if (seg.get("target") or "").strip() != (it.get("from") or "").strip():
+                continue
+            prev = seg.get("target") or ""
+            # Сокращение — производное прежнего перевода: автор тот же (на
+            # `provider` стоят «проверял тот, кто переводил» и счёт перевода
+            # заново). Перевод места — новый перевод: автор — проверка.
+            _replace_target(seg, it["to"].strip(),
+                            seg.get("provider") if it.get("kind") == "short" else prov, "PRINT_FIT")
+            seg["prevTarget"] = prev
+            if it.get("kind") == "translate":
+                seg["mtDone"] = True
+            seg["printFit"] = {"from": prev, "kind": it["kind"],
+                               "at": datetime.now().strftime("%Y-%m-%d %H:%M")}
+            it["applied"] = True
+            n += 1
+        if n:
+            save_state(STATE)
+    c["writeback"] = int(c.get("writeback") or 0) + n
+    return n
+
+
+def _pp_same_print(inp: dict, inp2: dict, report: dict) -> bool:
+    """После переноса вход выгрузки обязан совпасть с напечатанным: у
+    перенесённых мест текст к печати — ровно новый текст, всё прочее — как
+    было. Иначе (правило печати изменило текст) — кэш остаётся со старым
+    отпечатком, и следующая выгрузка честно проверит заново."""
+    t1, t2 = inp.get("texts") or {}, inp2.get("texts") or {}
+    want = {}
+    for it in report.get("shortened") or []:
+        k = str(it.get("key") or "")
+        if it.get("applied") and k.startswith("p") and k[1:].isdigit():
+            want[int(k[1:])] = (it.get("to") or "").strip()
+    for k in set(t1) | set(t2):
+        a = (t2.get(k) or "").strip()
+        b = want.get(k, (t1.get(k) or "").strip())
+        if a != b:
+            return False
+    e1, e2 = inp.get("extra") or [], inp2.get("extra") or []
+    if len(e1) != len(e2):
+        return False
+    xwant = {}
+    for it in report.get("shortened") or []:
+        k = str(it.get("key") or "")
+        if it.get("applied") and k.startswith("x") and k[1:].isdigit():
+            xwant[int(k[1:])] = (it.get("to") or "").strip()
+    for i, (a, b) in enumerate(zip(e1, e2)):
+        if (b.get("text") or "").strip() != xwant.get(i, (a.get("text") or "").strip()):
+            return False
+    return True
 _PREPRESS_RULES_LOCK = threading.Lock()
 
 
@@ -38601,7 +38812,8 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
     """Круги правок (Ы5, этапы 3–4): по дефектам — следующее действие
     лестницы (выученное правило → действие модели → лестница вида дефекта):
     рычаги сборки, короткий перевод, перевод места и раскладка по строкам
-    оригинала — текст меняется ТОЛЬКО в файле. Пересборка, второй взгляд
+    оригинала — в файле; короткий перевод и перевод места потом переносятся
+    в проект (`_prepress_writeback`). Пересборка, второй взгляд
     на изменившиеся страницы; круг берётся, только если стало строго лучше,
     а не стало — берутся действия мест, которым стало лучше (приёмка по
     местам), вредные откатываются. Исходы учат правила."""

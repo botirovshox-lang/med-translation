@@ -1704,7 +1704,7 @@ window.I18N.register("en", {
  "Понятно": "Got it",
  "Пополнить": "Top up",
  "Пополнить баланс": "Top up balance",
- "Поправили текст только в файле: ": "Text changed in the file only: ",
+ "Поправили текст, чтобы влезло: ": "Text adjusted to fit: ",
  "Попробуйте ещё раз.": "Please try again.",
  "Попросите владельца организации пополнить баланс.": "Ask the organization owner to top up the balance.",
  "Порядок сохранён": "Order saved",

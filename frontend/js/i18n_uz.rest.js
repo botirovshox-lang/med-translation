@@ -1704,7 +1704,7 @@ window.I18N.register("uz", {
  "Понятно": "Tushunarli",
  "Пополнить": "To'ldirish",
  "Пополнить баланс": "Balansni to'ldirish",
- "Поправили текст только в файле: ": "Matnni faqat faylda tuzatdik: ",
+ "Поправили текст, чтобы влезло: ": "Sig‘ishi uchun matnni tuzatdik: ",
  "Попробуйте ещё раз.": "Yana bir marta urinib ko'ring.",
  "Попросите владельца организации пополнить баланс.": "Tashkilot egasidan balansni to'ldirishni so'rang.",
  "Порядок сохранён": "Tartib saqlandi",

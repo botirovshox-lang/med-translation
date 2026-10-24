@@ -250,6 +250,47 @@ doc.close()
 rows = [y for y in range(g.shape[0]) if (g[y, 100:640] < 120).mean() > 0.9]
 check("счёт KK: линейки таблицы целые (Ш45)", len(rows) >= 6, rows)
 
+print("=== книга: пересборка смотрится только на изменившихся страницах ===")
+_sigs = {b"prev": ["a", "b", "c", "d", "e", "f"], b"cand": ["a", "B", "c", "d", "e", "f"],
+         b"same": ["a", "b", "c", "d", "e", "f"], b"many": ["x", "y", "z", "w", "e", "f"]}
+_orig_sigs = main._pdf_page_sigs
+main._pdf_page_sigs = lambda pdf: list(_sigs[pdf])
+prev_rep = {"issues": [{"code": "OVERFLOW", "page": 1}, {"code": "SPILL", "page": 4},
+                       {"code": "SIZE_MIX", "page": 4}], "partial": False}
+asked = []
+
+
+def _full():
+    asked.append("full")
+    return {"issues": []}
+
+
+def _pages(pg):
+    asked.append(tuple(pg))
+    return {"issues": [{"code": "SIZE_MIX", "page": 0}, {"code": "SMALL", "page": 1}]}
+
+
+r_ = main._qa_delta(_full, _pages, b"cand", b"prev", prev_rep)
+check("смотрим только изменившуюся страницу", asked == [(1,)], asked)
+check("находки прочих страниц — из прежнего отчёта, изменившейся — новые",
+      sorted((i["code"], i["page"]) for i in r_["issues"]) == [("SIZE_MIX", 4), ("SMALL", 1), ("SPILL", 4)],
+      r_["issues"])
+check("счёт пересчитан", r_["counts"] == {"SPILL": 1, "SIZE_MIX": 1, "SMALL": 1}, r_.get("counts"))
+asked.clear()
+r_ = main._qa_delta(_full, _pages, b"same", b"prev", prev_rep)
+check("ничего не изменилось — прежний отчёт без приёмки", asked == [] and len(r_["issues"]) == 3, (asked, r_))
+asked.clear()
+main._qa_delta(_full, _pages, b"many", b"prev", prev_rep)
+check("изменилось больше половины — полная приёмка", asked == ["full"], asked)
+asked.clear()
+main._qa_delta(_full, _pages, b"cand", b"prev", dict(prev_rep, partial=True))
+check("прежний отчёт неполный — полная приёмка", asked == ["full"], asked)
+main._pdf_page_sigs = _orig_sigs
+import inspect as _insp
+_src_loop = _insp.getsource(main._layout_loop)
+check("книга без big_ok — без петли (кнопка выгрузки)", "(big and not big_ok)" in _src_loop)
+check("фоновая проверка зовёт петлю и для книги", "big_ok=True" in _insp.getsource(main._job_prepress_body))
+
 print("=== детерминизм: две сборки — одни решения ===")
 p2 = subprocess.run([sys.executable, "tools/corpus_offline.py", str(CORP), str(TMP / "o2"), "--real",
                      str(REAL), "--no-detect", "--only", "L03_invoice_kk"], capture_output=True,

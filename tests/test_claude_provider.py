@@ -108,7 +108,22 @@ CLAUDE = [m for m in main.OPENAI_MODELS if m.get("api") == "anthropic"]
 
 print("(1) каталог")
 ids = {m["id"] for m in CLAUDE}
-check(ids == {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"}, "модели Claude в каталоге: %s" % sorted(ids))
+check(ids == {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5",
+              "claude-sonnet-5-5", "claude-haiku-5-5"}, "модели Claude в каталоге: %s" % sorted(ids))
+NEW = [m for m in CLAUDE if m["id"] in ("claude-sonnet-5-5", "claude-haiku-5-5")]
+check(all(not m.get("sampling") and m.get("effort") for m in NEW),
+      "Sonnet 5.5 и Haiku 5.5: temperature не шлётся (400), effort задан")
+check(main._MODELS_BY_ID["claude-haiku-5-5"]["effort"] == "high",
+      "Haiku 5.5 — усилие high: на low рассуждает вслух прямо в ответе (замер 24.10.2026)")
+check([m["id"] for m in main.OPENAI_MODELS[-2:]] == ["claude-sonnet-5-5", "claude-haiku-5-5"],
+      "новые модели — в конце каталога: псевдонимы прежних не сдвинулись")
+os.environ["ANTHROPIC_API_KEY"] = "sk-ant-test"
+fb = main._backcheck_fallbacks("claude-haiku-5-5")
+check(fb and all(main._provider_of(x) == "anthropic" and x != "claude-haiku-5-5" for x in fb),
+      "запасной обратный перевод — у того же поставщика, а не литерал OpenAI: %s" % fb)
+seg_ = {"provider": "claude-haiku-5-5"}
+check(main._backcheck_model(seg_, "claude-haiku-5-5") != "claude-haiku-5-5", "автор текста обратный перевод не делает")
+os.environ.pop("ANTHROPIC_API_KEY", None)
 check(all(m["in"] > 0 and m["out"] > 0 for m in CLAUDE), "у каждой цена")
 check(all(main.model_rank(m["id"]) is not None for m in main.OPENAI_MODELS),
       "у КАЖДОЙ модели каталога есть ранг (иначе проверки перепокупаются)")

@@ -432,6 +432,7 @@ function onUnauthorized() {
     // Модели шагов на всю систему и виртуальный пересчёт расхода по журналу токенов.
     systemModels:  ()                       => call("GET",    "/admin/system-models"),
     systemModelsSave: (models)              => call("POST",   "/admin/system-models", { models }),
+    systemModelsAuto: (body)                => call("POST",   "/admin/system-models/auto", body),
     usageSimulate: (body)                   => call("POST",   "/admin/usage/simulate", body),
     /* Расход на видео по людям: минуты распознавания и озвучки, деньги. */
     mediaUsage:    (days)                   => call("GET",    `/admin/media-usage?days=${days || 30}`),

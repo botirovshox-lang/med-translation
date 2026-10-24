@@ -1,0 +1,301 @@
+{
+ "ok": true,
+ "models": [
+  {
+   "id": "gpt-5.6-sol",
+   "label": "GPT-5.6 Sol",
+   "in": 5.0,
+   "out": 30.0,
+   "note": "Флагман, максимальное качество",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "gpt-5.6-terra",
+   "label": "GPT-5.6 Terra",
+   "in": 2.0,
+   "out": 12.0,
+   "note": "Баланс качества и цены",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "gpt-5.6-luna",
+   "label": "GPT-5.6 Luna",
+   "in": 0.2,
+   "out": 1.2,
+   "note": "Быстрая и недорогая",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "gpt-5.5",
+   "label": "GPT-5.5",
+   "in": 5.0,
+   "out": 30.0,
+   "note": "Предыдущий флагман",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "gpt-5.4",
+   "label": "GPT-5.4",
+   "in": 2.5,
+   "out": 15.0,
+   "note": "",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "gpt-5.4-mini",
+   "label": "GPT-5.4 mini",
+   "in": 0.75,
+   "out": 4.5,
+   "note": "",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "gpt-4.1",
+   "label": "GPT-4.1",
+   "in": 2.0,
+   "out": 8.0,
+   "note": "",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "gpt-4o",
+   "label": "GPT-4o",
+   "in": 2.5,
+   "out": 10.0,
+   "note": "По умолчанию",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "gpt-4o-mini",
+   "label": "GPT-4o mini",
+   "in": 0.15,
+   "out": 0.6,
+   "note": "Самая дешёвая",
+   "provider": "openai",
+   "ready": false
+  },
+  {
+   "id": "claude-opus-5-5",
+   "label": "Claude Opus 5.5",
+   "in": 4.0,
+   "out": 20.0,
+   "note": "Anthropic, флагман",
+   "provider": "anthropic",
+   "ready": false
+  },
+  {
+   "id": "claude-opus-5",
+   "label": "Claude Opus 5",
+   "in": 5.0,
+   "out": 25.0,
+   "note": "Anthropic, флагман прежнего поколения",
+   "provider": "anthropic",
+   "ready": false
+  },
+  {
+   "id": "claude-sonnet-5",
+   "label": "Claude Sonnet 5",
+   "in": 2.0,
+   "out": 10.0,
+   "note": "Anthropic, баланс качества и цены",
+   "provider": "anthropic",
+   "ready": false
+  },
+  {
+   "id": "claude-haiku-4-5",
+   "label": "Claude Haiku 4.5",
+   "in": 1.0,
+   "out": 5.0,
+   "note": "Anthropic, быстрая",
+   "provider": "anthropic",
+   "ready": false
+  },
+  {
+   "id": "claude-sonnet-5-5",
+   "label": "Claude Sonnet 5.5",
+   "in": 2.0,
+   "out": 10.0,
+   "note": "Anthropic, баланс качества и цены, нынешнее поколение",
+   "provider": "anthropic",
+   "ready": false
+  },
+  {
+   "id": "claude-haiku-5-5",
+   "label": "Claude Haiku 5.5",
+   "in": 0.1,
+   "out": 0.5,
+   "note": "Anthropic, быстрая и недорогая",
+   "provider": "anthropic",
+   "ready": false
+  }
+ ],
+ "groups": [
+  "translate",
+  "review",
+  "backcheck",
+  "termcheck",
+  "termaudit",
+  "repair",
+  "judge",
+  "ocr",
+  "termcross",
+  "terms"
+ ],
+ "steps": [
+  {
+   "key": "translate",
+   "value": "claude-sonnet-5-5",
+   "codeDefault": "gpt-4o",
+   "effective": "claude-sonnet-5-5"
+  },
+  {
+   "key": "review",
+   "value": "claude-sonnet-5",
+   "codeDefault": "gpt-5.6-terra",
+   "effective": "claude-sonnet-5"
+  },
+  {
+   "key": "backcheck",
+   "value": "claude-haiku-5-5",
+   "codeDefault": "gpt-5.6-luna",
+   "effective": "claude-haiku-5-5"
+  },
+  {
+   "key": "termcheck",
+   "value": "claude-sonnet-5",
+   "codeDefault": "gpt-5.6-terra",
+   "effective": "claude-sonnet-5"
+  },
+  {
+   "key": "termaudit",
+   "value": "claude-sonnet-5",
+   "codeDefault": "gpt-5.6-terra",
+   "effective": "claude-sonnet-5"
+  },
+  {
+   "key": "repair",
+   "value": "claude-sonnet-5",
+   "codeDefault": "gpt-5.6-terra",
+   "effective": "claude-sonnet-5"
+  },
+  {
+   "key": "judge",
+   "value": "claude-sonnet-5-5",
+   "codeDefault": "gpt-5.6-terra",
+   "effective": "claude-sonnet-5-5"
+  },
+  {
+   "key": "ocr",
+   "value": "claude-opus-5-5",
+   "codeDefault": "gpt-4o",
+   "effective": "claude-opus-5-5"
+  },
+  {
+   "key": "termcross",
+   "value": "claude-sonnet-5-5",
+   "codeDefault": "claude-sonnet-5",
+   "effective": "claude-sonnet-5-5"
+  }
+ ],
+ "auto": {
+  "on": true,
+  "strategy": "order",
+  "providerOrder": [
+   "anthropic",
+   "openai"
+  ],
+  "pinned": {},
+  "lastPick": {
+   "at": 1792805310.8266392,
+   "picks": {
+    "translate": "claude-sonnet-5-5",
+    "review": "claude-sonnet-5",
+    "backcheck": "claude-haiku-5-5",
+    "termcheck": "claude-sonnet-5",
+    "termaudit": "claude-sonnet-5",
+    "repair": "claude-sonnet-5",
+    "judge": "claude-sonnet-5-5",
+    "ocr": "claude-opus-5-5",
+    "termcross": "claude-sonnet-5-5"
+   },
+   "why": {
+    "translate": "auto",
+    "review": "auto",
+    "backcheck": "auto",
+    "termcheck": "auto",
+    "termaudit": "auto",
+    "repair": "auto",
+    "judge": "auto",
+    "ocr": "auto",
+    "termcross": "auto"
+   },
+   "live": [
+    "anthropic",
+    "openai"
+   ],
+   "changed": {}
+  },
+  "health": {
+   "openai": {
+    "ok": false,
+    "why": "quota",
+    "at": 1,
+    "probe": null,
+    "err": null
+   },
+   "anthropic": {
+    "ok": true,
+    "why": "ok",
+    "at": null,
+    "probe": null,
+    "err": null
+   }
+  },
+  "newModels": {
+   "anthropic": [
+    "claude-mega-9"
+   ]
+  },
+  "policy": {
+   "minRank": {
+    "translate": 5,
+    "review": 5,
+    "backcheck": 4,
+    "termcheck": 5,
+    "termaudit": 5,
+    "repair": 5,
+    "judge": 5,
+    "ocr": 7,
+    "termcross": 5
+   },
+   "maxRank": {
+    "backcheck": 5
+   }
+  },
+  "ranks": {
+   "gpt-5.6-sol": 6,
+   "gpt-5.6-terra": 5,
+   "gpt-5.6-luna": 4,
+   "gpt-5.5": 5,
+   "gpt-5.4": 4,
+   "gpt-5.4-mini": 3,
+   "gpt-4.1": 2,
+   "gpt-4o": 2,
+   "gpt-4o-mini": 1,
+   "claude-opus-5-5": 7,
+   "claude-opus-5": 6,
+   "claude-sonnet-5": 5,
+   "claude-haiku-4-5": 3,
+   "claude-sonnet-5-5": 6,
+   "claude-haiku-5-5": 4
+  }
+ }
+}

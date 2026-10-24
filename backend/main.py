@@ -1717,6 +1717,18 @@ OPENAI_MODELS = [
     {"id": "claude-opus-5",   "label": "Claude Opus 5",    "in": 5.00, "out": 25.00, "api": "anthropic", "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, флагман прежнего поколения"},
     {"id": "claude-sonnet-5", "label": "Claude Sonnet 5",  "in": 2.00, "out": 10.00, "api": "anthropic", "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, баланс качества и цены"},
     {"id": "claude-haiku-4-5", "label": "Claude Haiku 4.5", "in": 1.00, "out": 5.00, "api": "anthropic", "sampling": True, "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, быстрая"},
+    # Нынешнее поколение Sonnet и Haiku (24.10.2026, цены — та же страница).
+    # Стоят В КОНЦЕ намеренно: псевдоним модели наружу считается от номера
+    # в каталоге (_model_alias), и вставка в середину сдвинула бы чужие.
+    # Обе отвергают temperature (400) — "sampling" нет; effort низкий, как
+    # у Sonnet 5. Цена Haiku 5.5 — до 100 тыс. токенов промпта (дальше
+    # $0.50/$2.50); наши промпты короче. Haiku 5.5 — усилие HIGH, а не low:
+    # замер обратного перевода 24.10.2026 (7 пар UZ-CYRL/UZ/EN с подложенными
+    # ошибками): на low и medium модель рассуждает ВСЛУХ в ответе («Wait — I
+    # need to check…») и вернула узбекскую латиницу транслитом; на high — все
+    # семь чисто и верно, ошибки отражены. Думание стоит $0.50 за 1M — копейки.
+    {"id": "claude-sonnet-5-5", "label": "Claude Sonnet 5.5", "in": 2.00, "out": 10.00, "api": "anthropic", "effort": "low", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, баланс качества и цены, нынешнее поколение"},
+    {"id": "claude-haiku-5-5", "label": "Claude Haiku 5.5", "in": 0.10, "out": 0.50, "api": "anthropic", "effort": "high", "cacheRead": 0.1, "cacheWrite": 1.25, "note": "Anthropic, быстрая и недорогая"},
 ]
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 
@@ -3939,12 +3951,19 @@ def _note_provider_error(e) -> None:
 _QUOTA_SEEN: dict = {}
 
 
+_PROBE_TL = threading.local()
+
+
 def _note_quota(e) -> None:
-    if not _is_quota_error(e):
+    if not _is_quota_error(e) or getattr(_PROBE_TL, "on", False):
+        # Проба автоподбора (`_model_probe`) — не прогон: её «нет баланса»
+        # у ОДНОГО поставщика не вправе останавливать здоровую работу на другом.
         return
     now = time.time()
     _PROVIDER_ERR["text"], _PROVIDER_ERR["at"] = str(e)[:500], now
     _QUOTA_SEEN[getattr(_JOB_PROJECT, "id", None)] = now
+    if "_model_auto_kick" in globals():
+        _model_auto_kick()          # автоподбор переставит модели, не дожидаясь пробы
 
 
 def _quota_seen_since(pid, t0: float) -> bool:
@@ -24124,10 +24143,26 @@ def _backcheck_model(seg: dict, requested: Optional[str]) -> str:
     provider = seg.get("provider") or ""
     if mid != provider:
         return mid
-    for alt in (_dm("backcheck"), BACKCHECK_FALLBACK_MODEL):
+    for alt in (_dm("backcheck"), *_backcheck_fallbacks(mid), BACKCHECK_FALLBACK_MODEL):
         if alt != provider:
             return alt
-    return mid          # недостижимо: две запасных не совпадают между собой
+    return mid          # недостижимо: запасные не совпадают между собой
+
+
+def _backcheck_fallbacks(primary: str) -> list:
+    """Запасные модели обратного перевода — ДАННЫМИ, а не литералом: самые
+    дешёвые готовые модели того же поставщика, что и основная. Литерал
+    `BACKCHECK_FALLBACK_MODEL` (OpenAI) при системных моделях Claude уводил
+    обратный перевод к другому поставщику — у которого может не быть баланса;
+    он остаётся последним ходом."""
+    try:
+        prov = _provider_of(_resolve_model(primary))
+        same = [m for m in OPENAI_MODELS
+                if _provider_of(m) == prov and m["id"] != primary and _provider_ready(m)]
+        same.sort(key=lambda m: (float(m.get("in") or 0) + float(m.get("out") or 0), m["id"]))
+        return [m["id"] for m in same[:2]]
+    except Exception:
+        return []
 
 
 def _run_segment_backcheck(seg: dict, project: dict, model: Optional[str] = None,
@@ -40917,6 +40952,19 @@ def _job_freeze_models(job: dict) -> dict:
                 notes.append("%s: %s → %s" % (k, mid, _CODE_DEFAULT_MODELS[k]))
             mid = _CODE_DEFAULT_MODELS[k]
         fixed[k] = mid
+    # Автоподбор знает, у какого поставщика кончился счёт: задача из очереди
+    # (или отложенная выкатом, остановленная «нет баланса») иначе пошла бы
+    # снова на ту же модель. Берём нынешнее назначение шага — если его
+    # поставщик жив.
+    auto = _model_auto_conf() if "_model_auto_conf" in globals() else {}
+    dead = {p for p, h in (auto.get("health") or {}).items() if isinstance(h, dict) and h.get("ok") is False}
+    if auto.get("on") and dead:
+        for k in SYSTEM_MODEL_STEPS:
+            now = _effective_model(k)
+            if (_provider_of(_resolve_model(fixed[k])) in dead and now in _MODELS_BY_ID
+                    and _provider_of(_resolve_model(now)) not in dead and now != fixed[k]):
+                notes.append("%s: %s → %s (у поставщика нет счёта)" % (k, fixed[k], now))
+                fixed[k] = now
     job["sysModels"] = fixed
     params = job.get("params") or {}
     step_of = {v: k for k, v in FULL_STEP_MODEL.items()}
@@ -41039,7 +41087,8 @@ def admin_system_models(request: Request):
     return {"ok": True, "models": _catalog_brief(), "groups": USAGE_GROUPS,
             "steps": [{"key": k, "value": conf.get(k) or None,
                        "codeDefault": _CODE_DEFAULT_MODELS[k], "effective": _effective_model(k)}
-                      for k in SYSTEM_MODEL_STEPS]}
+                      for k in SYSTEM_MODEL_STEPS],
+            "auto": _model_auto_public()}
 
 
 @app.post("/api/admin/system-models")
@@ -41059,6 +41108,344 @@ def admin_system_models_save(req: SystemModelsBody, request: Request):
         except Exception as e:
             print(f"[backend] системные модели: эпоха не поднята: {e}", file=sys.stderr)
     return admin_system_models(request)
+
+
+# ── Автоподбор моделей шагов (админка → «Модели и расход» → «Подбирать сами») ──
+# Ручная расстановка устаревает дважды: выходят новые модели, и кончается счёт
+# у поставщика (24.10.2026 — у OpenAI нулевой баланс, переводы встали, пока
+# модели не переставили руками). Подбор делает это сам и ПО ДАННЫМ:
+# `model_policy.json` (какой силы модель годится шагу, какие шаги не делят
+# модель, вес цены, порядок поставщиков), ранги — `model_ranks.json`, цены —
+# каталог. Здоровье поставщика — две вещи: ключ и СЧЁТ. Ключ при нулевом
+# балансе есть, а список моделей отвечает, поэтому счёт проверяется пробой —
+# вызов в один токен самой дешёвой моделью (доли цента в месяц); пустой счёт
+# или отказ по стране — поставщик выбывает до следующей пробы, а «нет баланса»,
+# замеченное в обычном вызове API, будит подбор сразу (`_model_auto_kick`).
+# Пишет подбор той же дорогой, что ручное сохранение (`systemModels`, журнал,
+# эпоха — воркер увидит), и только когда выбор изменился. Закреплённые
+# человеком шаги (`pinned`) не трогает. Новые модели у поставщика (есть в его
+# списке, нет в каталоге) только НАЗЫВАЕТ: цены поставщики через API не отдают,
+# а выдуманная цена хуже отсутствующей — модель встаёт в каталог руками
+# вместе с ценой и рангом.
+MODEL_POLICY_FILES = [ROOT / "backend" / "model_policy.json",
+                      ROOT / "backend" / "data" / "model_policy.json"]
+_MODEL_AUTO_LOCK = threading.Lock()
+_MODEL_AUTO_WAKE = threading.Event()
+# Модели поставщика, которые не чат: их в списке «новых» не называем.
+_NOT_CHAT = ("embed", "tts", "whisper", "audio", "realtime", "image", "dall", "transcribe",
+             "moderation", "search", "computer", "codex", "instruct", "babbage", "davinci")
+
+
+def _model_policy() -> dict:
+    out: dict = {}
+    for f in MODEL_POLICY_FILES:
+        try:
+            if f.exists():
+                out.update(json.loads(f.read_text(encoding="utf-8")))
+        except Exception as e:
+            print(f"[backend] model_policy {f}: {e}", file=sys.stderr)
+    return out
+
+
+def _model_auto_conf() -> dict:
+    a = STATE.get("modelAuto")
+    if not isinstance(a, dict):
+        a = {}
+    if "on" not in a:
+        # Не трогал владелец — действует умолчание правил (`autoOn`).
+        a = dict(a, on=bool(_model_policy().get("autoOn")))
+    return a
+
+
+def _auto_price(m: dict, pol: dict) -> float:
+    w = pol.get("price") or {}
+    return float(m.get("in") or 0) * float(w.get("in", 0.75)) + float(m.get("out") or 0) * float(w.get("out", 0.25))
+
+
+def _model_auto_pick(health: dict, conf: Optional[dict] = None, pol: Optional[dict] = None) -> dict:
+    """Чистая функция: здоровье поставщиков → {шаг: модель} и причины.
+    Шаги идут в порядке `SYSTEM_MODEL_STEPS` (перевод первым — от него зависят
+    пары `distinct`); закреплённые человеком ставятся до всех."""
+    conf = conf if conf is not None else _model_auto_conf()
+    pol = pol if pol is not None else _model_policy()
+    pinned = {k: v for k, v in (conf.get("pinned") or {}).items()
+              if k in SYSTEM_MODEL_STEPS and v in _MODELS_BY_ID}
+    order = [p for p in (conf.get("providerOrder") or pol.get("providerOrder") or ["anthropic", "openai"])
+             if p in LLM_PROVIDER_KEYS]
+    order += [p for p in LLM_PROVIDER_KEYS if p not in order]
+    strategy = conf.get("strategy") or pol.get("strategy") or "order"
+    live = [p for p in order if (health.get(p) or {}).get("ok")]
+    pairs = [tuple(x) for x in (pol.get("distinct") or []) if isinstance(x, (list, tuple)) and len(x) == 2]
+    lo, hi = pol.get("minRank") or {}, pol.get("maxRank") or {}
+    cap_of = pol.get("maxPrice") or {}
+
+    def fits(m, step):
+        r = model_rank(m["id"])
+        if r is None:
+            return False
+        cap = cap_of.get(step, cap_of.get("*"))
+        if cap is not None and _auto_price(m, pol) > float(cap):
+            return False
+        if not _model_listed(m["id"], health.get(_provider_of(m)) or {}):
+            return False
+        return r >= int(lo.get(step, 0)) and r <= int(hi.get(step, 99))
+
+    picks, why = dict(pinned), {k: "pinned" for k in pinned}
+    for step in SYSTEM_MODEL_STEPS:
+        if step in picks:
+            continue
+        clash = {picks[b] for a, b in pairs if a == step and b in picks}
+        clash |= {picks[a] for a, b in pairs if b == step and a in picks}
+        groups = [live] if strategy == "price" else [[p] for p in live]
+        # Сперва без общей модели с парным шагом, потом — если под потолком
+        # такой нет — самая дешёвая годная с пометкой «спор ролей».
+        for strict in (True, False):
+            for grp in groups:
+                cand = [m for m in OPENAI_MODELS if _provider_of(m) in grp and fits(m, step)
+                        and (not strict or m["id"] not in clash)]
+                if cand:
+                    how = (pol.get("pick") or {}).get(step, (pol.get("pick") or {}).get("*", "cheapest"))
+                    if how == "best":
+                        cand.sort(key=lambda m: (-(model_rank(m["id"]) or 0), _auto_price(m, pol),
+                                                 order.index(_provider_of(m)), m["id"]))
+                    else:
+                        cand.sort(key=lambda m: (_auto_price(m, pol), -(model_rank(m["id"]) or 0),
+                                                 order.index(_provider_of(m)), m["id"]))
+                    picks[step], why[step] = cand[0]["id"], ("auto" if strict else "conflict")
+                    break
+            if step in picks:
+                break
+        else:
+            why[step] = "none"          # годной нет — остаётся прежнее назначение
+    return {"picks": picks, "why": why, "live": live, "strategy": strategy, "order": order}
+
+
+def _model_listed(mid: str, h: dict) -> bool:
+    """Есть ли модель в списке поставщика. Поставщик может отдавать
+    датированные id («claude-sonnet-5-5-20261001») при псевдониме в каталоге —
+    это та же модель. Если из каталога поставщика в списке не нашлось НИ ОДНОЙ,
+    список не про нас (формат сменился) — «не знаю», не отказ."""
+    ids = h.get("ids")
+    if ids is None:
+        return True
+    def hit(x):
+        return x in ids or any(i.startswith(x + "-") for i in ids)
+    if not any(hit(m["id"]) for m in OPENAI_MODELS if _provider_of(m) == _provider_of(_resolve_model(mid))):
+        return True
+    return hit(mid)
+
+
+def _model_probe(provider: str) -> dict:
+    """Здоровье поставщика: список моделей (бесплатно) и проба счёта —
+    один токен самой дешёвой модели каталога."""
+    if not os.environ.get(LLM_PROVIDER_KEYS[provider]):
+        return {"ok": False, "why": "nokey", "at": time.time()}
+    out: dict = {"at": time.time(), "ids": None}
+    try:
+        if provider == "anthropic":
+            import anthropic
+            cl = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"), timeout=30, max_retries=1)
+        else:
+            import openai
+            cl = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY"), timeout=30, max_retries=1)
+        ids = [getattr(x, "id", None) for x in cl.models.list()]
+        out["ids"] = sorted(i for i in ids if isinstance(i, str))
+    except Exception as e:
+        out["listErr"] = str(e)[:200]
+    cheap = sorted((m for m in OPENAI_MODELS if _provider_of(m) == provider),
+                   key=lambda m: _auto_price(m, {}))
+    if out["ids"] is not None:
+        cheap = [m for m in cheap if _model_listed(m["id"], out)] or cheap
+    if not cheap:
+        return {**out, "ok": False, "why": "nomodel"}
+    saved = (dict(_PROVIDER_ERR), dict(_QUOTA_SEEN))
+    _PROBE_TL.on = True
+    try:
+        _llm_client(cheap[0], timeout=30, max_retries=0, step="probe").chat.completions.create(
+            model=cheap[0]["id"], max_tokens=1,
+            messages=[{"role": "user", "content": "Reply with: ok"}])
+        out.update(ok=True, why="ok", probe=cheap[0]["id"])
+    except Exception as e:
+        t = str(e)
+        low = t.lower()
+        kind = ("region" if _is_region_error(t) else "quota" if _is_quota_error(t)
+                else "auth" if ("401" in low or "authentication" in low or "invalid x-api-key" in low
+                                or "incorrect api key" in low or "permission" in low and "403" in low)
+                else "error")
+        # Сеть и прочие сбои поставщика не выключают: проба могла упасть сама.
+        # Отозванный ключ (401) — выключает: он не оживёт сам.
+        out.update(ok=kind == "error", why=kind, probe=cheap[0]["id"], err=t[:200])
+    finally:
+        _PROBE_TL.on = False
+        # Общий признак «пустой счёт» — как был до пробы (`_quota_recent`
+        # иначе две минуты рвал бы здоровые переводы на другом поставщике).
+        _PROVIDER_ERR.clear(); _PROVIDER_ERR.update(saved[0])
+        _QUOTA_SEEN.clear(); _QUOTA_SEEN.update(saved[1])
+    return out
+
+
+def _model_new_ids(health: dict) -> dict:
+    known = set(_MODELS_BY_ID)
+    res = {}
+    for prov, h in health.items():
+        ids = (h or {}).get("ids") or []
+        pre = ("claude-",) if prov == "anthropic" else ("gpt-", "o1", "o3", "o4", "o5")
+        new = [i for i in ids if i.startswith(pre) and i not in known
+               and not any(w in i for w in _NOT_CHAT) and not re.search(r"\d{8}$|-\d{4}-\d{2}-\d{2}$", i)
+               and not any(i.startswith(k + "-") for k in known)]
+        if new:
+            res[prov] = new
+    return res
+
+
+def _model_auto_run(apply: bool = True, probe: bool = True) -> dict:
+    """Проба поставщиков → подбор → запись (если включено и выбор изменился)."""
+    # Сеть — ВНЕ замков: проба поставщика бывает минутами, а дверь админки
+    # ждала бы её, держа поток.
+    fresh_h = {}
+    if probe:
+        for prov in LLM_PROVIDER_KEYS:
+            try:
+                fresh_h[prov] = _model_probe(prov)
+            except Exception as e:
+                fresh_h[prov] = {"ok": True, "why": "error", "err": str(e)[:200], "at": time.time()}
+    with _MODEL_AUTO_LOCK, _SAVE_LOCK:
+        conf = dict(_model_auto_conf())
+        health = dict(conf.get("health") or {})
+        health.update(fresh_h)
+        health_moved = any(bool((conf.get("health") or {}).get(k, {}).get("ok")) != bool(v.get("ok"))
+                           for k, v in fresh_h.items())
+        pick = _model_auto_pick(health, conf)
+        new = _model_new_ids(health)
+        cur = {k: v for k, v in (STATE.get("systemModels") or {}).items() if v in _MODELS_BY_ID}
+        nxt = dict(cur)
+        for k, v in pick["picks"].items():
+            nxt[k] = v
+        changed = {k: (cur.get(k), nxt.get(k)) for k in SYSTEM_MODEL_STEPS if cur.get(k) != nxt.get(k)}
+        first_look = "newSeen" not in conf
+        seen_new = set((conf.get("newSeen") or []))
+        # Первый взгляд — запоминаем молча: иначе в Telegram ушёл бы весь
+        # список поставщика разом; и пока подбор выключен, не пишем вовсе.
+        fresh_new = [] if first_look or not conf.get("on") else \
+            [i for ids in new.values() for i in ids if i not in seen_new]
+        conf.update(health=health, newModels=new,
+                    newSeen=sorted(seen_new | {i for ids in new.values() for i in ids}),
+                    lastPick={"at": time.time(), "picks": pick["picks"], "why": pick["why"],
+                              "live": pick["live"], "changed": changed if apply and conf.get("on") else {}})
+        on_now = bool(conf.get("on"))
+        if "on" not in (STATE.get("modelAuto") or {}):
+            conf.pop("on", None)        # умолчание правил остаётся умолчанием
+        STATE["modelAuto"] = conf
+        applied = bool(apply and on_now and changed)
+        if applied:
+            STATE["systemModels"] = _check_model_map(nxt, SYSTEM_MODEL_STEPS)
+            _apply_system_models()
+            _audit("system.models", before=cur, after=STATE["systemModels"], how="auto")
+        save_state(STATE)
+    if STORE.kind == "pg":
+        # Воркер узнаёт и о назначении, и о выбывшем поставщике: по второму
+        # он меняет модели задач из очереди (`_job_freeze_models`).
+        for doc, need in (("doc:systemModels", applied), ("doc:modelAuto", health_moved or applied)):
+            if need:
+                try:
+                    STORE.bump_epoch(doc)
+                except Exception as e:
+                    print(f"[backend] автоподбор: эпоха {doc} не поднята: {e}", file=sys.stderr)
+    if tg_mod and (applied or fresh_new):
+        lines = []
+        if applied:
+            lines.append("🔁 Модели шагов переставлены автоподбором (живы: %s):" % (", ".join(pick["live"]) or "никто"))
+            lines += ["  %s: %s → %s" % (k, a or "умолчание", b) for k, (a, b) in changed.items()]
+        if fresh_new:
+            lines.append("🆕 У поставщиков появились модели, которых нет в каталоге: %s — "
+                         "добавьте цену и ранг, чтобы подбор их учитывал." % ", ".join(fresh_new))
+        try:
+            tg_mod.notify_admin_async("\n".join(lines))
+        except Exception:
+            pass
+    return {"applied": applied, "changed": changed, **pick, "health": health, "newModels": new}
+
+
+def _model_auto_kick() -> None:
+    """«Нет баланса» в вызове этого процесса — разбудить подбор сразу."""
+    _MODEL_AUTO_WAKE.set()
+
+
+def _model_auto_loop() -> None:
+    time.sleep(30)
+    while True:
+        try:
+            if _model_auto_conf().get("on"):
+                _model_auto_run()
+        except Exception as e:
+            print(f"[backend] автоподбор моделей: {e}", file=sys.stderr)
+        # Сброс ПОСЛЕ прохода: проба на пустом счёте сама будит подбор
+        # (`_note_quota` в обёртке клиента), и без сброса цикл пробовал бы
+        # без паузы.
+        _MODEL_AUTO_WAKE.clear()
+        every = max(120, int(_model_policy().get("probeEverySec") or 900))
+        _MODEL_AUTO_WAKE.wait(every)
+
+
+@app.on_event("startup")
+def _model_auto_start():
+    if IS_WORKER or os.environ.get("MODEL_AUTO", "1") == "0":
+        return
+    threading.Thread(target=_model_auto_loop, name="mcat-model-auto", daemon=True).start()
+
+
+def _model_auto_public() -> dict:
+    a = _model_auto_conf()
+    pol = _model_policy()
+    return {"on": bool(a.get("on")), "strategy": a.get("strategy") or pol.get("strategy") or "order",
+            "providerOrder": a.get("providerOrder") or pol.get("providerOrder") or [],
+            "pinned": a.get("pinned") or {}, "lastPick": a.get("lastPick"),
+            "health": {k: {x: v.get(x) for x in ("ok", "why", "at", "probe", "err")}
+                       for k, v in (a.get("health") or {}).items()},
+            "newModels": a.get("newModels") or {},
+            "policy": {"minRank": pol.get("minRank") or {}, "maxRank": pol.get("maxRank") or {}},
+            "ranks": {m["id"]: model_rank(m["id"]) for m in OPENAI_MODELS}}
+
+
+class ModelAutoBody(BaseModel):
+    on: Optional[bool] = None
+    strategy: Optional[str] = None
+    providerOrder: Optional[list] = None
+    pinned: Optional[dict] = None
+    run: bool = False
+    dry: bool = False
+
+
+@app.post("/api/admin/system-models/auto")
+def admin_model_auto(req: ModelAutoBody, request: Request):
+    _super_or_403(request)
+    with _MODEL_AUTO_LOCK:
+        a = dict(_model_auto_conf())
+        if req.on is not None:
+            a["on"] = bool(req.on)
+        if req.strategy is not None:
+            if req.strategy not in ("order", "price"):
+                raise HTTPException(400, "Стратегия: order | price")
+            a["strategy"] = req.strategy
+        if req.providerOrder is not None:
+            bad = [p for p in req.providerOrder if p not in LLM_PROVIDER_KEYS]
+            if bad:
+                raise HTTPException(400, "Неизвестный поставщик: " + ", ".join(map(str, bad)))
+            a["providerOrder"] = list(req.providerOrder)
+        if req.pinned is not None:
+            a["pinned"] = _check_model_map(req.pinned, SYSTEM_MODEL_STEPS)
+        before = {k: _model_auto_conf().get(k) for k in ("on", "strategy", "providerOrder", "pinned")}
+        with _SAVE_LOCK:
+            STATE["modelAuto"] = a
+            _audit("system.modelAuto", before=before,
+                   after={k: a.get(k) for k in ("on", "strategy", "providerOrder", "pinned")})
+            save_state(STATE)
+    res = None
+    if req.run or req.dry or req.on:
+        res = _model_auto_run(apply=not req.dry)
+    out = admin_system_models(request)
+    out["run"] = ({k: res[k] for k in ("applied", "changed", "picks", "why", "live")} if res else None)
+    return out
 
 
 class UsageSimBody(BaseModel):

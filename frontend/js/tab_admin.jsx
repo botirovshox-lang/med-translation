@@ -840,16 +840,39 @@ function AdminSystemModels({ toast, onSaved }) {
      наведение — пока мышь на строке предупреждения. */
   const [hot, setHot] = useState(null);
   const [pinned, setPinned] = useState(null);
+  /* Подбор включён — строки таблицы правят ЗАКРЕПЛЁННЫЕ шаги (pinned), а не
+     назначение: назначение подбор перепишет сам при следующей проверке. */
+  const fill = (r) => {
+    const o = {};
+    const au = r.auto || {};
+    r.steps.forEach(s => { o[s.key] = (au.on ? (au.pinned || {})[s.key] : s.value) || ""; });
+    setDraft(o);
+  };
   const load = () => window.API.safeCall(() => window.API.systemModels()).then(r => {
     if (!r || !r.ok) return;
     setD(r);
-    const o = {};
-    r.steps.forEach(s => { o[s.key] = s.value || ""; });
-    setDraft(o);
+    fill(r);
   });
   useEffect(() => { load(); }, []);
   if (!d) return React.createElement("div", { className: "card card-pad dim" }, TR("Загружаем модели…"));
-  const dirty = d.steps.some(s => (s.value || "") !== (draft[s.key] || ""));
+  const au = d.auto || {};
+  const autoOn = !!au.on;
+  const base = (k) => (autoOn ? (au.pinned || {})[k] : (d.steps.find(s => s.key === k) || {}).value) || "";
+  const dirty = d.steps.some(s => base(s.key) !== (draft[s.key] || ""));
+  const autoCall = async (body, okText) => {
+    setBusy(true);
+    try {
+      const r = await window.API.systemModelsAuto(body);
+      setD(r);
+      fill(r);
+      const ch = (r.run && r.run.changed) || {};
+      toast.success(okText, Object.keys(ch).length
+        ? TR("переставлено шагов: ") + Object.keys(ch).length
+        : TR("менять нечего — выбор прежний"));
+      if (onSaved) onSaved(r);
+    } catch (e) { toast.error(TR("Не сохранено"), e.message || String(e)); }
+    finally { setBusy(false); }
+  };
   /* Спор моделей по РОЛИ — тем же правилом, что в панели запуска
      (`modelRoleConflicts` в ui.jsx). Считается по ЧЕРНОВИКУ, а не по тому,
      что действует: человек решает прямо сейчас, и узнать о споре он должен
@@ -857,7 +880,7 @@ function AdminSystemModels({ toast, onSaved }) {
      иначе спор двух шагов, оба оставленных «по умолчанию», был бы не виден,
      хотя работать они будут одной моделью (в таблице это и стоит справа). */
   const eff = {};
-  d.steps.forEach(s => { eff[s.key] = draft[s.key] || s.codeDefault || ""; });
+  d.steps.forEach(s => { eff[s.key] = draft[s.key] || (autoOn ? s.effective : s.codeDefault) || ""; });
   const conflicts = modelRoleConflicts(eff, (id) => adminModelName(d.models, id));
   /* Для каждой строки — С КЕМ она спорит: человеку нужно видеть не только
      «здесь что-то не так», но и какую строку менять. Подсвечиваются ровно
@@ -870,6 +893,7 @@ function AdminSystemModels({ toast, onSaved }) {
   const focus = pinned != null ? pinned : hot;
   const focusSteps = (focus != null && conflicts[focus]) ? conflicts[focus].steps : [];
   const save = async () => {
+    if (autoOn) return autoCall({ pinned: draft, run: true }, TR("Закрепления сохранены"));
     setBusy(true);
     try {
       const r = await window.API.systemModelsSave(draft);
@@ -887,6 +911,7 @@ function AdminSystemModels({ toast, onSaved }) {
         React.createElement(Btn, { size: "sm", disabled: !dirty || busy, onClick: save }, busy ? TR("Сохраняем…") : TR("Сохранить")))),
     React.createElement("p", { className: "dim", style: { margin: "0 0 8px", fontSize: 13 } },
       TR("Модель, которой шаг идёт, когда её не выбрали явно. Пусто — умолчание кода. Сильнее системной только модель, назначенная организации в упрощённом режиме, и явный выбор в редакторе.")),
+    React.createElement(AdminModelAuto, { au, busy, models: d.models, onCall: autoCall }),
     /* Спор называется вслух и ДО сохранения: назначенные здесь модели уходят
        умолчанием всем организациям сразу, и цена ошибки выше, чем у выбора
        на один прогон. Сохранить это не мешает — бывает, что так и надо. */
@@ -916,10 +941,68 @@ function AdminSystemModels({ toast, onSaved }) {
           React.createElement("select", { className: "input" + (disputed[s.key] ? " adm-dispute-input" : ""),
             value: draft[s.key] || "", style: { maxWidth: 260 },
             onChange: (e) => setDraft({ ...draft, [s.key]: e.target.value }) },
-            React.createElement("option", { value: "" }, TR("по умолчанию: ") + adminModelName(d.models, s.codeDefault)),
+            React.createElement("option", { value: "" }, autoOn ? TR("подбирать сам")
+              : TR("по умолчанию: ") + adminModelName(d.models, s.codeDefault)),
             d.models.map(m => React.createElement("option", { key: m.id, value: m.id, disabled: m.ready === false }, m.label + (m.ready === false ? TR(" — нет ключа") : ""))))),
-        React.createElement("td", { className: "dim" }, adminPrice(d.models, draft[s.key] || s.codeDefault)),
-        React.createElement("td", { className: "dim" }, adminModelName(d.models, s.effective))))))));
+        React.createElement("td", { className: "dim" }, adminPrice(d.models, draft[s.key] || (autoOn ? s.effective : s.codeDefault))),
+        React.createElement("td", { className: "dim" }, adminModelName(d.models, s.effective),
+          autoOn && adminAutoWhy(((au.lastPick || {}).why || {})[s.key]) && React.createElement("div",
+            { style: { fontSize: 11.5, marginTop: 2,
+                       color: ((au.lastPick || {}).why || {})[s.key] === "auto" ? undefined : "var(--c-warning)" } },
+            adminAutoWhy(((au.lastPick || {}).why || {})[s.key])))))))));
+}
+
+/* Пометка подбора у строки: почему у шага такая модель. */
+function adminAutoWhy(code) {
+  return ({ auto: TR("подобрано по цене и силе"), pinned: TR("закреплено вручную"),
+            conflict: TR("спор ролей: под потолком цены другой модели нет"),
+            none: TR("годной модели нет — оставлено прежнее") })[code] || "";
+}
+
+/* Состояние счёта поставщика — словами (код считает сервер). */
+function adminProvHealth(h) {
+  if (!h) return TR("ещё не проверяли");
+  return ({ ok: TR("счёт в порядке"), quota: TR("нет баланса"), region: TR("отказ по стране"),
+            nokey: TR("нет ключа"), auth: TR("ключ отклонён"), nomodel: TR("нет моделей в каталоге"),
+            error: TR("проверка не удалась — считаем живым") })[h.why] || h.why;
+}
+
+function AdminModelAuto({ au, busy, onCall }) {
+  const on = !!au.on;
+  const prov = { anthropic: "Claude", openai: "OpenAI" };
+  const order = (au.providerOrder || []).join(",");
+  const health = au.health || {};
+  const fresh = [].concat(...Object.values(au.newModels || {}));
+  const last = au.lastPick && au.lastPick.at ? new Date(au.lastPick.at * 1000).toLocaleString() : null;
+  return React.createElement("div", { className: "col", style: { gap: 6, margin: "0 0 12px", padding: "10px 12px",
+      border: "1px solid var(--c-border)", borderRadius: 8 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
+      React.createElement("label", { className: "row", style: { gap: 8, fontWeight: 600 } },
+        React.createElement("input", { type: "checkbox", checked: on, disabled: busy,
+          onChange: () => onCall(on ? { on: false } : { on: true, pinned: {} },
+                                 on ? TR("Подбор выключен") : TR("Подбор включён")) }),
+        TR("Подбирать модели сами")),
+      on && React.createElement("div", { className: "row row-wrap", style: { gap: 8 } },
+        React.createElement("select", { className: "input", value: au.strategy || "order", disabled: busy,
+          onChange: (e) => onCall({ strategy: e.target.value, run: true }, TR("Стратегия сохранена")) },
+          React.createElement("option", { value: "order" }, TR("по порядку поставщиков")),
+          React.createElement("option", { value: "price" }, TR("лучшее по цене среди всех"))),
+        React.createElement("select", { className: "input", value: order, disabled: busy,
+          onChange: (e) => onCall({ providerOrder: e.target.value.split(","), run: true }, TR("Порядок сохранён")) },
+          React.createElement("option", { value: "anthropic,openai" }, TR("сперва Claude, потом OpenAI")),
+          React.createElement("option", { value: "openai,anthropic" }, TR("сперва OpenAI, потом Claude"))),
+        React.createElement(Btn, { size: "sm", variant: "ghost", disabled: busy,
+          onClick: () => onCall({ run: true }, TR("Проверено")) }, TR("Проверить сейчас")))),
+    React.createElement("div", { className: "dim", style: { fontSize: 12.5 } },
+      TR("Шагу — самая дешёвая модель нужной силы у поставщика, у которого есть счёт; проверки и перевод — разными моделями; флагманы дороже потолка не берутся. Счёт проверяется раз в 15 минут и сразу после ответа «нет баланса». Закреплённые в таблице шаги не меняются.")),
+    on && React.createElement("div", { style: { fontSize: 12.5 } },
+      Object.keys(prov).map(k => React.createElement("span", { key: k, style: { marginRight: 14,
+          color: health[k] && health[k].ok === false ? "var(--c-warning)" : undefined } },
+        prov[k] + ": " + adminProvHealth(health[k]))),
+      last && React.createElement("span", { className: "dim" }, TR("проверено: ") + last)),
+    fresh.length > 0 && React.createElement("div", { style: { fontSize: 12.5, color: "var(--c-warning)" } },
+      TR("У поставщиков есть модели, которых нет в каталоге: ") + fresh.join(", ")
+        + TR(". Подбор их не учитывает, пока в каталог не внесены цена и ранг.")));
 }
 
 /* ── Виртуальный пересчёт ──────────────────────────────────────────────────

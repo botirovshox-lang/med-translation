@@ -210,6 +210,20 @@ check(!!mConf && mConf.includes("спорит по роли"),
 check(!!mConf && mConf.includes("та же модель, что у: Перевод") && mConf.includes("та же модель, что у: back-check"),
       "у спорящей строки названа её пара");
 
+/* Автоподбор моделей — по НАСТОЯЩЕМУ ответу двери (образец пишет
+   tests/test_model_auto.py): переключатель, состояние счетов словами,
+   новые модели поставщика и пометка подбора у строк. */
+const AUTO = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "model_auto_payload.json"), "utf8"));
+const mAuto = renderView("вкладка моделей с подбором", AUTO, SIM, {});
+check(!!mAuto && mAuto.includes("Подбирать модели сами") && mAuto.includes("Проверить сейчас"),
+      "переключатель подбора и проверка на месте");
+check(!!mAuto && mAuto.includes("OpenAI: нет баланса") && mAuto.includes("Claude: счёт в порядке"),
+      "состояние счетов поставщиков — словами");
+check(!!mAuto && mAuto.includes("claude-mega-9") && mAuto.includes("цена и ранг"),
+      "новая модель поставщика названа, и сказано, чего не хватает");
+check(!!mAuto && mAuto.includes("подбирать сам") && mAuto.includes("подобрано по цене и силе"),
+      "строки таблицы: «подбирать сам» и почему такая модель");
+
 /* «Прогоны»: факт по ПРОЕКТУ (счётчик сервера — и одиночные кнопки, и прогоны
    старше кольца runCosts), живые прогоны и имя проекта в строке прогона. */
 const RUNS = { ok: true, shownUsd: 1.5, estRatio: 1.2, estRuns: 1, kept: 100,

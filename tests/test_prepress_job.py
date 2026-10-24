@@ -461,6 +461,46 @@ finally:
     main.PREPRESS_WAIT_S = _w0
     main._PREPRESS_WAIT0.pop(("late-test", "fp"), None)
 
+print("\n── этап 3 ТЗ: пиксели хуже у каждого изменённого места — откат без модели ──")
+_saved = {n_: getattr(main, n_) for n_ in ("_pp_build", "_prepress_pixel", "_prepress_ab", "_prepress_pages",
+                                            "_pp_feats", "PREPRESS_ROUNDS")}
+_ab_calls = []
+try:
+    main.PREPRESS_ROUNDS = 1
+    main._pp_feats = lambda inp, texts, extra: {}
+    main._pp_build = lambda project, inp, texts, extra, tune: (b"%PDF-cand", {"_tune": tune})
+    main._prepress_pages = lambda *a, **k: {}
+
+    def _px(project, inp, cand, texts):
+        # у сборки с правкой у места p1 появилась тяжёлая находка
+        return ({"issues": [{"key": "p1", "code": "DUPLICATE"}]} if cand[0] == b"%PDF-cand"
+                else {"issues": []})
+    main._prepress_pixel = _px
+
+    def _ab(*a, **k):
+        _ab_calls.append(1)
+        return {"p1": {"better": "B"}}
+    main._prepress_ab = _ab
+    _v1 = {0: {"defects": [{"key": "p1", "code": "OVERFLOW", "action": "tight", "confidence": 0.9}]}}
+    _inp = {"texts": {1: "Text"}, "extra": [], "data": None, "sources": {1: "Текст"}, "images": False,
+            "work": b"", "layout": {}}
+    _c = {}
+    _cur, _vc, _rep = main._prepress_fix_rounds({"id": 1}, {"id": 1, "segments": []}, _inp,
+                                                (b"%PDF-base", {}), _v1, [], None, {}, _c, [0.0], None)
+    check("платное сравнение не спрашивали", not _ab_calls, str(_ab_calls))
+    check("вето засчитано и названо в отчёте круга",
+          _c.get("pxVeto") == 1 and (_c.get("rounds") or [{}])[0].get("pxVeto") is True, str(_c.get("rounds")))
+    check("правка не принята — сборка прежняя", _cur[0] == b"%PDF-base")
+    main.PREPRESS_PX_VETO = False
+    _ab_calls.clear()
+    main._prepress_fix_rounds({"id": 1}, {"id": 1, "segments": []}, _inp, (b"%PDF-base", {}), _v1, [], None,
+                              {}, {}, [0.0], None)
+    check("PREPRESS_PX_VETO=0 — сравнение по-прежнему спрашивается", bool(_ab_calls))
+finally:
+    main.PREPRESS_PX_VETO = True
+    for n_, v_ in _saved.items():
+        setattr(main, n_, v_)
+
 print()
 if FAILS:
     print("ПРОВАЛЕНО: %d" % len(FAILS))

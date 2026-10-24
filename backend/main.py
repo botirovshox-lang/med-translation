@@ -37714,9 +37714,12 @@ def _tune_hints(pid: int, texts: dict, extra: list) -> dict:
                 continue
         else:
             try:
-                t = (extra[int(key[1:])] or {}).get("text")
+                e_ = extra[int(key[1:])] or {}
             except (ValueError, IndexError):
                 continue
+            if h.get("blk") and e_.get("blk") and h["blk"] != e_["blk"]:
+                continue                # под этим номером теперь другая надпись
+            t = e_.get("text")
         if t is not None and _tune_hash(t) == h.get("h") and h.get("tune"):
             out[key] = dict(h["tune"])
     return out
@@ -37749,6 +37752,12 @@ def _tune_hints_save(pid: int, inp: dict, vis: dict) -> int:
         if t is None:
             continue
         cur = places.setdefault(key, {"h": _tune_hash(t), "tune": {}})
+        if key.startswith("x"):
+            # Номер места `x<n>` — порядок надписи в списке, и он меняется,
+            # когда меняется состав надписей; адрес блока картинки — нет.
+            blk_ = (extra[int(key[1:])] or {}).get("blk")
+            if blk_:
+                cur["blk"] = blk_
         if not cur["tune"].get(_LOOP_EXCLUSIVE.get(act, "")):
             cur["tune"][act] = 1
     if not places:
@@ -38526,6 +38535,7 @@ def _job_prepress_body(job: dict) -> None:
 
 
 PREPRESS_ROUNDS = int(os.environ.get("PREPRESS_ROUNDS", "3"))        # кругов правок после первого взгляда
+PREPRESS_PX_VETO = os.environ.get("PREPRESS_PX_VETO", "1") != "0"   # пиксели хуже — откат без вопроса модели
 PREPRESS_SHORTEN = os.environ.get("PREPRESS_SHORTEN", "1") != "0"     # короткий перевод, чтобы влезло
 # Сокращение и перевод места переносятся в проект (решение владельца
 # 24.10.2026: «менять и в проекте»). 0 — только в файле, как прежде.
@@ -39242,14 +39252,34 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
             px2 = _prepress_pixel(project, dict(inp, extra=extra2), cand, texts2)
             px1 = _prepress_pixel(project, dict(inp, extra=extra_cur), cur,
                                   texts_cur if cur is not base else None)
-            ab = _prepress_ab(project, inp, cur, cand, texts_cur, texts2, rnd, models, c, spent)
+            # Этап 3 ТЗ: вариант, у которого тяжёлых находок по пикселям больше,
+            # отвергнется при любом ответе модели (условие приёмки ниже) —
+            # откатываем его бесплатно, без платного сравнения «до/после».
+            # Вето — только когда новые находки по пикселям у КАЖДОГО изменённого
+            # места: иначе модель могла бы принять хорошие места по отдельности.
+            def _heavy(rep_):              # та же мерка тяжести, что у `_loop_score`
+                return {(it.get("key"), it.get("code")) for it in rep_.get("issues") or []
+                        if it.get("key") and export_qa_mod.SEVERITY.get(it.get("code"), 1) >= 2
+                        and not it.get("verify")}
+            new_px = _heavy(px2) - _heavy(px1)
+            bad_px = {k_ for k_, _c in new_px}
+            veto = (PREPRESS_PX_VETO and _loop_score(px2, cand[1])[0] > _loop_score(px1, cur[1])[0]
+                    and all(k_ in bad_px for k_, _cd, _a in plan["applied"]))
+            ab = {} if veto else _prepress_ab(project, inp, cur, cand, texts_cur, texts2, rnd, models, c, spent)
         except _PrepressPause:
             raise
         except Exception as e:
             print("[backend] круг правок #%s: %s" % (project.get("id"), e), file=sys.stderr)
             break
+        if veto:
+            c["pxVeto"] = int(c.get("pxVeto") or 0) + 1
         p1 = _loop_score(px1, cur[1])
         dec = prepress_mod.ab_decide(ab)
+        if veto:
+            # Отвергнутое пикселями действие — «стало хуже» и для учёбы правил
+            # (учёба по детерминированному сигналу, ТЗ этап 4): иначе бесплатно
+            # отвергнутое действие предлагалось бы снова без штрафа.
+            dec = {"good": set(), "bad": {k_ for k_, _cd, _a in plan["applied"]}, "same": set()}
         # Приёмка — сравнением «до/после» по изменившимся местам (этап 5):
         # ни одного места хуже, хотя бы одно лучше, пиксели не хуже.
         ok = bool(dec["good"]) and not dec["bad"] and _loop_score(px2, cand[1])[0] <= p1[0]
@@ -39332,6 +39362,7 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                 print("[backend] взгляд после круга #%s: %s" % (project.get("id"), e), file=sys.stderr)
             fixed_total += len(dec["good"])
         rounds.append({"n": rnd + 1, "applied": len(plan["applied"]), "used": ok, "partial": part,
+                       "pxVeto": bool(veto),            # отвергнут по пикселям, модель не спрашивали
                        # почему круг взят или нет — для разбора владельцем (коды и числа)
                        "acts": sorted({a for _k, _c, a in plan["applied"]}),
                        "better": len(dec["good"]), "worse": len(dec["bad"]), "same": len(dec["same"]),

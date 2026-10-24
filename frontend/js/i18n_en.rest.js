@@ -3332,6 +3332,7 @@ window.I18N.register("en", {
  "та же модель, что у: ": "same model as: ",
  "тариф «Профи»": "“Pro” plan",
  "тариф «Старт»": "“Start” plan",
+ "текст вне мест перевода — разбор его не нашёл": "text outside the translated places — parsing did not find it",
  "текст вышел за свою рамку": "text runs outside its frame",
  "текст заменён, проверка подтвердила улучшение": "the text was replaced, the check confirmed the improvement",
  "текст и находит в нём меньше.": "text and finds less in it.",

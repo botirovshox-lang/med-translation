@@ -801,6 +801,27 @@ check(not st_s2.get("img_same") and st_s2["img_repainted"] == base_rep,
       "выключатель IMG_SAME_KEEP=0 возвращает прежнюю перерисовку: %s" % st_s2["img_repainted"])
 same["target"] = keep_t
 
+print("\n── этап 5а: блок картинки, слепивший строки, — по строкам ──")
+_inp5 = {"extra": [{"blk": "a|0", "text": "One two", "boxes": [{"lines": [[0, 0, 1, .1], [0, .1, 1, .2]]}]}]}
+_ex5 = [dict(_inp5["extra"][0], text="Uno\nDos", srcSplit="Один\nДва")]
+_ov5 = main._pp_img_ov(_inp5, _ex5, {})
+check(_ov5.get("a|0") == {"text": "Uno\nDos", "src": "Один\nДва", "breaks": [0]},
+      "поправка несёт перевод, оригинал по строкам и разрыв после каждой строки: %s" % _ov5)
+_ex5b = [dict(_inp5["extra"][0], text="Uno Dos", srcSplit="Один\nДва")]
+check("breaks" not in main._pp_img_ov(_inp5, _ex5b, {}).get("a|0", {}),
+      "число строк не сошлось — разрывов нет (деление не объявляется)")
+_parts = main.image_text.split_parts({"box": [0, 0, 100, 40], "text": "Uno\nDos", "src": "Один\nДва",
+                                      "breaks": [0], "lineBoxes": [[0, 0, 100, 20], [0, 20, 100, 40]],
+                                      "rows": 2, "lineH": 20})
+check(len(_parts) == 2 and [p_["text"] for p_ in _parts] == ["Uno", "Dos"],
+      "с такой поправкой блок печатается двумя частями: %s" % [p_.get("text") for p_ in _parts])
+check("split_lines" in main.prepress_mod.IMAGE_ACTIONS, "действие доступно надписям картинок")
+_two = {"boxes": [{"lines": [[0, 0, .4, .02], [.5, .001, .9, .021], [0, .03, .9, .05]]}]}
+check(main._pp_rows(_two) == 2, "две рамки одной видимой строки — одна строка (как у печати): %s" % main._pp_rows(_two))
+_ex5c = [dict(_inp5["extra"][0], text="Uno\nDos\nTres", srcSplit="Один\nДва\nТри")]
+check("breaks" not in main._pp_img_ov(_inp5, _ex5c, {}).get("a|0", {}),
+      "строк у надписи две, частей три — разрывов нет")
+
 print("\n── Ю9: обрывок изогнутой страницы — геометрия ──")
 _lines = [{"box": [0, y, 400, y + 26], "rows": 1, "lineH": 26} for y in (0, 30, 60, 90)]
 _frag = {"box": [0, 120, 400, 206], "rows": 1}

@@ -1282,6 +1282,7 @@ function metHintText(code) {
     case "waste:prepressRoundUsed": return TR("кругов правок принято");
     case "waste:prepressLeft": return TR("мест осталось с видимым браком после проверки");
     case "waste:prepressCase": return TR("случаев записано для разбора");
+    case "waste:prepressMissed": return TR("текст вне мест перевода — разбор его не нашёл");
     case "provider:quota": return TR("раз у поставщика моделей кончились деньги");
     case "provider:region": return TR("раз поставщик моделей отказал серверу по стране");
     case "provider:rate": return TR("раз поставщик ответил «слишком часто» (rate limit)");

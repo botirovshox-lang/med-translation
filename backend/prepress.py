@@ -748,7 +748,7 @@ _EXCL = {a: [b for b in g if b != a] for g in _GROUPS for a in g}
 
 # Что умеет печать надписи В КАРТИНКЕ (`image_text.render_target`): прочие
 # действия там ничего не меняют, и круг на них — пустой (замер 23.10.2026).
-IMAGE_ACTIONS = {"plate", "tight", "solo", "leave_orig", "shorter", "translate"}
+IMAGE_ACTIONS = {"plate", "tight", "solo", "leave_orig", "shorter", "translate", "split_lines"}
 
 
 def plan_round(verdicts: dict, base: dict, tried: "dict | None" = None, rules=None,

@@ -501,6 +501,42 @@ finally:
     for n_, v_ in _saved.items():
         setattr(main, n_, v_)
 
+print("\n── этап 5а ТЗ: слепленный блок картинки — по строкам, только в файле ──")
+_saved5 = {n_: getattr(main, n_) for n_ in ("_pp_build", "_prepress_pixel", "_prepress_ab", "_prepress_pages",
+                                             "_pp_feats", "PREPRESS_ROUNDS", "_prepress_split_retranslate")}
+_calls5 = []
+try:
+    main.PREPRESS_ROUNDS = 1
+    main._pp_feats = lambda inp, texts, extra: {}
+    main._pp_build = lambda project, inp, texts, extra, tune: (b"%PDF-c", {"_tune": tune})
+    main._prepress_pages = lambda *a, **k: {}
+    main._prepress_pixel = lambda *a, **k: {"issues": []}
+    main._prepress_ab = lambda *a, **k: {"x0": {"better": "B"}}
+
+    def _split(project, src, lines, models, c, spent, with_src=False):
+        _calls5.append(len(lines))
+        return (["Uno", "Dos"], ["Один", "Два"])
+    main._prepress_split_retranslate = _split
+    _seg5 = {"id": 5, "source": "Один Два", "target": "One two", "status": "translated"}
+    _x = {"blk": "p|0", "sid": 5, "text": "One two",
+          "boxes": [{"src": "Один Два", "lines": [[0, 0, .5, .02], [0, .03, .5, .05]]}]}
+    _v5 = {0: {"defects": [{"key": "x0", "code": "MERGED", "action": "split_lines", "confidence": 0.9}]}}
+    _inp5 = {"texts": {}, "extra": [_x], "data": None, "sources": {}, "images": True, "work": b"", "layout": {}}
+    _cur5, _vc5, _rep5 = main._prepress_fix_rounds({"id": 1}, {"id": 1, "segments": [_seg5]}, _inp5,
+                                                   (b"%PDF-b", {}), _v5, [], None, {}, {}, [0.0], None)
+    _sh = [x_ for x_ in (_rep5.get("shortened") or []) if x_.get("key") == "x0"]
+    check("деление по строкам принято", _calls5 == [2] and _sh and _sh[0]["kind"] == "split", str(_rep5))
+    check("в отчёте без сегмента — кнопки «применить к переводу» нет", _sh and _sh[0]["segs"] == [], str(_sh))
+    check("перевод сегмента не тронут", _seg5["target"] == "One two")
+    _calls5.clear()
+    main._prepress_fix_rounds({"id": 1}, {"id": 1, "segments": [_seg5]},
+                              dict(_inp5, extra=[dict(_x, hadBreaks=1)]), (b"%PDF-b", {}), _v5, [], None, {}, {},
+                              [0.0], None)
+    check("блок, уже разбитый на части, по строкам не делим", _calls5 == [])
+finally:
+    for n_, v_ in _saved5.items():
+        setattr(main, n_, v_)
+
 print("\n── этап 4 ТЗ: случаи — места, которые проверка не решила ──")
 import io as _io2
 import time as _time2

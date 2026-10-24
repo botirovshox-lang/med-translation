@@ -3332,6 +3332,7 @@ window.I18N.register("uz", {
  "та же модель, что у: ": "xuddi shu model: ",
  "тариф «Профи»": "«Profi» tarifi",
  "тариф «Старт»": "«Start» tarifi",
+ "текст вне мест перевода — разбор его не нашёл": "tarjima joylaridan tashqaridagi matn — tahlil uni topmadi",
  "текст вышел за свою рамку": "matn o‘z ramkasidan chiqib ketgan",
  "текст заменён, проверка подтвердила улучшение": "matn almashtirildi, tekshiruv yaxshilanishni tasdiqladi",
  "текст и находит в нём меньше.": "va unda kamroq kamchilik topadi.",

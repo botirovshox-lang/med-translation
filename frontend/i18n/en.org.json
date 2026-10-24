@@ -878,5 +878,6 @@
   "кругов правок в проверке перед выдачей": "fix rounds in the pre-delivery check",
   "кругов правок принято": "fix rounds accepted",
   "мест осталось с видимым браком после проверки": "places left with visible defects after the check",
-  "случаев записано для разбора": "cases recorded for review"
+  "случаев записано для разбора": "cases recorded for review",
+  "текст вне мест перевода — разбор его не нашёл": "text outside the translated places — parsing did not find it"
 }

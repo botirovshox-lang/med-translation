@@ -10229,6 +10229,7 @@ METRICS_WASTE_TEXT = {
     "prepressRoundUsed": "из них принято",
     "prepressLeft": "мест осталось с видимым браком после проверки",
     "prepressCase": "случаев записано для разбора",
+    "prepressMissed": "текст вне мест перевода — разбор его не нашёл",
 }
 METRICS_PROVIDER_TEXT = {
     "quota": "кончились деньги у поставщика",
@@ -34368,9 +34369,15 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict, pair=None) -> 
             ov_ = (getattr(_IMG_OV, "v", None) or {}).get("%s|%d" % (name, i)) or {}
             if ov_.get("leave"):
                 continue                     # Ы5: проверка решила оставить оригинал (печать, логотип)
+            src_print = (seg.get("source") or "").strip()
             if ov_.get("text"):
                 target = ov_["text"]         # Ы5: короче / переведено — только в файле
-                b = dict(b, breaks=None)     # переносы считались для прежнего текста
+                if ov_.get("breaks"):
+                    # Этап 5а: перевод по строкам — разрыв после каждой строки.
+                    b = dict(b, breaks=ov_["breaks"])
+                    src_print = ov_.get("src") or src_print
+                else:
+                    b = dict(b, breaks=None)     # переносы считались для прежнего текста
             if not target:
                 # Не переведён — надпись остаётся на языке оригинала. Стереть
                 # её «пока что» значило бы выбросить текст совсем.
@@ -34404,7 +34411,7 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict, pair=None) -> 
                           "fam": _blk_fam(im_fam, b) or ("serif" if b.get("serif") else ""),
                           # Исходный текст: по нему меряется кегль букв
                           # (заглавные или строчные, `text_paint.measure`).
-                          "src": (seg.get("source") or "").strip()}) if hasattr(image_text, "split_parts")
+                          "src": src_print}) if hasattr(image_text, "split_parts")
                          else [{"box": b["box"], "text": target, "align": _blk_align(b),
                                 "lineH": b.get("lineH"), "rows": b.get("rows"),
                                 "lineBoxes": b.get("lineBoxes"),
@@ -37468,6 +37475,19 @@ def _image_prepress_inputs(project: dict, with_work: bool = True) -> Optional[di
     return inp
 
 
+def _pp_rows(e: dict) -> int:
+    """Строк у надписи — тем же счётом, что у печати (`row_boxes` сводит рамки
+    одной видимой строки, Ш31): иначе `split_parts` молча отдал бы блок целиком."""
+    lines = ((e.get("boxes") or [{}])[0] or {}).get("lines") or []
+    try:
+        # Рамки во входе приёмки — доли листа, а у `row_boxes` порог «в точках»
+        # (1.0): в условные точки, иначе сведение не сработало бы никогда.
+        px = [[float(v) * 10000 for v in lb[:4]] for lb in lines if lb and len(lb) >= 4]
+        return len(image_text.row_boxes(px)) if image_text is not None else len(lines)
+    except Exception:
+        return len(lines)
+
+
 def _pp_img_ov(inp: dict, extra: list, tune: dict) -> dict:
     """Поправки к выгрузке картинок по адресу блока: текст, «оставить
     оригинал», рычаги печати."""
@@ -37484,6 +37504,12 @@ def _pp_img_ov(inp: dict, extra: list, tune: dict) -> dict:
             o["leave"] = True
         elif t1 != t0:
             o["text"] = t1
+            ss = e.get("srcSplit")
+            nl_ = _pp_rows(e)
+            if ss and nl_ >= 2 and t1.count("\n") == ss.count("\n") == nl_ - 1:
+                # Этап 5а: каждая строка — своей частью; без этого `split_parts`
+                # молча отдал бы блок целиком, и «разделили» было бы неправдой.
+                o["src"], o["breaks"] = ss, list(range(nl_ - 1))
         tn = (tune or {}).get("x%d" % n)
         if tn:
             o["tune"] = {k: v for k, v in tn.items() if k in ("plate", "tight", "solo")}
@@ -38556,9 +38582,12 @@ def _job_prepress_body(job: dict) -> None:
                 if used_:
                     _ev("waste.prepressRoundUsed", _tenant_of(project), used_)
         left = []
+        missed = 0
         for pg, v in sorted(v_final.items()):
             for d in v.get("defects") or []:
                 if float(d.get("confidence") or 0) >= prepress_mod.MIN_CONF:
+                    if not d.get("place") and d.get("code") in ("UNTRANSLATED", "MISSING"):
+                        missed += 1     # текст вне мест перевода — починить нечем (этап 5б: сперва замер)
                     # Человеку — только видимый брак; гарнитура, кегль, выключка
                     # и резкость — сводка владельцу (на них человек не ответит).
                     if d.get("code") in prepress_mod.USER_CODES:
@@ -38569,6 +38598,8 @@ def _job_prepress_body(job: dict) -> None:
                         c.setdefault("other", []).append(d["what"][:160])
         report.update({"checked": len(v_final),
                        "unchecked": int(c.get("unchecked") or 0), "left": left[:50]})
+        if missed:
+            _ev("waste.prepressMissed", _tenant_of(project), missed)
         if left:
             _ev("waste.prepressLeft", _tenant_of(project), len(left))
             try:
@@ -39113,7 +39144,7 @@ def _prepress_split_retranslate(project: dict, src: str, lines: list, models: li
         return None
     srcs = [str((x or {}).get("src") or "").strip() for x in arr]
     tgts = [str((x or {}).get("tgt") or "").strip() for x in arr]
-    if not all(srcs) or not all(tgts) or any("\n" in t for t in tgts):
+    if not all(srcs) or not all(tgts) or any("\n" in t for t in tgts + srcs):
         return None
     if " ".join(" ".join(srcs).split()) != " ".join(src.split()):
         return None                      # оригинал поделён не подряд или изменён
@@ -39409,6 +39440,18 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                     elif (act == "translate" and " ".join(now.split()) == " ".join(src_t.split())
                           and sum(ch.isalpha() for ch in src_t) >= 4):
                         t_new, kd = _prepress_translate_place(project, src_t, models, c, spent), "translate"
+                    elif act == "split_lines":
+                        # Этап 5а: блок картинки слепил разные строки (MERGED) — перевод
+                        # заново ПО СТРОКАМ оригинала и печать каждой строки отдельной
+                        # частью (`split_parts`). Только в файле, в проект не пишется.
+                        nl_ = _pp_rows(e_)
+                        if nl_ >= 2 and not e_.get("hadBreaks"):
+                            got_ = _prepress_split_retranslate(
+                                project, src_t, ["line %d of %d" % (q + 1, nl_) for q in range(nl_)],
+                                models, c, spent, with_src=True)
+                            if got_:
+                                t_new, kd = "\n".join(got_[0]), "split"
+                                e_["srcSplit"] = "\n".join(got_[1])
                     if t_new:
                         e_["text"] = t_new
                         xnew[key] = (now, t_new, kd, seg_["id"])
@@ -39513,6 +39556,8 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                 for k, (_f, t_, _kd, _sid) in xnew.items():
                     if k in gk:
                         extra_g[int(k[1:])]["text"] = t_
+                        if extra2[int(k[1:])].get("srcSplit"):          # этап 5а: и разбивка по строкам
+                            extra_g[int(k[1:])]["srcSplit"] = extra2[int(k[1:])]["srcSplit"]
                 for k in plan["leave"] & gk:
                     if k.startswith("p"):
                         texts_g.pop(int(k[1:]), None)
@@ -39602,7 +39647,9 @@ def _prepress_fix_rounds(job: dict, project: dict, inp: dict, base: tuple, v1: d
                             for idx, (frm, to, kd) in sorted(changed.items())][:50]
     if changed_x:
         rep.setdefault("shortened", [])
-        rep["shortened"] += [{"key": k, "from": frm, "to": to, "kind": kd, "segs": [sid]}
+        # Деление на строки (этап 5а) — только в файле: без сегмента у отчёта
+        # нет и кнопки «применить к переводу» (раскладка с «\n» в проект — брак).
+        rep["shortened"] += [{"key": k, "from": frm, "to": to, "kind": kd, "segs": [] if kd == "split" else [sid]}
                              for k, (frm, to, kd, sid) in sorted(changed_x.items())][:50]
     return cur, v_cur, rep
 
@@ -39771,6 +39818,8 @@ def _image_qa_inputs(project: dict, page_w) -> "dict | None":
                                      (project.get("src"), project.get("tgt"))))
             x0, y0, x1, y1 = (float(v) for v in b["box"][:4])
             extra.append({"text": text, "sid": (seg or {}).get("id"), "blk": "%s|%d" % (im.get("part"), i),
+                          # этап 5а: блок, уже разбитый на части (Ш7, Х19), по строкам не делим
+                          **({"hadBreaks": 1} if (b.get("breaks") or b.get("sizeBreak")) else {}),
                           **({"keep": 1} if keep_ else {}),
                           "boxes": [{
                 "page": k, "frac": 1, "image": 1,

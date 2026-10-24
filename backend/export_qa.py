@@ -340,6 +340,43 @@ def printed_items(layout: dict, texts: dict, extra: "list | None",
     return items
 
 
+def _poly_area(p: list) -> float:
+    return abs(sum(p[i][0] * p[i - 1][1] - p[i - 1][0] * p[i][1] for i in range(len(p)))) / 2.0
+
+
+def _poly_clip(subj: list, clip: list) -> list:
+    """Пересечение выпуклых многоугольников (Сазерленд — Ходжмен)."""
+    def inside(pt, a, b, sgn):
+        return sgn * ((b[0] - a[0]) * (pt[1] - a[1]) - (b[1] - a[1]) * (pt[0] - a[0])) >= 0
+
+    def cross(p1, p2, a, b):
+        x1, y1, x2, y2 = p1[0], p1[1], p2[0], p2[1]
+        x3, y3, x4, y4 = a[0], a[1], b[0], b[1]
+        d = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if abs(d) < 1e-12:
+            return p2
+        t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / d
+        return (x1 + t * (x2 - x1), y1 + t * (y2 - y1))
+    # Обход клиппера — по знаку площади (точки детектора идут по часовой в y вниз).
+    sa = sum(clip[i][0] * clip[i - 1][1] - clip[i - 1][0] * clip[i][1] for i in range(len(clip)))
+    sgn = -1.0 if sa > 0 else 1.0
+    out = list(subj)
+    for i in range(len(clip)):
+        a, b = clip[i - 1], clip[i]
+        inp, out = out, []
+        if not inp:
+            break
+        for j in range(len(inp)):
+            cur, prev = inp[j], inp[j - 1]
+            if inside(cur, a, b, sgn):
+                if not inside(prev, a, b, sgn):
+                    out.append(cross(prev, cur, a, b))
+                out.append(cur)
+            elif inside(prev, a, b, sgn):
+                out.append(cross(prev, cur, a, b))
+    return out
+
+
 def duplicates(items: list, sizes: dict) -> list:
     """Две печати в одно место: строки двух мест (долями листа) перекрываются
     больше чем на `QA_DUP` меньшей. Сравниваются строки, а не рамки абзацев:
@@ -352,13 +389,21 @@ def duplicates(items: list, sizes: dict) -> list:
     for pg, its in by_page.items():
         pw, ph = sizes.get(pg, (612.0, 792.0))
         rects = []
+        polys: dict = {}
         for it in its:
             for b in it["boxes"]:
                 if b.get("repeat"):
                     continue
-                for r in _line_rects(b, pw, ph):
+                lr = _line_rects(b, pw, ph)
+                pl = b.get("polys") if b.get("frac") else None
+                for n_, r in enumerate(lr):
                     if r[2] > r[0] and r[3] > r[1]:
                         rects.append((it["key"], r))
+                        # Р2: у наклонной строки (Э14) — её четырёхугольник:
+                        # ось-параллельные рамки соседних наклонных строк
+                        # перекрываются ВСЕГДА (визитка 66: шесть «двойников»).
+                        if pl and len(pl) == len(lr) and pl[n_] and len(pl[n_]) == 4:
+                            polys[(it["key"], r)] = [tuple(float(v) for v in pt[:2]) for pt in pl[n_]]
         rects.sort(key=lambda kr: kr[1][1])
         hit: set = set()
         for a in range(len(rects)):
@@ -373,7 +418,15 @@ def duplicates(items: list, sizes: dict) -> list:
                 iy = min(ra[3], rc[3]) - max(ra[1], rc[1])
                 if ix <= 0 or iy <= 0:
                     continue
-                small = min((ra[2] - ra[0]) * (ra[3] - ra[1]), (rc[2] - rc[0]) * (rc[3] - rc[1]))
+                pa_, pc_ = polys.get((ka, ra)), polys.get((kc, rc))
+                if pa_ and pc_:
+                    small = min(_poly_area(pa_), _poly_area(pc_))
+                    inter = _poly_area(_poly_clip(pa_, pc_)) if small > 0 else 0.0
+                    if not (small > 0 and inter >= QA_DUP * small):
+                        continue
+                    small, ix, iy = 1.0, 1.0, 1.0      # совпали многоугольники — двойник
+                else:
+                    small = min((ra[2] - ra[0]) * (ra[3] - ra[1]), (rc[2] - rc[0]) * (rc[3] - rc[1]))
                 if small > 0 and ix * iy >= QA_DUP * small:
                     k = tuple(sorted((ka, kc)))
                     if k not in hit:

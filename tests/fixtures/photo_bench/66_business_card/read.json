@@ -2,31 +2,31 @@
  "blocks": [
   {
    "i": 0,
-   "text": "ООО «Северный мост»\nпроектирование и надзор",
+   "text": "ООО «Северный мост»",
    "overlay": false,
    "hand": false,
    "serif": false
   },
   {
    "i": 1,
-   "text": "ООО «Северны[…]\nпроектирование и надзор",
+   "text": "проектирование и надзор",
    "overlay": false,
    "hand": false,
    "serif": false
   },
   {
    "i": 2,
-   "text": "Игорь Самойлов\nВедущий инженер-сметчик",
+   "text": "Игорь Самойлов",
    "overlay": false,
    "hand": false,
    "serif": true
   },
   {
    "i": 3,
-   "text": "Игорь Сам[…]\nВедущий инженер-сметчик",
+   "text": "Ведущий инженер-сметчик",
    "overlay": false,
    "hand": false,
-   "serif": true
+   "serif": false
   },
   {
    "i": 4,
@@ -37,14 +37,14 @@
   },
   {
    "i": 5,
-   "text": "+7 (912) 405-18-77\ni.samoylov@sevmost-proekt.ru",
+   "text": "i.samoylov@sevmost-proekt.ru",
    "overlay": false,
    "hand": false,
    "serif": false
   },
   {
    "i": 6,
-   "text": "i.samoylov@sevmost-pro[…]\nг. Пермь, ул. Лесная, 14, оф. 302",
+   "text": "г. Пермь, ул. Лесная, 14, оф. 302",
    "overlay": false,
    "hand": false,
    "serif": false
@@ -58,35 +58,35 @@
   },
   {
    "i": 8,
-   "text": "Сметы на строительство и ремонт\nТехнический надзор за об[…]",
+   "text": "Сметы на строительство и ремонт",
    "overlay": false,
    "hand": false,
    "serif": false
   },
   {
    "i": 9,
-   "text": "[…]строительство и ремонт\nТехнический надзор за объектами\nОбсле[…]",
+   "text": "Технический надзор за объектами",
    "overlay": false,
    "hand": false,
    "serif": false
   },
   {
    "i": 10,
-   "text": "[…]ский надзор за объектами\nОбследование мостов и эстакад\nЭкспертиза проектной до[…]",
+   "text": "Обследование мостов и эстакад",
    "overlay": false,
    "hand": false,
    "serif": false
   },
   {
    "i": 11,
-   "text": "[…]ование мостов и эстакад\nЭкспертиза проектной документации\nКонсультации по ценообразо[…]",
+   "text": "Экспертиза проектной документации",
    "overlay": false,
    "hand": false,
    "serif": false
   },
   {
    "i": 12,
-   "text": "[…]проектной документации\nКонсультации по ценообразованию",
+   "text": "Консультации по ценообразованию",
    "overlay": false,
    "hand": false,
    "serif": false

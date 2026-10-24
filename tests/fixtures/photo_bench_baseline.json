@@ -7,7 +7,8 @@
   "noTr": 0,
   "segments": 14,
   "stats": {
-   "img_repainted": 15
+   "img_repainted": 14,
+   "img_same": 1
   },
   "unread": 0,
   "weight": 11
@@ -77,7 +78,6 @@
  },
  "26_receipt": {
   "counts": {
-   "BLANK": 1,
    "SMALL": 1,
    "UNTRANSLATED": 4
   },
@@ -87,7 +87,7 @@
    "img_repainted": 11
   },
   "unread": 0,
-  "weight": 16
+  "weight": 14
  },
  "27_old_newspaper": {
   "counts": {},
@@ -175,7 +175,8 @@
   "noTr": 1,
   "segments": 13,
   "stats": {
-   "img_repainted": 12,
+   "img_repainted": 11,
+   "img_same": 1,
    "img_untranslated": 1
   },
   "unread": 0,
@@ -189,23 +190,22 @@
   "noTr": 0,
   "segments": 9,
   "stats": {
-   "img_repainted": 9
+   "img_collide": 1,
+   "img_repainted": 8
   },
   "unread": 0,
   "weight": 10
  },
  "66_business_card": {
-  "counts": {
-   "DUPLICATE": 6,
-   "SMALL": 4
-  },
+  "counts": {},
   "noTr": 0,
   "segments": 13,
   "stats": {
-   "img_repainted": 13
+   "img_repainted": 12,
+   "img_same": 1
   },
   "unread": 0,
-  "weight": 26
+  "weight": 0
  },
  "67_shadow_doc": {
   "counts": {
@@ -226,7 +226,7 @@
   "noTr": 0,
   "segments": 2,
   "stats": {
-   "img_repainted": 2
+   "img_bilingual": 2
   },
   "unread": 0,
   "weight": 0

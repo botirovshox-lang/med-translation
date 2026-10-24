@@ -637,5 +637,39 @@ check(not it._hits((100, 100, 300, 165), nb_, [100, 100, 300, 170], 30),
       "чужая рамка внутри своей — своё место, стирается своим же стиранием")
 check(it.IMG_COLLIDE in ("off", "measure", "fix"), "режим сторожа: %s" % it.IMG_COLLIDE)
 
+print("\n── Р1: вырезка наклонной строки — выпрямленная ──")
+import io as _io
+from PIL import Image as _Im, ImageDraw as _Dr
+_c = _Im.new("RGB", (400, 300), "white")
+_d = _Dr.Draw(_c)
+_q = [(50, 150), (350, 100), (355, 130), (55, 180)]       # строка 300 px под −9°, толщина ~30
+_d.polygon(_q, fill="black")
+_buf = _io.BytesIO()
+_c.save(_buf, "PNG")
+_png = it.crop(_buf.getvalue(), [50, 100, 355, 180], line_h=30, rows=1, quad=[list(p_) for p_ in _q])
+_out = _Im.open(_io.BytesIO(_png))
+check(_out.size[0] > 2.5 * _out.size[1], "выпрямленная вырезка — длинная полоса, а не ось-параллельная рамка: %s" % (_out.size,))
+_a = __import__("numpy").asarray(_out.convert("L"))
+_mid = _a[_a.shape[0] // 2]
+check(float((_mid < 128).mean()) > 0.8, "строка легла горизонтально посередине вырезки")
+_png2 = it.crop(_buf.getvalue(), [50, 100, 355, 180], line_h=30, rows=1,
+                quad=[list(_q[1]), list(_q[2]), list(_q[3]), list(_q[0])])
+check(_png2 == it.crop(_buf.getvalue(), [50, 100, 355, 180], line_h=30, rows=1),
+      "порядок точек не тот (поперёк длиннее) — вырезка по рамке, как раньше")
+
+print("\n── Р2: двойники наклонных строк — по многоугольникам ──")
+import export_qa as _qa
+_sq = [(0, 0), (1, 0), (1, 1), (0, 1)]
+check(abs(_qa._poly_area(_qa._poly_clip(_sq, [(0.5, 0), (1.5, 0), (1.5, 1), (0.5, 1)])) - 0.5) < 1e-9,
+      "пересечение квадратов — половина площади")
+_l1 = [(0, 0.10), (0.6, 0.0), (0.6, 0.03), (0, 0.13)]          # две соседние наклонные строки
+_l2 = [(0, 0.16), (0.6, 0.06), (0.6, 0.09), (0, 0.19)]
+check(_qa._poly_area(_qa._poly_clip(_l1, _l2)) < 1e-9, "соседние наклонные строки не пересекаются")
+_it = lambda key, poly: {"key": key, "page": 0, "text": "x", "boxes": [{
+    "frac": 1, "image": 1, "x0": 0, "x1": 0.6, "top": min(p[1] for p in poly), "bottom": max(p[1] for p in poly),
+    "lines": [[0, min(p[1] for p in poly), 0.6, max(p[1] for p in poly)]], "polys": [poly]}]}
+check(not _qa.duplicates([_it("x0", _l1), _it("x1", _l2)], {}), "рамки перекрыты, многоугольники нет — не двойник")
+check(_qa.duplicates([_it("x0", _l1), _it("x1", _l1)], {}), "одна и та же строка дважды — двойник")
+
 print("\n" + ("ВСЁ ПРОШЛО" if not fail else "ПРОВАЛЕНО: " + "; ".join(fail)))
 sys.exit(1 if fail else 0)

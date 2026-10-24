@@ -2329,15 +2329,54 @@ def _pad_for(box, line_h=None, rows=None, ratio: float = 0.14) -> int:
     return max(1, int(round(min(base, h) * ratio)))
 
 
+IMG_CROP_QUAD = os.environ.get("IMG_CROP_QUAD", "1") != "0"     # Р1: вырезка наклонной строки — выпрямленная
+
+
+def _quad_crop(im, quad, pad: float):
+    """Р1: наклонная строка (четырёхугольник детектора: верх-лево, верх-право,
+    низ-право, низ-лево) — выпрямленным прямоугольником с полем `pad` (доля
+    толщины строки) по нормали и вдоль. Ось-параллельная рамка строки под
+    углом 8° накрывает две-три соседние строки (визитка 66), и модель
+    добросовестно читала их все — тексты блоков дублировали соседей."""
+    try:
+        import cv2
+    except Exception:
+        return None
+    q = _np.array(quad, dtype=_np.float64)
+    if q.shape != (4, 2):
+        return None
+    if q[1][0] < q[0][0]:
+        q = q[[2, 3, 0, 1]]             # точки с конца строки — разворот на 180°
+    ux = q[1] - q[0]
+    uy = q[3] - q[0]
+    L, H = float(_np.hypot(*ux)), float(_np.hypot(*uy))
+    if L < 4 or H < 4 or L < H:
+        # Строка длиннее своей толщины; иначе порядок точек не тот (кадр
+        # повёрнут), и «выпрямленная» строка встала бы вертикально — по рамке.
+        return None
+    ux, uy = ux / L, uy / H
+    p = max(2.0, pad * H)
+    pn = max(2.0, 0.6 * pad * H)        # поперёк — уже: межстрочный у визитки ~1.3 толщины
+    src = _np.array([q[0] - ux * p - uy * pn, q[1] + ux * p - uy * pn,
+                     q[2] + ux * p + uy * pn, q[3] - ux * p + uy * pn], dtype=_np.float32)
+    W2, H2 = int(round(L + 2 * p)), int(round(H + 2 * pn))
+    dst = _np.array([[0, 0], [W2 - 1, 0], [W2 - 1, H2 - 1], [0, H2 - 1]], dtype=_np.float32)
+    arr = _np.asarray(im)
+    M = cv2.getPerspectiveTransform(src, dst)
+    out = cv2.warpPerspective(arr, M, (W2, H2), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+    return Image.fromarray(out)
+
+
 def crop(img_bytes: bytes, box: list, pad: float = 0.25,
-         line_h=None, rows=None) -> Optional[bytes]:
+         line_h=None, rows=None, quad=None) -> Optional[bytes]:
     """PNG с одним блоком. Нужен двоим: модели — чтобы прочитать текст
     без соседних надписей, человеку — чтобы увидеть в карточке сегмента,
     что было на картинке. Без второго проверить распознанное нечем.
 
     Поле считается от строки: у подписи из шести строк поле «четверть блока»
     захватывает полторы чужие строки, и модель добросовестно перепишет
-    в этот сегмент соседний абзац."""
+    в этот сегмент соседний абзац. `quad` — четырёхугольник наклонной строки
+    (Э14): вырезка тогда выпрямленная (Р1), без соседних строк."""
     if Image is None:
         return None
     x0, y0, x1, y1 = box
@@ -2348,6 +2387,15 @@ def crop(img_bytes: bytes, box: list, pad: float = 0.25,
         im = im.convert("RGBA") if _has_alpha(im) else im.convert("RGB")
     except Exception:
         return None
+    if quad and IMG_CROP_QUAD and _np is not None:
+        try:
+            qim = _quad_crop(im, quad, pad)
+        except Exception:
+            qim = None
+        if qim is not None:
+            out = io.BytesIO()
+            qim.save(out, "PNG")
+            return out.getvalue()
     p = max(2, _pad_for(box, line_h, rows, pad))
     x0, y0, x1, y1 = _clip((x0 - p, y0 - p, x1 + p, y1 + p), im.size[0], im.size[1])
     if x1 <= x0 or y1 <= y0:

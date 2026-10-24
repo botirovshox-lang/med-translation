@@ -18397,8 +18397,11 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
         # lineH/rows — чтобы поле кропа считалось от СТРОКИ: у подписи
         # в шесть строк «четверть блока» захватывает полторы чужие, и модель
         # добросовестно перепишет соседний абзац в этот сегмент.
+        # Р1: наклонная строка (Э14) — выпрямленной вырезкой по её четырёхугольнику.
+        quad_i = b.get("quad") if (b.get("rows") or 1) <= 1 and i not in tails.values() else None
         crop = image_text.crop(img_bytes, box_i, line_h=b.get("lineH"),
-                               rows=(b.get("rows") or 1) - (1 if i in tails.values() else 0) or 1)
+                               rows=(b.get("rows") or 1) - (1 if i in tails.values() else 0) or 1,
+                               quad=quad_i)
         if not crop:
             continue
         asked.append(i)
@@ -18955,7 +18958,8 @@ def image_crop(pid: int, seg: int = 0, part: str = "", block: int = 0):
     if blob is None:
         raise HTTPException(404, "Картинки %s в исходнике больше нет" % part)
     b = blocks[block]
-    png = image_text.crop(blob, b["box"], line_h=b.get("lineH"), rows=b.get("rows"))
+    png = image_text.crop(blob, b["box"], line_h=b.get("lineH"), rows=b.get("rows"),
+                          quad=b.get("quad") if (b.get("rows") or 1) <= 1 else None)
     if not png:
         raise HTTPException(404, "Кусок картинки не вырезался")
     return Response(content=png, media_type="image/png",
@@ -34202,9 +34206,58 @@ def _blk_align(b: dict) -> str:
 
 
 IMG_SAME_KEEP = os.environ.get("IMG_SAME_KEEP", "1") != "0"      # Ю1: перевод = оригинал — не трогать
+IMG_BILINGUAL_KEEP = os.environ.get("IMG_BILINGUAL_KEEP", "1") != "0"   # Ю4: двуязычная табличка — не трогать
+IMG_BILINGUAL_SHARE = float(os.environ.get("IMG_BILINGUAL_SHARE", "0.3"))  # доля букв оригинала на языке перевода
 
 
-def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
+def _image_keep(target: str, source: str, pair=None) -> Optional[str]:
+    """Почему блок картинки остаётся как на снимке: "same" (Ю1 — перевод
+    буква в букву равен оригиналу), "bilingual" (Ю4) либо None. Одно правило
+    на выгрузку и на приёмку — разойдись они, приёмка искала бы печать там,
+    где её намеренно нет.
+
+    Ю4: табличка на двух языках (казахский и русский, перевод на русский) —
+    в блоке есть строка, которую модель перенесла в перевод буква в букву
+    (она уже на языке перевода), и строка с отличительными буквами языка
+    оригинала (`distinctive` в lang_rules.json). Перепечатанная, такая табличка
+    выходила дублями («Городская поликлиника №4» дважды): русский текст на ней
+    уже есть, и клиент читает его как есть. Нет данных об отличительных
+    буквах языка оригинала — молчим (закон `DOMAIN_RULES`)."""
+    if IMG_SAME_KEEP and _same_as_source(target, source or ""):
+        return "same"
+    if not IMG_BILINGUAL_KEEP or not pair:
+        return None
+    dist = set((_lang_rule(pair[0]) or {}).get("distinctive") or "")
+    if not dist:
+        return None
+    # Текст сегмента склеен в строку пробелами, разбивка на строки — у перевода:
+    # ищем в оригинале строки ПЕРЕВОДА, перенесённые буква в букву (по границам слов).
+    rest = " ".join((source or "").split()).lower()
+    total = sum(c.isalpha() for c in rest)
+    if not total:
+        return None
+    matched, covered = False, 0
+    for ln in sorted({" ".join(x.split()).lower() for x in (target or "").splitlines()}, key=len, reverse=True):
+        letters = sum(c.isalpha() for c in ln)
+        if letters < 6 or any(c in dist for c in ln):
+            continue
+        m_ = re.search(r"(?<!\w)" + re.escape(ln) + r"(?!\w)", rest)
+        if not m_:
+            continue
+        rest = rest[:m_.start()] + " " + rest[m_.end():]
+        covered += letters
+        # Довод — строка от двух слов: одиночное имя («Алматы») одинаково на
+        # обоих языках; одиночное слово («круглосуточно») идёт только в долю.
+        if sum(1 for w_ in ln.split() if any(c.isalpha() for c in w_)) >= 2:
+            matched = True
+    # Русский текст обязан быть заметной ЧАСТЬЮ таблички: казахский абзац с
+    # одной русской цитатой — не табличка на двух языках, его переводят.
+    if not matched or covered < IMG_BILINGUAL_SHARE * total:
+        return None
+    return "bilingual" if any(c in dist for c in rest) else None
+
+
+def _export_images(doc, data: dict, by_id: dict, qn, stats: dict, pair=None) -> None:
     """Перевод, вписанный обратно в картинки.
 
     Байты картинки подменяются в КОПИИ документа: исходник на диске не
@@ -34263,12 +34316,15 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict) -> None:
                 # её «пока что» значило бы выбросить текст совсем.
                 stats["img_untranslated"] += 1
                 continue
-            if IMG_SAME_KEEP and not ov_.get("text") and _same_as_source(target, seg.get("source") or ""):
+            keep_ = None if ov_.get("text") else _image_keep(target, seg.get("source") or "", pair)
+            if keep_:
                 # Ю1: перевод буква в букву равен оригиналу (e-mail, телефон,
                 # латинское название) — надпись остаётся как на снимке. Стёртая
                 # и перепечатанная, она ложилась мимо своего места на соседние
-                # строки (визитка 66: e-mail поверх телефона).
-                stats["img_same"] = stats.get("img_same", 0) + 1
+                # строки (визитка 66: e-mail поверх телефона). Ю4: двуязычная
+                # табличка — русский текст на ней уже есть.
+                key_ = "img_same" if keep_ == "same" else "img_bilingual"
+                stats[key_] = stats.get(key_, 0) + 1
                 continue
             n_items0 = len(items)
             items.extend(image_text.split_parts({"box": b["box"], "text": target, "align": _blk_align(b),
@@ -34635,7 +34691,7 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
 
     # Картинки идут ПОСЛЕ абзацев и только теперь: подписи, которые здесь
     # добавляются, сдвигают абзацы, а `all_p` уже разобран по номерам.
-    _export_images(doc, data, by_id, qn, stats)
+    _export_images(doc, data, by_id, qn, stats, pair=(project.get("src"), project.get("tgt")))
     # ПОСЛЕ всех правок: пересчитывать надо готовый текст, а не промежуточный.
     stats["fields_refreshed"] = _refresh_fields(doc, qn)
     stats["dirFlipped"] = _docx_flip_direction(doc, qn, project.get("src"), project.get("tgt"))
@@ -39470,7 +39526,8 @@ def _image_qa_inputs(project: dict, page_w) -> "dict | None":
             if not text:
                 continue
             # Ю1: оставлено как на снимке намеренно — место объяснено, печати не ждём.
-            keep_ = IMG_SAME_KEEP and _same_as_source(text, (seg or {}).get("source") or "")
+            keep_ = bool(_image_keep(text, (seg or {}).get("source") or "",
+                                     (project.get("src"), project.get("tgt"))))
             x0, y0, x1, y1 = (float(v) for v in b["box"][:4])
             extra.append({"text": text, "sid": (seg or {}).get("id"), "blk": "%s|%d" % (im.get("part"), i),
                           **({"keep": 1} if keep_ else {}),
@@ -39480,6 +39537,10 @@ def _image_qa_inputs(project: dict, page_w) -> "dict | None":
                 "x0": x0 / w, "x1": x1 / w, "top": y0 / h, "bottom": y1 / h,
                 "lines": [[lb[0] / w, lb[1] / h, lb[2] / w, lb[3] / h]
                           for lb in (b.get("lineBoxes") or []) if lb and len(lb) >= 4],
+                # Р2: наклонная однострочная надпись (Э14) — её четырёхугольник:
+                # двойники приёмка ищет по нему, а не по ось-параллельной рамке.
+                **({"polys": [[[p_[0] / w, p_[1] / h] for p_ in b["quad"]]]}
+                   if b.get("quad") and len(b.get("lineBoxes") or []) == 1 else {}),
                 "size": float(b.get("lineH") or (y1 - y0)) / h}]})
     if not extra:
         return None

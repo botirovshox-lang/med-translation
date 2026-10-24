@@ -37,7 +37,7 @@ for _s in (sys.stdout, sys.stderr):
         pass
 # Счётчики выгрузки, которые называют исход блока (перерисовано, оставлено,
 # подписью, отказ) — их и сравниваем с базой рядом с находками приёмки.
-STAT_KEYS = ("img_repainted", "img_same", "img_small_kept", "img_collide", "img_captioned",
+STAT_KEYS = ("img_repainted", "img_same", "img_bilingual", "img_small_kept", "img_collide", "img_captioned",
              "img_flat", "img_font", "img_vertical", "img_failed", "img_overflow", "img_untranslated")
 
 

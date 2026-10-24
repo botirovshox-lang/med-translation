@@ -379,13 +379,20 @@ function ImagesCard({ project, store, toast }) {
           + TR("даты, номера кадров, показания приборов вроде «250MA». Правило простое ")
           + TR("и языконезависимое: меньше трёх букв."),
           () => openBlocks("noise")),
+        st.fragment > 0 && row(TR("Оставлено как на снимке: строки на изгибе"), st.fragment, null,
+          TR("Строки страницы, снятой с изгибом, найдены обрывками наискосок, и перевод лёг бы ")
+          + TR("кашей поверх букв. Они остаются как на снимке. Нажмите на число, чтобы ")
+          + TR("посмотреть их и перевести всё равно."),
+          () => openBlocks("fragment")),
         st.unread > 0 && row(TR("Не прочитано"), st.unread, "var(--c-warning)"),
         st.unreadable > 0 && row(TR("Картинки не читаются"), st.unreadable, "var(--c-warning)")),
 
       drop && React.createElement("div", { className: "col", style: { gap: 6, padding: "8px 10px", background: "var(--bg-sunken)", borderRadius: 8 } },
         React.createElement("div", { className: "row between" },
           React.createElement("span", { style: { fontSize: 12.5, fontWeight: 600 } },
-            (drop.kind === "overlay" ? TR("Отсеяно как надпечатка аппарата: ") : TR("Отсеяно как шум: "))
+            (drop.kind === "overlay" ? TR("Отсеяно как надпечатка аппарата: ")
+              : drop.kind === "fragment" ? TR("Оставлено как на снимке (строки на изгибе): ")
+              : TR("Отсеяно как шум: "))
             + drop.rows.length + (drop.total > drop.rows.length ? TR(" из ") + drop.total : "")),
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: closeDrop }, TR("Закрыть"))),
         React.createElement("div", { className: "col", style: { gap: 6, maxHeight: 300, overflowY: "auto" } },
@@ -1159,6 +1166,8 @@ function TabExport({ store, toast }) {
       // подписью и что не попало никуда. Счётчик, посчитанный и не показанный,
       // ничем не лучше несчитанного.
       const imgLost = (st.img_lost || 0) + (st.img_stale || 0) + (st.img_noseg || 0);
+      /* Ю1, Ю3, Ю4, Ю9: надписи, оставленные как на снимке намеренно, — числом. */
+      const imgKept = (st.img_same || 0) + (st.img_bilingual || 0) + (st.img_collide || 0) + (st.img_fragment || 0);
       toast.success(TR("Файл готов"), st.written != null
         ? (result.file + TR(" · переведено абзацев: ") + st.written
            + (st.untranslated ? TR(" · без перевода: ") + st.untranslated : "")
@@ -1167,6 +1176,7 @@ function TabExport({ store, toast }) {
            + (st.img_repainted ? TR(" · надписей вписано в картинки: ") + st.img_repainted : "")
            + (st.img_captioned ? TR(" · подписями под картинками: ") + st.img_captioned : "")
            + (st.img_untranslated ? TR(" · надписей без перевода: ") + st.img_untranslated : "")
+           + (imgKept ? TR(" · надписей оставлено как на снимке: ") + imgKept : "")
            + (st.img_overflow ? TR(" · надписей шире места строк: ") + st.img_overflow : "")
            + (imgLost ? TR(" · надписей не попало в файл: ") + imgLost : ""))
         : (result.file + TR(" — загрузка началась.")));

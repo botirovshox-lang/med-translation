@@ -185,16 +185,18 @@
  "65_book_curl": {
   "counts": {
    "BLANK": 2,
-   "RULE_CUT": 3
+   "RULE_CUT": 3,
+   "SMALL": 1,
+   "UNTRANSLATED": 2
   },
   "noTr": 0,
-  "segments": 9,
+  "segments": 6,
   "stats": {
-   "img_collide": 1,
-   "img_repainted": 8
+   "img_fragment": 3,
+   "img_repainted": 6
   },
   "unread": 0,
-  "weight": 10
+  "weight": 18
  },
  "66_business_card": {
   "counts": {},

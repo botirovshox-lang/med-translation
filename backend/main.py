@@ -10225,6 +10225,10 @@ METRICS_WASTE_TEXT = {
     "jobStopped:fnlimit": "прогонов остановлено правилом функции",
     "prepressCap": "проверок перед выдачей упёрлось в потолок денег файла",
     "prepressLate": "файлов выдано до конца проверки (ожидание дольше 3 минут)",
+    "prepressRound": "кругов правок в проверке перед выдачей",
+    "prepressRoundUsed": "из них принято",
+    "prepressLeft": "мест осталось с видимым браком после проверки",
+    "prepressCase": "случаев записано для разбора",
 }
 METRICS_PROVIDER_TEXT = {
     "quota": "кончились деньги у поставщика",
@@ -18281,7 +18285,11 @@ def _image_read_system(dom: dict, src_lang: str) -> str:
         "false if it is printed or typed.\n"
         '  "serif"   — true if the text is PRINTED in a serif typeface (letters with '
         "small strokes at the ends, like Times or a book face), false otherwise "
-        "(sans-serif, handwriting, typewriter).\n\n"
+        "(sans-serif, handwriting, typewriter).\n"
+        '  "cut"     — true ONLY if the block image is a FRAGMENT of text: it slices across several '
+        "lines diagonally (a curved book page), or most of its words are cut by the image edge, so "
+        "the text cannot be read as a line or a sentence. A complete heading, label or line — even "
+        "with one word cut at an edge — is cut false.\n\n"
         'Return ONLY JSON: {"blocks": [{"i": 0, "text": "...", "overlay": false, "hand": false, '
         '"serif": false}]}'
     )
@@ -18352,6 +18360,45 @@ def _overlay_column_fix(blocks: list) -> int:
 
 OVERLAY_COL_X = 0.6
 OVERLAY_COL_MIN = 3
+
+# Ю9: обрывок изогнутой страницы. Модель видит вырезку и говорит «обрывок»;
+# одного её слова мало (заголовок с обрезанным краем она вправе назвать так
+# же), поэтому нужна и геометрия: однострочный блок выше медианы строк
+# картинки в IMG_FRAGMENT_H раз ЛИБО его рамка перекрывает соседний блок
+# больше чем на IMG_FRAGMENT_OV своей высоты (строки наискосок, разворот 65).
+# Замер на фото-бенче: геометрия одна ловит и законные заголовки (27, 67, 23) —
+# решает только пара признаков.
+IMG_FRAGMENT_KEEP = os.environ.get("IMG_FRAGMENT_KEEP", "1") != "0"
+IMG_FRAGMENT_H = float(os.environ.get("IMG_FRAGMENT_H", "1.6"))
+IMG_FRAGMENT_OV = float(os.environ.get("IMG_FRAGMENT_OV", "0.3"))
+
+
+def _fragment_geo(blocks: list, b: dict) -> bool:
+    try:
+        if int(b.get("rows") or 1) != 1 or b.get("quad"):
+            return False
+        bx = [float(v) for v in b["box"][:4]]
+        h = bx[3] - bx[1]
+        # Слой, рисунок, надпечатка и шум — не строки документа: рисунок поднял
+        # бы медиану, а его рамка «перекрыла» бы законный заголовок.
+        blocks = [o for o in blocks if o.get("box")
+                  and o.get("skip") not in ("layer", "figure", "overlay", "noise")]
+        lhs = sorted(float(o.get("lineH") or 0)
+                     or (float(o["box"][3]) - float(o["box"][1])) / max(1, int(o.get("rows") or 1))
+                     for o in blocks)
+        med = lhs[len(lhs) // 2] if lhs else 0.0
+        if med > 0 and h >= IMG_FRAGMENT_H * med:
+            return True
+        for o in blocks:
+            if o is b or not o.get("box"):
+                continue
+            ob = [float(v) for v in o["box"][:4]]
+            ix, iy = min(bx[2], ob[2]) - max(bx[0], ob[0]), min(bx[3], ob[3]) - max(bx[1], ob[1])
+            if ix > 0 and iy > 0 and h > 0 and iy / h >= IMG_FRAGMENT_OV:
+                return True
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+    return False
 
 
 def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
@@ -18488,6 +18535,8 @@ def _openai_read_image(img_bytes: bytes, blocks: list, src_lang: str,
                   "hand": bool(item.get("hand")),
                   # Засечки (Х6): по ним печать берёт шрифт с засечками.
                   "serif": bool(item.get("serif")),
+                  # Обрывок (изогнутая страница): решает вместе с геометрией (`_fragment_geo`).
+                  "cut": bool(item.get("cut")),
                   # Вид надписи — у кадра видео (`_frame_read_system`).
                   "kind": str(item.get("kind") or ""),
                   "model": _dm_public(mdl["id"])}
@@ -18825,7 +18874,7 @@ def _image_stats(images: list, total: int = 0) -> dict:
     и на отчёт задачи: разойдись они — под соседними числами стояли бы
     разные ответы на один вопрос."""
     st = {"images": total or len(images), "withText": 0, "blocks": 0, "text": 0,
-          "overlay": 0, "noise": 0, "unread": 0, "segments": 0,
+          "overlay": 0, "noise": 0, "fragment": 0, "unread": 0, "segments": 0,
           "repaintable": 0, "captioned": 0, "scanned": 0, "unreadable": 0,
           # Сколько ещё сделает прогон: непрошенные блоки плюс прочитанные,
           # которым сегмента пока нет. По этому числу решает кнопка чтения —
@@ -18860,6 +18909,8 @@ def _image_stats(images: list, total: int = 0) -> dict:
                 st["overlay"] += 1
             elif skip == "noise":
                 st["noise"] += 1
+            elif skip == "fragment":
+                st["fragment"] += 1
             elif b.get("text"):
                 st["text"] += 1
                 if b.get("seg"):
@@ -19587,7 +19638,7 @@ def _job_images(job: dict) -> None:
 
     def _pending(rec_):
         return [i for i, b in enumerate(rec_.get("blocks") or [])
-                if "text" not in b and b.get("skip") not in ("layer", "figure", "overlay", "noise")]
+                if "text" not in b and b.get("skip") not in ("layer", "figure", "overlay", "noise", "fragment")]
 
     def _needs_detect(n) -> bool:
         rec_ = known.get(n) or {}
@@ -19948,6 +19999,10 @@ def _job_images(job: dict) -> None:
                             b["skip"] = "overlay"
                         elif image_text.is_noise(ans["text"]):
                             b["skip"] = "noise"
+                        elif ans.get("cut") and IMG_FRAGMENT_KEEP and _fragment_geo(rec.get("blocks") or [], b):
+                            # Ю9: модель сказала «обрывок», и геометрия согласна — блок
+                            # остаётся как на снимке (вернуть — кнопкой в списке отсеянного).
+                            b["skip"] = "fragment"
                         else:
                             b.pop("skip", None)
                         map_dirty = True
@@ -20023,7 +20078,7 @@ def _job_images(job: dict) -> None:
     flush()
     save_state(STATE)
     st = _image_stats(data["images"], len(names))
-    for k in ("blocks", "text", "overlay", "noise", "unread"):
+    for k in ("blocks", "text", "overlay", "noise", "fragment", "unread"):
         job["counters"][k] = st[k]
     job["counters"]["repaintable"] = st["repaintable"]
     # Модели детектора держат сотни мегабайт, а разбор картинок бывает раз
@@ -34295,6 +34350,8 @@ def _export_images(doc, data: dict, by_id: dict, qn, stats: dict, pair=None) -> 
                      if b.get("box") and (b.get("text") or "").strip()]
         for i, b in enumerate(im.get("blocks") or []):
             if b.get("skip"):
+                if b.get("skip") == "fragment" and (b.get("text") or "").strip():
+                    stats["img_fragment"] = stats.get("img_fragment", 0) + 1   # Ю9: как на снимке
                 continue
             # Сегмент обязан подтвердить якорем, что он и есть этот блок:
             # номера переиспользуются, и по одному номеру перевод встал бы
@@ -38490,6 +38547,14 @@ def _job_prepress_body(job: dict) -> None:
             except _PrepressPause:
                 return
             report.update(extra_rep)
+            # Сколько кругов прошло и сколько принято — по этим числам решается,
+            # нужен ли «круг вариантов» (критик 24.10.2026: сперва метрика).
+            rnds = c.get("rounds") or []
+            if rnds:
+                _ev("waste.prepressRound", _tenant_of(project), len(rnds))
+                used_ = sum(1 for r_ in rnds if r_.get("used"))
+                if used_:
+                    _ev("waste.prepressRoundUsed", _tenant_of(project), used_)
         left = []
         for pg, v in sorted(v_final.items()):
             for d in v.get("defects") or []:

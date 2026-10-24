@@ -801,6 +801,18 @@ check(not st_s2.get("img_same") and st_s2["img_repainted"] == base_rep,
       "выключатель IMG_SAME_KEEP=0 возвращает прежнюю перерисовку: %s" % st_s2["img_repainted"])
 same["target"] = keep_t
 
+print("\n── Ю9: обрывок изогнутой страницы — геометрия ──")
+_lines = [{"box": [0, y, 400, y + 26], "rows": 1, "lineH": 26} for y in (0, 30, 60, 90)]
+_frag = {"box": [0, 120, 400, 206], "rows": 1}
+check(main._fragment_geo(_lines + [_frag], _frag), "однострочный блок втрое выше строк картинки — геометрия обрывка")
+_ok = {"box": [0, 120, 400, 150], "rows": 1}
+check(not main._fragment_geo(_lines + [_ok], _ok), "обычная строка — нет")
+_cross = {"box": [0, 80, 400, 112], "rows": 1}
+check(main._fragment_geo(_lines + [_cross], _cross), "рамка перекрывает соседний блок на треть своей высоты — да")
+check(not main._fragment_geo(_lines + [dict(_frag, rows=3)], dict(_frag, rows=3)), "абзац в несколько строк — нет")
+_fig = {"box": [0, 110, 400, 400], "rows": 1, "skip": "figure"}
+check(not main._fragment_geo(_lines + [_fig, _ok], _ok), "рамка рисунка не «перекрывает» законную строку")
+
 print("\n── Ю4: двуязычная табличка — не трогаем ──")
 _P = ("KK", "RU")
 check(main._image_keep("Городская поликлиника №4\nГородская поликлиника №4",

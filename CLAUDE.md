@@ -3544,6 +3544,17 @@ Spleeter или файл UVR MDX-Net), `MEDIA_SEP_THREADS` (1), `MEDIA_SEP_CHUNK
 (60), `MEDIA_SEP_MAX_MINUTES` (минут ОЗВУЧКИ, дальше — приглушение, 120),
 `MEDIA_SEP_SPEED` (доля длительности на разделение — для «≈ N мин», 0.25;
 поправить по первому замеру на сервере).
+**Надписи на фото: правила раздела Ю** (`docs/rules/pdf-reading.md`, ТЗ
+`docs/plans/photo-first-export.md`) работают сами и выключаются переменной без
+выката: `IMG_SAME_KEEP=0` (перевод = оригинал — не трогать), `IMG_COLLIDE=off|measure`
+(сторож наложений), `IMG_BILINGUAL_KEEP=0` (двуязычная табличка), `IMG_CROP_QUAD=0`
+(выпрямленная вырезка наклонной строки), `IMG_FRAGMENT_KEEP=0` (обрывок изогнутой
+страницы), `PREPRESS_PX_VETO=0` (пиксельное вето в круге правок), `PREPRESS_CASES=0`
+(случаи для разбора). Деньги и время проверки перед выдачей: `PREPRESS_REV_SHARE`
+(0.3 выручки файла), `PREPRESS_MIN_USD`, `PREPRESS_MAX_USD`, `PREPRESS_WAIT_S` (180).
+Мера — фото-бенч `python tools/photo_bench.py CORPUS OUT --check` (движок строк —
+версии сервера, rapidocr 1.4.4); случаи — `python tools/prepress_cases.py list`
+в начале сессии.
 **Стирание надписей на фото без пятен** (правило Ф9, `backend/paint_lama.py`):
 `sh tools/install_paint_models.sh` (LaMa, 208 МБ, сверка sha256) — без модели
 неровный фон стирается прежним `cv2.inpaint`. Необязательные: `PAINT_LAMA=0`

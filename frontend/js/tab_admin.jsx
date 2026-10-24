@@ -1278,6 +1278,10 @@ function metHintText(code) {
     case "waste:jobStopped:provider_quota": return TR("прогонов остановлено пустым счётом у поставщика");
     case "waste:prepressCap": return TR("проверок перед выдачей упёрлось в потолок денег файла");
     case "waste:prepressLate": return TR("файлов выдано до конца проверки — ожидание дольше 3 минут");
+    case "waste:prepressRound": return TR("кругов правок в проверке перед выдачей");
+    case "waste:prepressRoundUsed": return TR("кругов правок принято");
+    case "waste:prepressLeft": return TR("мест осталось с видимым браком после проверки");
+    case "waste:prepressCase": return TR("случаев записано для разбора");
     case "provider:quota": return TR("раз у поставщика моделей кончились деньги");
     case "provider:region": return TR("раз поставщик моделей отказал серверу по стране");
     case "provider:rate": return TR("раз поставщик ответил «слишком часто» (rate limit)");

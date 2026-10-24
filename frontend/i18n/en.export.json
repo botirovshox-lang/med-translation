@@ -458,5 +458,11 @@
   "сократили, чтобы влезло": "shortened to fit",
   "перевели по строкам оригинала": "translated line by line as in the original",
   "Файл выдан до конца проверки": "File delivered before the check finished",
-  "Проверка продолжается. Скачайте файл ещё раз через несколько минут — он будет проверен.": "The check is still running. Download the file again in a few minutes — it will be checked."
+  "Проверка продолжается. Скачайте файл ещё раз через несколько минут — он будет проверен.": "The check is still running. Download the file again in a few minutes — it will be checked.",
+  "Оставлено как на снимке: строки на изгибе": "Left as in the photo: lines on the curve",
+  "Строки страницы, снятой с изгибом, найдены обрывками наискосок, и перевод лёг бы ": "Lines of a page photographed with a curve were found as diagonal fragments, and the translation would ",
+  "кашей поверх букв. Они остаются как на снимке. Нажмите на число, чтобы ": "land as a mess over the letters. They stay as in the photo. Click the number to ",
+  "посмотреть их и перевести всё равно.": "see them and translate anyway.",
+  "Оставлено как на снимке (строки на изгибе): ": "Left as in the photo (lines on the curve): ",
+  " · надписей оставлено как на снимке: ": " · labels left as in the photo: "
 }

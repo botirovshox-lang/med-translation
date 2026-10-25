@@ -180,6 +180,19 @@ def cmd_attempts(d: str, data: str, tools_root: str) -> None:
             jp = cj.with_suffix(".jpg")
             if jp.exists():
                 jp.unlink()
+    rv_file = Path(data, "reviews.json")
+    rows = _jload(rv_file, [])
+    keep = []
+    for r in rows or []:
+        key = "rv%s" % r.get("id")
+        st[key] = int(st.get(key) or 0) + 1
+        if st[key] > CASE_TRIES:
+            subprocess.run([sys.executable, str(Path(tools_root, "tools", "export_review.py")), "skip",
+                            str(r.get("id")), "--note", "held: %d попыток автомата, нужен человек" % CASE_TRIES])
+        else:
+            keep.append(r)
+    if rows:
+        _jsave(rv_file, keep)
     _jsave(f, st)
     print("попытки учтены")
 

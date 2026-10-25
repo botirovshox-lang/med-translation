@@ -179,6 +179,23 @@ for _i in range(3):
 txt = marks.read_text(encoding="utf-8") if marks.exists() else ""
 check("после двух попыток случай — человеку (wont + held)", "wont o 5 1" in txt and "held" in txt, txt)
 
+(tools_fake / "tools" / "export_review.py").write_text(
+    "import sys\nopen(%r, 'a', encoding='utf-8').write('rv ' + ' '.join(sys.argv[1:]) + chr(10))\n" % str(marks),
+    encoding="utf-8")
+st3 = repo / "state3"
+for _i in range(3):
+    (data / "reviews.json").write_text(json.dumps([{"id": 41, "project": 7}]), encoding="utf-8")
+    guard("attempts", str(st3), str(data), str(tools_fake))
+left_rv = json.loads((data / "reviews.json").read_text(encoding="utf-8"))
+txt = marks.read_text(encoding="utf-8")
+check("первая выгрузка после двух попыток — человеку (skip + held) и не разбирается",
+      "rv skip 41" in txt and "held" in txt and left_rv == [], (txt, left_rv))
+run_src0 = Path("tools/auto_rules/run.sh").read_text(encoding="utf-8")
+check("за запуск — не больше AUTO_RULES_MAX_REVIEWS выгрузок, попытки — после отбора",
+      "AUTO_RULES_MAX_REVIEWS" in run_src0
+      and run_src0.index("AUTO_RULES_MAX_REVIEWS") < run_src0.index('guard.py" attempts')
+      < run_src0.index('export_review.py", "fetch"'))
+
 print("=== разбор вывода эталонов ===")
 
 

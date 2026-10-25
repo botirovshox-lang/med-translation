@@ -81,6 +81,16 @@ say "в очереди: случаев $NC, первых выгрузок $NR"
 DATA=$(mktemp -d)
 python "$T/tools/prepress_cases.py" pull "$DATA/cases" || { say "случаи не скачались"; exit 1; }
 python "$T/tools/export_review.py" list --json > "$DATA/reviews.json" 2>/dev/null || echo "[]" > "$DATA/reviews.json"
+# Не больше AUTO_RULES_MAX_REVIEWS первых выгрузок за запуск, свежие первыми:
+# разбор — на нынешнем коде, а очередь в десятки файлов не уместится ни в бюджет,
+# ни в окно. Потом — счёт попыток (только тем, кого берём), потом скачивание.
+python - "$DATA" "${AUTO_RULES_MAX_REVIEWS:-3}" <<'PY'
+import json, sys
+d, cap = sys.argv[1], int(sys.argv[2])
+rows = sorted(json.load(open(d + "/reviews.json", encoding="utf-8")) or [], key=lambda r: -int(r["id"]))[:cap]
+json.dump(rows, open(d + "/reviews.json", "w", encoding="utf-8"), ensure_ascii=False)
+PY
+python "$G/guard.py" attempts "$STATE" "$DATA" "$T"
 python - "$DATA" "$T" <<'PY'
 import json, subprocess, sys
 d, t = sys.argv[1], sys.argv[2]
@@ -89,8 +99,6 @@ for r in json.load(open(d + "/reviews.json", encoding="utf-8")) or []:
     if subprocess.run([sys.executable, t + "/tools/export_review.py", "fetch", str(r["project"]), dst]).returncode == 0:
         subprocess.run([sys.executable, t + "/tools/export_review.py", "pages", dst])
 PY
-# Случаи, которые разбирали уже AUTO_RULES_CASE_TRIES раз, — человеку (не жечь деньги кругами).
-python "$G/guard.py" attempts "$STATE" "$DATA" "$T"
 LEFT=$(ls "$DATA/cases"/*.json 2>/dev/null | wc -l)
 NREV=$(python -c "import json,sys;print(len(json.load(open(sys.argv[1],encoding='utf-8'))))" "$DATA/reviews.json")
 if [ "$LEFT" -eq 0 ] && [ "$NREV" -eq 0 ]; then say "всё оставшееся — человеку"; exit 0; fi

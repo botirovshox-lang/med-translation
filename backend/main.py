@@ -38575,7 +38575,7 @@ def _doc_check_ext(project: dict) -> Optional[str]:
         return None
     if ext != ".docx" and _orig_existing(project["id"]) is None:
         return None
-    if cls == "office" and not (topdf_mod and topdf_mod.available()):
+    if cls == "office" and not (topdf_mod and topdf_mod.available_for(ext)):
         return None
     return ext
 

@@ -161,6 +161,18 @@ try:
 except topdf.Failed:
     check("чужое расширение — отказ", True)
 
+_bin = topdf.binary
+topdf.binary = lambda: str(td / "program" / "soffice")
+(td / "program").mkdir(exist_ok=True)
+(td / "program" / "soffice").write_text("x")
+(td / "program" / "libswlo.so").write_text("x")
+check("нет модуля Calc — Excel не печатается (проверка не ставится впустую)",
+      not topdf.available_for(".xlsx") and topdf.available_for(".docx"))
+(td / "program" / "libsclo.so").write_text("x")
+check("модуль Calc поставлен — Excel печатается", topdf.available_for(".xlsx")
+      and not topdf.available_for(".pptx"))
+topdf.binary = _bin
+
 print("=== xlsx-проект: задача проверки, круг, перенос в проект, гейт ===")
 import main  # noqa: E402
 work = Path(tempfile.mkdtemp(prefix="ppo_"))
@@ -169,6 +181,7 @@ main.SOURCE_DIR.mkdir()
 main.EXPORT_DIR = work / "exp"
 main.save_state = lambda *a, **k: None
 main.topdf_mod.available = lambda: True
+main.topdf_mod.available_for = lambda ext: True
 
 wb = openpyxl.Workbook()
 ws = wb.active

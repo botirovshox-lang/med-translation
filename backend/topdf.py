@@ -67,6 +67,31 @@ def available() -> bool:
     return bool(binary())
 
 
+# Модуль LibreOffice, который нужен для печати формата. Пакеты ставятся
+# порознь (`libreoffice-writer`, `-calc`, `-impress`), и без нужного
+# конвертер отвечает «source file could not be loaded» — так было на боевом
+# сервере 25.10.2026, где стоял только writer.
+_APP_LIB = {".xlsx": "libsclo", ".xls": "libsclo", ".ods": "libsclo", ".csv": "libsclo",
+            ".pptx": "libsdlo", ".ppt": "libsdlo", ".odp": "libsdlo"}
+
+
+def available_for(ext: str) -> bool:
+    """Печатается ли этот формат на этой машине: конвертер есть и модуль
+    приложения (Calc/Impress) поставлен. Writer и HTML идут с ядром."""
+    exe = binary()
+    if not exe:
+        return False
+    lib = _APP_LIB.get((ext or "").lower())
+    if not lib:
+        return True
+    try:
+        prog = Path(os.path.realpath(exe)).parent
+        # Linux: libsclo.so, Windows: sclo.dll
+        return any(prog.glob(lib + "*")) or any(prog.glob(lib[3:] + "*"))
+    except Exception:
+        return False
+
+
 LOCK_WAIT = int(os.environ.get("PDF_LOCK_WAIT", "600"))
 
 

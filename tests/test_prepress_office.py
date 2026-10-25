@@ -427,6 +427,48 @@ out_t = work / "out.txt"
 st_t = main._export_original(tproj, out_t, work / "out.txt.tmp")
 check("сверка при выгрузке txt — чисто после правки", not st_t.get("textQa"), st_t)
 
+print("=== правки по критику: отпечаток, пометка, деньги, имена ===")
+fp_a = main._prepress_fp(main._office_prepress_inputs(dproj, with_work=False))
+dproj["segments"].append({"id": 99, "source": "Надпись на рисунке", "target": "Figure label",
+                          "status": "translated", "origin": {"part": "word/media/image1.png", "block": 0}})
+fp_b = main._prepress_fp(main._office_prepress_inputs(dproj, with_work=False))
+dproj["segments"][-1]["target"] = "Figure caption"
+fp_c = main._prepress_fp(main._office_prepress_inputs(dproj, with_work=False))
+check("надпись картинки — часть отпечатка Word (старый файл не отдаётся как проверенный)",
+      len({fp_a, fp_b, fp_c}) == 3, (fp_a, fp_b, fp_c))
+dproj["segments"].pop()
+check("версия кода офиса отдельна от PDF (правка печати офиса не протухает кэши PDF)",
+      main._prepress_code_version(False) != main._prepress_code_version(True))
+inp_d = main._office_prepress_inputs(dproj, with_work=False)
+main._prepress_cache_write(dpid, main._prepress_fp(inp_d), None, "unchecked", {"why": "no_model"}, {}, fmt=".docx")
+st_u = main._export_docx_layout(dproj, work / "u.docx")
+check("файл без проверки помечен честно (пометка доходит до экрана)",
+      (st_u.get("prepress") or {}).get("state") == "unchecked", st_u.get("prepress"))
+import inspect as _insp  # noqa: E402
+body_src = _insp.getsource(main._job_prepress_body)
+check("расход жизни файла пишется при любом исходе (finally)",
+      "finally:" in body_src and body_src.rfind("_life_save()") > body_src.rfind("finally:"))
+for fn in (main._export_docx_layout, main._export_original, main._office_build_file, main._pp_build_office):
+    check("сборка %s без рабочих потоков (подмена текстов — в потоке задачи)" % fn.__name__,
+          "_run_parallel" not in _insp.getsource(fn))
+tsegs[1]["target"] = tsegs[1]["source"] = "Сбербанк"
+tsegs[1].pop("printFit", None)
+main._prepress_cache_paths(tpid, ".txt")[1].unlink()
+CALLS_T = []
+
+
+class _CompN:
+    def create(self, **kw):
+        CALLS_T.append(1)
+        return _Resp("Sberbank")
+
+
+main._llm_client = lambda mdl, timeout=None, step=None, max_retries=None: type(
+    "C", (), {"chat": type("X", (), {"completions": _CompN()})()})()
+inp_t = main._office_prepress_inputs(tproj, with_work=False)
+rep_t = main._pp_text_fix(tproj, inp_t, main._prepress_models(), {}, [0.0])
+check("имя или бренд одним словом модель не переводит", not CALLS_T and not rep_t["shortened"], (CALLS_T, rep_t))
+
 print("=== текстовый формат: сверка при выгрузке ===")
 tq = {"textQa": {"UNTRANSLATED": 2}}
 rep = main._qa_structural(tq)

@@ -64,6 +64,10 @@ def cmd_list(a):
     if getattr(a, "count", False):
         print(len(rows))
         return
+    if getattr(a, "json", False):            # раннер автоматического разбора (Ы7)
+        print(json.dumps([{"id": r.get("id"), "project": r.get("project"), "format": r.get("format"),
+                           "src": r.get("src"), "tgt": r.get("tgt")} for r in rows], ensure_ascii=False))
+        return
     if not rows:
         print("очередь пуста" if not a.all else "строк нет")
         return
@@ -256,6 +260,7 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("list"); s.add_argument("--all", action="store_true")
     s.add_argument("--count", action="store_true")
+    s.add_argument("--json", action="store_true")
     s = sub.add_parser("fetch"); s.add_argument("pid", type=int); s.add_argument("dir")
     s = sub.add_parser("pages"); s.add_argument("dir"); s.add_argument("--pages", default="")
     s.add_argument("--scale", type=float, default=2.0)

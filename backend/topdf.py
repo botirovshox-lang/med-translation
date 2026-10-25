@@ -68,6 +68,25 @@ def available() -> bool:
 
 
 LOCK_WAIT = int(os.environ.get("PDF_LOCK_WAIT", "600"))
+
+
+def _kill_tree(p) -> None:
+    """Убить конвертер вместе с потомками."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(p.pid)], capture_output=True)
+        else:
+            import signal
+            os.killpg(os.getpgid(p.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
+    try:
+        p.communicate(timeout=10)
+    except Exception:
+        pass
 _TLOCK = threading.Lock()
 # Фильтр печати по расширению: у Writer, Calc и Impress свои. Нет в списке —
 # LibreOffice выбирает сам (`--convert-to pdf`).
@@ -159,13 +178,23 @@ def convert(docx: bytes, profile_dir: Path, timeout: int = TIMEOUT, ext: str = "
                "-env:UserInstallation=file://" + str(profile_dir / "lo-profile").replace("\\", "/"),
                "--convert-to", FILTERS.get(ext, "pdf"),
                "--outdir", str(tmp), str(src)]
+        # Своя группа процессов: по таймауту убивается ВСЁ дерево — `soffice`
+        # лишь обёртка над `soffice.bin`, и уцелевший `soffice.bin` держал бы
+        # профиль: следующая конвертация отдала бы ему файл и вернулась пустой.
         try:
-            r = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)
-        except subprocess.TimeoutExpired:
-            raise Failed("Конвертер не ответил за %d с — файл слишком велик "
-                         "или процесс завис." % timeout)
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                                 **({"start_new_session": True} if os.name != "nt" else
+                                    {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}))
         except OSError as e:
             raise NotAvailable("Конвертер не запустился: %s" % e)
+        try:
+            _out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(p)
+            shutil.rmtree(str(profile_dir / "lo-profile"), ignore_errors=True)
+            raise Failed("Конвертер не ответил за %d с — файл слишком велик "
+                         "или процесс завис." % timeout)
+        r = subprocess.CompletedProcess(cmd, p.returncode, _out, err)
         out = tmp / "in.pdf"
         if not out.exists():
             why = (r.stderr or b"").decode("utf-8", "replace").strip()[:300]

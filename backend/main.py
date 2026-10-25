@@ -34639,11 +34639,14 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
     if data is None:
         raise HTTPException(400, "К проекту не приложен исходный .docx — "
                                  "экспорт 1в1 собрать не из чего")
+    _pp_note = None
     if _doc_check_ext(project) == ".docx":
         gate = _office_gate(project)
         if gate is not None and gate.get("file") is not None:
             out.write_bytes(gate["file"])
             return dict(gate.get("stats") or {}, prepress=gate.get("public"))
+        if gate is not None:
+            _pp_note = gate.get("public")        # не проверено — сборка как раньше, с пометкой
     try:
         from docx import Document
         from docx.oxml.ns import qn
@@ -34768,6 +34771,8 @@ def _export_docx_layout(project: dict, out: Path) -> dict:
     stats["fields_refreshed"] = _refresh_fields(doc, qn)
     stats["dirFlipped"] = _docx_flip_direction(doc, qn, project.get("src"), project.get("tgt"))
     stats.update(_tw_stats)         # Т16: twinsUnified / twinGroups
+    if _pp_note:
+        stats["prepress"] = _pp_note    # Ы6: файл собран без проверки — так и сказано
     doc.save(str(out))
     return stats
 
@@ -38301,12 +38306,14 @@ def _prepress_look(work: bytes, pdf: bytes, page: int, places: list, src: str, t
     return {"error": str(last or "no_model")[:200], "cost": cost}
 
 
-_PREPRESS_CODE_FILES = ("layout_pdf.py", "export_qa.py", "prepress.py", "text_paint.py", "office_qa.py", "topdf.py",
+_PREPRESS_DOC_FILES = ("office_qa.py", "topdf.py")         # Ы6: только у офиса и текстовых
+_PREPRESS_CODE_FILES = ("layout_pdf.py", "export_qa.py", "prepress.py", "text_paint.py",
                         "image_text.py", "pdftext.py")
 _PREPRESS_CODE_V: list = []
+_PREPRESS_DOC_V: list = []
 
 
-def _prepress_code_version() -> str:
+def _prepress_code_version(doc: bool = False) -> str:
     """Отпечаток кода сборки и проверки: выкат меняет его, и файл из кэша
     собирается заново (сборка — секунды и бесплатно; модель при этом
     смотрит только страницы, которые выглядят иначе)."""
@@ -38318,7 +38325,17 @@ def _prepress_code_version() -> str:
             except OSError:
                 pass
         _PREPRESS_CODE_V.append(h.hexdigest()[:16])
-    return _PREPRESS_CODE_V[0]
+    if not doc:
+        return _PREPRESS_CODE_V[0]
+    if not _PREPRESS_DOC_V:
+        h = hashlib.sha1(_PREPRESS_CODE_V[0].encode())
+        for f in _PREPRESS_DOC_FILES:
+            try:
+                h.update((Path(__file__).parent / f).read_bytes())
+            except OSError:
+                pass
+        _PREPRESS_DOC_V.append(h.hexdigest()[:16])
+    return _PREPRESS_DOC_V[0]
 
 
 def _prepress_fp(inp: dict) -> str:
@@ -38336,11 +38353,14 @@ def _prepress_fp(inp: dict) -> str:
         pass
     # Режим входит в отпечаток: файл «наблюдения» не исправлен и выдаваться
     # как проверенный в режиме «чинить» не может.
-    raw = json.dumps([texts, extra, inp.get("workSha") or hashlib.sha1(work).hexdigest(),
-                      inp.get("pair") or "", tune, PREPRESS,
-                      _prepress_code_version(),
-                      prepress_mod.PROMPT_VERSION if prepress_mod else ""],
-                     ensure_ascii=False, sort_keys=True, default=str)
+    doc_ = bool(inp.get("office") or inp.get("textfmt"))
+    parts = [texts, extra, inp.get("workSha") or hashlib.sha1(work).hexdigest(),
+             inp.get("pair") or "", tune, PREPRESS,
+             _prepress_code_version(doc_),
+             prepress_mod.PROMPT_VERSION if prepress_mod else ""]
+    if doc_:
+        parts.append(inp.get("segSig") or "")      # у PDF отпечаток прежний — кэши не протухают
+    raw = json.dumps(parts, ensure_ascii=False, sort_keys=True, default=str)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:20]
 
 
@@ -38642,10 +38662,13 @@ def _office_prepress_inputs(project: dict, with_work: bool = True) -> Optional[d
     texts, sources = _doc_texts(project, data)
     blob = _office_orig_bytes(project, data, ext)
     cls = office_qa_mod.fmt_of(ext)
+    seg_sig = hashlib.sha1(json.dumps(sorted(
+        (int(sid), (sg.get("target") or "")) for sid, sg in _print_by_id(project).items()),
+        ensure_ascii=False).encode("utf-8")).hexdigest()[:16]
     inp = {"pid": int(project["id"]), "pair": "%s>%s" % (project.get("src"), project.get("tgt")),
            "data": data, "layout": {}, "extra": [], "texts": texts, "sources": sources,
            "same": set(), "dup": 0, "workSha": office_qa_mod.sha(blob, ext) + office_qa_mod.RULES,
-           "ext": ext}
+           "ext": ext, "segSig": seg_sig}
     if cls == "text":
         inp["textfmt"] = ext
         return inp
@@ -38824,7 +38847,8 @@ def _pp_text_fix(project: dict, inp: dict, models: list, c: dict, spent: list) -
             left.append({"page": None, "code": "UNTRANSLATED"})
             continue
         seg = by_id.get(int(sids[0])) if len(sids) == 1 else None
-        if seg is None or _human_text(seg):
+        src_ = (sources.get(idx) or "").strip()
+        if seg is None or _human_text(seg) or (len(src_.split()) < 2 and src_[:1].isupper()):
             left.append({"page": None, "code": "UNTRANSLATED"})
             continue
         new = _prepress_translate_place(project, sources.get(idx) or "", models, c, spent)
@@ -38892,7 +38916,7 @@ def _job_prepress_body(job: dict) -> None:
         except Exception as e:
             print("[backend] печать выгрузки для проверки #%s: %s" % (pid, e), file=sys.stderr)
             c["skipped"] = "render"
-            _ev("dead.officeRender", _tenant_of(project))
+            _ev("waste.prepressRender", _tenant_of(project))
             _pp_cw(pid, inp, fp, None, "failed", {"why": "render"})
             return
         if base[1].get("_officeCut"):
@@ -38921,7 +38945,7 @@ def _job_prepress_body(job: dict) -> None:
     # потолка задачи — потолок задачи сжимается до него.
     life_cap = PREPRESS_LIFE_X * _prepress_cap(project) if PREPRESS_LIFE_X > 0 else 0.0
     life_spent = float(mem.data.get("spentLife") or 0.0)
-    life_base = float(c.get("cost") or 0.0)      # уступившая задача уже записала свою часть
+    life_base = float(c.get("lifeSaved") or 0.0)  # уступившая задача уже записала до этой точки
     if life_cap > 0:
         c["cap"] = round(max(0.0, min(float(c["cap"]), life_cap - life_spent + life_base)), 4)
         if c["cap"] <= 0:
@@ -38930,6 +38954,18 @@ def _job_prepress_body(job: dict) -> None:
             _pp_cw(pid, inp, fp, base, "unchecked", {"why": "lifecap"})
             return
     spent = [float(c.get("cost") or 0.0)]
+    life_done = [False]
+
+    def _life_save():
+        if life_done[0]:
+            return
+        life_done[0] = True
+        try:
+            mem.data["spentLife"] = round(life_spent + max(0.0, spent[0] - life_base), 6)
+            mem.save()
+            c["lifeSaved"] = round(spent[0], 6)      # продолжение уступившей задачи считает от этой точки
+        except Exception as e_:
+            print("[backend] расход жизни файла #%s не записан: %s" % (pid, e_), file=sys.stderr)
     prev_t, prev_p = getattr(_JOB_TENANT, "id", None), getattr(_JOB_PROJECT, "id", None)
     _JOB_TENANT.id = QA_SERVICE_TENANT      # расход — сервису, не клиенту
     _JOB_PROJECT.id = None                  # и не в себестоимость файла клиента
@@ -38940,8 +38976,7 @@ def _job_prepress_body(job: dict) -> None:
             # только переводит места, оставшиеся на языке оригинала.
             report = _pp_text_fix(project, inp, models, c, spent)
             mem.data["report"] = dict(report, at=datetime.now().strftime("%Y-%m-%d %H:%M"))
-            mem.data["spentLife"] = round(life_spent + max(0.0, spent[0] - life_base), 6)
-            mem.save()
+            _life_save()
             if _prepress_writeback(project, report, models, c):
                 try:
                     inp2 = _pp_inputs_for(_project_by_id(pid) or project)
@@ -39004,8 +39039,7 @@ def _job_prepress_body(job: dict) -> None:
             except Exception as e:      # случай — для разбора; проверку и выгрузку он не держит
                 print("[backend] случаи проверки #%s: %s" % (pid, e), file=sys.stderr)
         mem.data["report"] = dict(report, at=datetime.now().strftime("%Y-%m-%d %H:%M"))
-        mem.data["spentLife"] = round(life_spent + max(0.0, spent[0] - life_base), 6)
-        mem.save()
+        _life_save()
         state = "checked" if not report["unchecked"] else "partial"
         if int(c.get("officeCut") or 0):
             state = "partial"              # длинный офисный документ: модель смотрела не всё
@@ -39035,6 +39069,7 @@ def _job_prepress_body(job: dict) -> None:
             pass
     finally:
         _JOB_TENANT.id, _JOB_PROJECT.id = prev_t, prev_p
+        _life_save()                     # любой исход, включая уступку и парковку
     _prepress_tell(project, c)
 
 
@@ -40319,11 +40354,14 @@ def _export_original(project: dict, out: Path, tmp: Path, sheets: str = "pages")
             raise HTTPException(400, "Разбор этого формата изменился с момента загрузки — "
                                      "выгрузка в исходном виде разложила бы переводы не по тем "
                                      "местам. Скачайте Word-документ или загрузите файл заново")
+    _pp_note = None
     if office_qa_mod is not None and ext in office_qa_mod.OFFICE_EXTS and _doc_check_ext(project) == ext:
         gate = _office_gate(project)
         if gate is not None and gate.get("file") is not None:
             tmp.write_bytes(gate["file"])
             return dict(gate.get("stats") or {}, prepress=gate.get("public"))
+        if gate is not None:
+            _pp_note = gate.get("public")
     by_id = _print_by_id(project)
     tr: dict = {}
     # Слот, который делят строки после ручной разрезки, получает склейку их
@@ -40343,6 +40381,8 @@ def _export_original(project: dict, out: Path, tmp: Path, sheets: str = "pages")
                                 rule=rule, split=_split_target, lang=project.get("tgt") or "")
     tmp.write_bytes(blob)
     st_ = {"original": kind, "written": len(tr), "untranslated": max(0, untranslated)}
+    if _pp_note:
+        st_["prepress"] = _pp_note
     try:
         tq = _text_qa(project, data, tr, ext, orig.read_bytes(), blob)
         if tq:

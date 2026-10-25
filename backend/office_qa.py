@@ -50,6 +50,11 @@ MAX_PAGES = int(os.environ.get("PREPRESS_OFFICE_MAX_PAGES", "40"))
 # читает сам файл, так что правка кода и так её меняет).
 RULES = "ы6.1"
 _TOFU = ("�", "□", "▯")
+try:                                     # один замок на всю работу с pdfium в процессе
+    from pdfium_gate import LOCK as PDFIUM_LOCK
+except Exception:                        # pragma: no cover — вне сервиса
+    import threading
+    PDFIUM_LOCK = threading.RLock()
 
 
 def fmt_of(ext: str) -> "str | None":
@@ -82,14 +87,8 @@ def page_texts(pdf: bytes) -> list:
     """[(ширина, высота, текст, [рамка знака])] по листам — pypdfium2 под
     общим замком pdfium (`pdfium_gate`): библиотека не потокобезопасна."""
     import pypdfium2 as pdfium
-    try:
-        import pdfium_gate
-        lock = pdfium_gate.LOCK
-    except Exception:            # вне сервиса (тесты, инструменты)
-        import threading
-        lock = threading.RLock()
     out = []
-    with lock:
+    with PDFIUM_LOCK:
         doc = pdfium.PdfDocument(pdf)
         try:
             for i in range(len(doc)):

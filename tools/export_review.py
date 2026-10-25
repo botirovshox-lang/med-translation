@@ -61,6 +61,9 @@ def doc(key: str):
 def cmd_list(a):
     q = doc("exportReviews") or []
     rows = [r for r in q if a.all or r.get("status") == "pending"]
+    if getattr(a, "count", False):
+        print(len(rows))
+        return
     if not rows:
         print("очередь пуста" if not a.all else "строк нет")
         return
@@ -252,6 +255,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("list"); s.add_argument("--all", action="store_true")
+    s.add_argument("--count", action="store_true")
     s = sub.add_parser("fetch"); s.add_argument("pid", type=int); s.add_argument("dir")
     s = sub.add_parser("pages"); s.add_argument("dir"); s.add_argument("--pages", default="")
     s.add_argument("--scale", type=float, default=2.0)

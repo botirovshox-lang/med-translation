@@ -31,6 +31,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 # Имя конвертера можно назвать явно: на разных системах он то `soffice`,
@@ -64,8 +67,68 @@ def available() -> bool:
     return bool(binary())
 
 
-def convert(docx: bytes, profile_dir: Path, timeout: int = TIMEOUT) -> bytes:
-    """.docx → .pdf. Возвращает байты PDF.
+LOCK_WAIT = int(os.environ.get("PDF_LOCK_WAIT", "600"))
+_TLOCK = threading.Lock()
+# Фильтр печати по расширению: у Writer, Calc и Impress свои. Нет в списке —
+# LibreOffice выбирает сам (`--convert-to pdf`).
+FILTERS = {".docx": "pdf:writer_pdf_Export", ".doc": "pdf:writer_pdf_Export",
+           ".odt": "pdf:writer_pdf_Export", ".rtf": "pdf:writer_pdf_Export",
+           ".xlsx": "pdf:calc_pdf_Export", ".xls": "pdf:calc_pdf_Export",
+           ".ods": "pdf:calc_pdf_Export", ".csv": "pdf:calc_pdf_Export",
+           ".pptx": "pdf:impress_pdf_Export", ".ppt": "pdf:impress_pdf_Export",
+           ".odp": "pdf:impress_pdf_Export",
+           ".html": "pdf:writer_web_pdf_Export", ".htm": "pdf:writer_web_pdf_Export"}
+
+
+@contextmanager
+def _soffice_lock(profile_dir: Path):
+    """ОДИН LibreOffice на профиль за раз — между ПОТОКАМИ и между ПРОЦЕССАМИ.
+    Два soffice с общим профилем не работают параллельно: второй молча
+    передаёт файл первому и выходит, не собрав ничего (или собирает чужое).
+    Конвертируют и API (скачивание PDF), и воркер (проверка выгрузки перед
+    выдачей, `office_qa`), поэтому замок файловый: `flock` на Linux,
+    `msvcrt.locking` на Windows. Не дождались за LOCK_WAIT — Failed, а не
+    второй экземпляр на том же профиле."""
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    if not _TLOCK.acquire(timeout=LOCK_WAIT):
+        raise Failed("Конвертер занят дольше %d с" % LOCK_WAIT)
+    fh = None
+    try:
+        fh = open(str(profile_dir / ".soffice.lock"), "a+b")
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() - t0 > LOCK_WAIT:
+                    raise Failed("Конвертер занят другим процессом дольше %d с" % LOCK_WAIT)
+                time.sleep(0.5)
+        yield
+    finally:
+        if fh is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+            fh.close()
+        _TLOCK.release()
+
+
+def convert(docx: bytes, profile_dir: Path, timeout: int = TIMEOUT, ext: str = ".docx") -> bytes:
+    """.docx (или другой документ офиса, `ext`) → .pdf. Возвращает байты PDF.
 
     `profile_dir` — каталог ПОД НАШЕЙ записью (`backend/data/...`): туда
     ложится профиль LibreOffice и туда же смотрит HOME. Без этого конвертер
@@ -83,15 +146,18 @@ def convert(docx: bytes, profile_dir: Path, timeout: int = TIMEOUT) -> bytes:
     # Рабочий каталог — тоже под нашей записью: `PrivateTmp=true` даёт свой
     # /tmp, но полагаться на него нельзя, а `ProtectSystem=full` закрывает
     # остальное.
-    with tempfile.TemporaryDirectory(dir=str(profile_dir)) as tmp:
+    ext = (ext or ".docx").lower()
+    if not ext.startswith(".") or "/" in ext or "\\" in ext or len(ext) > 6:
+        raise Failed("Неизвестный формат для печати")
+    with _soffice_lock(profile_dir), tempfile.TemporaryDirectory(dir=str(profile_dir)) as tmp:
         tmp = Path(tmp)
-        src = tmp / "in.docx"
+        src = tmp / ("in" + ext)
         src.write_bytes(docx)
         env = dict(os.environ)
         env["HOME"] = str(profile_dir)
         cmd = [exe, "--headless", "--norestore",
                "-env:UserInstallation=file://" + str(profile_dir / "lo-profile").replace("\\", "/"),
-               "--convert-to", "pdf:writer_pdf_Export",
+               "--convert-to", FILTERS.get(ext, "pdf"),
                "--outdir", str(tmp), str(src)]
         try:
             r = subprocess.run(cmd, capture_output=True, timeout=timeout, env=env)

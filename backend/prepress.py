@@ -222,7 +222,7 @@ class LearnedRules:
 
 # ─── Вопрос модели и разбор ответа ────────────────────────────────────
 
-def prompt(src: str, tgt: str, places: list) -> str:
+def prompt(src: str, tgt: str, places: list, flow: bool = False) -> str:
     """Вопрос сильной модели о странице: оригинал слева, выгрузка справа
     (страница бывает разрезана на плитки — все плитки одной страницы в одном
     вопросе), места перевода пронумерованы. Ответ — коды и действия из
@@ -282,6 +282,17 @@ def prompt(src: str, tgt: str, places: list) -> str:
         'Answer ONLY JSON: {"ok": true|false, "defects": [{"place": 3, "code": "OVERFLOW", '
         '"action": "tight", "confidence": 0.8, "what": "short note", "text": ""}]}.',
     ]
+    if flow:
+        # Ы6: Word/Excel/PowerPoint/HTML — обе стороны напечатаны LibreOffice;
+        # вёрстку делает программа клиента, а не мы, поэтому рычагов вёрстки нет.
+        lines.append(
+            "This is a word-processor, spreadsheet, slide or web document; BOTH sides were printed "
+            "by the same office program. Text reflows: a translated paragraph may move to the next "
+            "page or the page may have more lines - that is NOT a defect; compare each numbered "
+            "place with the SAME content in the original, not with the same spot. Report clipped "
+            "text in cells, text boxes and shapes (OVERFLOW), overlaps, source text left "
+            "(UNTRANSLATED), lost content (MISSING), boxes or replacement glyphs instead of letters "
+            "(FONT). Only these actions can be executed here: shorter, translate, none.")
     if places:
         lines.append("Places: " + "; ".join("%d: %s" % (p["n"], (p.get("label") or "")[:60])
                                              for p in places[:80]))
@@ -738,6 +749,7 @@ LADDER = {
     "FRAGMENT": ("solo",),
     "COLOR": ("color",),
     "UNTRANSLATED": ("translate", "erase"),
+    "CLIPPED": ("shorter",),            # Ы6: подозрение офисного формата
 }
 # Взаимоисключающие правки: у места одна из группы. Не помогла прежняя —
 # новая её ЗАМЕНЯЕТ (теснее не помогло → шире).

@@ -67,6 +67,7 @@ def main_():
     sub = ap.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("list")
     a.add_argument("--all", action="store_true")
+    a.add_argument("--count", action="store_true", help="только число неразобранных (для раннера)")
     a = sub.add_parser("pull")
     a.add_argument("dir")
     for c in ("done", "wont"):
@@ -77,7 +78,9 @@ def main_():
         a.add_argument("--rule", default="")
         a.add_argument("--note", default="")
     a = ap.parse_args()
-    if a.cmd == "list":
+    if a.cmd == "list" and a.count:
+        print(len(cases(a.all)))
+    elif a.cmd == "list":
         rows = cases(a.all)
         by = {}
         for r in rows:

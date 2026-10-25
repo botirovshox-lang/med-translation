@@ -23,10 +23,13 @@ if [ -z "${AUTO_RULES_TRUSTED:-}" ]; then
   SHA=$(git -C "$REPO" rev-parse origin/main)
   T="$STATE/trusted-${SHA:0:12}"
   if [ ! -d "$T" ]; then
-    rm -rf "$STATE"/trusted-* 2>/dev/null
-    mkdir -p "$T.tmp" && git -C "$REPO" archive "$SHA" tools docs/rules/auto-rules-agent.md | tar -x -C "$T.tmp" \
-      && mv "$T.tmp" "$T" || { rm -rf "$T.tmp"; exit 1; }
+    D="$T.tmp.$$"
+    mkdir -p "$D" && git -C "$REPO" archive "$SHA" tools docs/rules/auto-rules-agent.md | tar -x -C "$D" \
+      && { mv "$D" "$T" 2>/dev/null || rm -rf "$D"; } || { rm -rf "$D"; exit 1; }
   fi
+  # Старые копии — только старше суток и не текущая: идущий разбор (он мог
+  # начаться с прежнего main и сейчас выкатывать) ещё зовёт свои скрипты.
+  find "$STATE" -maxdepth 1 -name 'trusted-*' -mtime +1 ! -path "$T" -exec rm -rf {} + 2>/dev/null
   AUTO_RULES_TRUSTED="$T" AUTO_RULES_BASE="$SHA" exec bash "$T/tools/auto_rules/run.sh" "$@"
 fi
 
@@ -95,9 +98,6 @@ if [ "$LEFT" -eq 0 ] && [ "$NREV" -eq 0 ]; then say "всё оставшееся
 WT="$STATE/wt-$STAMP"
 BR="auto-rules/$STAMP"
 git -c core.longpaths=true worktree add -q -b "$BR" "$WT" "$BASE" || exit 1
-# Пушит только раннер: у дерева агента адрес отправки — пустышка.
-git -C "$REPO" config extensions.worktreeConfig true
-git -C "$WT" config --worktree remote.origin.pushurl "no-push://auto-rules"
 cd "$WT"
 RES="$STATE/results/$STAMP.json"
 ALOG="$STATE/logs/$STAMP.agent.txt"
@@ -106,6 +106,9 @@ PROMPT="$(cat "$T/docs/rules/auto-rules-agent.md")
 Данные клиента уже скачаны раннером в каталог $DATA (случаи — cases/, первые выгрузки — review-<id>/ c парами в pairs/; список — reviews.json). Отчёт пиши в файл $RES. Корпус фото-бенча: ${AUTO_RULES_CORPUS:-нет на этой машине}."
 
 say "агент разбирает (модель $MODEL, потолок \$$BUDGET)"
+# Пушит только раннер: у git агента адрес отправки — пустышка (через окружение,
+# без правки конфига репозитория владельца).
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.pushurl GIT_CONFIG_VALUE_0="no-push://auto-rules" \
 claude -p "$PROMPT" --model "$MODEL" --max-budget-usd "$BUDGET" --permission-mode acceptEdits \
   --add-dir "$DATA" --add-dir "$STATE/results" \
   --allowedTools "Read" "Edit" "Write" "Glob" "Grep" "Agent" \

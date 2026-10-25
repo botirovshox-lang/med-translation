@@ -13,14 +13,17 @@ SHA="${1:?нужен SHA}"
 HOST="${MEDCAT_SSH:-beget}"
 APP=/opt/med-translation
 WATCH="${AUTO_RULES_WATCH_S:-600}"
-GUARD_MIN="${AUTO_RULES_GUARD_MIN:-60}"
+FID_S="${AUTO_RULES_FID_TIMEOUT_S:-1200}"
+# Сторож обязан пережить ВСЮ проверку: окно + замер + запас 15 минут,
+# иначе он откатил бы выкат посреди замера.
+GUARD_MIN="${AUTO_RULES_GUARD_MIN:-$(( (WATCH + FID_S) / 60 + 30 ))}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 MARK=/root/.medcat-deploy-pending
 
 say() { echo "[deploy] $*"; }
 
 fid() {   # число предупреждений эталонов или ERR (замер упал)
-  bash "$HERE/../prod_run.sh" "$HERE/../fidelity_report.py" 2>&1 | python "$HERE/guard.py" fid
+  timeout "$FID_S" bash "$HERE/../prod_run.sh" "$HERE/../fidelity_report.py" 2>&1 | python "$HERE/guard.py" fid
 }
 
 tb_count() {  # трейсбеков в журнале сервиса за последние N минут

@@ -124,6 +124,14 @@ h = head_with({"backend/main.py": "x = 2\n_PAID = []\n@app.get('/api/x')\ndef x(
 rc, out = guard("diff", BASE, h)
 check("новая дверь в API — нельзя", rc == 1 and "дверь" in out, out)
 
+h = head_with({"backend/extra.py": "router = APIRouter()\n@router.get('/api/y')\ndef y(): pass\n",
+               "tests/test_b.py": "check(1)\n", "docs/rules/pdf-reading.md": "# r\n## Щ1\n"})
+rc, out = guard("diff", BASE, h)
+check("дверь через APIRouter в другом модуле — тоже нельзя", rc == 1 and "дверь" in out, out)
+check("пропавший эталон считается предупреждением",
+      "not_painted" in Path("tools/fidelity_report.py").read_text(encoding="utf-8").split("if as_json:")[0]
+      and "print(" in Path("tools/fidelity_report.py").read_text(encoding="utf-8").split("not_painted")[2])
+
 print("=== отчёт агента ===")
 res = repo / "result.json"
 good = {"status": "ready", "rules": [{"id": "Щ1"}], "cases": [],
@@ -210,6 +218,11 @@ check("любой непринятый выкат — revert main и выклю�
       "stop_all" in run_src and run_src.count("git revert") == 1 and "$DRC -ne 0" in run_src)
 dep_src = Path("tools/auto_rules/deploy.sh").read_text(encoding="utf-8")
 check("на сервере сторож откатывает неподтверждённый выкат", "systemd-run" in dep_src and "--on-active" in dep_src)
+check("сторож переживает всё окно проверки (окно + замер + запас)", "WATCH + FID_S" in dep_src
+      and 'timeout "$FID_S"' in dep_src)
+check("старые доверенные копии не стираются у идущего разбора", "-mtime +1" in run_src
+      and 'rm -rf "$STATE"/trusted-*' not in run_src)
+check("конфиг репозитория владельца не трогается", "worktreeConfig" not in run_src)
 check("упавший замер эталонов ДО — выката нет, ПОСЛЕ — откат",
       "F0=$(fid) ||" in dep_src and "F1=$(fid) || rollback" in dep_src)
 run_sh = Path("tools/auto_rules/run.sh").read_text(encoding="utf-8")

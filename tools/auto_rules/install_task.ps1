@@ -20,8 +20,9 @@ $boot = @"
 #!/usr/bin/env bash
 cd '$r' || exit 1
 git fetch -q origin || exit 1
-git show origin/main:tools/auto_rules/run.sh > "`$HOME/.medcat-auto-rules/run-origin.sh" || exit 1
-exec bash "`$HOME/.medcat-auto-rules/run-origin.sh"
+f="`$HOME/.medcat-auto-rules/run-origin.`$`$.sh"
+git show origin/main:tools/auto_rules/run.sh > "`$f" || exit 1
+bash "`$f"; rc=`$?; rm -f "`$f"; exit `$rc
 "@
 [IO.File]::WriteAllText((Join-Path $state "boot.sh"), $boot.Replace("`r`n", "`n"))
 $cmd = "`"$bash`" -l `"$($state -replace '\\','/')/boot.sh`""

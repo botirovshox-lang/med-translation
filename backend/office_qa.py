@@ -227,6 +227,16 @@ DOC_SEVERITY = {"CLIPPED": 2, "TOFU": 2}
 _LETTERS = re.compile(r"[^\W\d_]", re.UNICODE)
 
 
+def proper_name(src: str) -> bool:
+    """Одно слово с заглавной — имя, бренд, код: «как в оригинале» законно.
+    ОДИН предикат на сверку при выгрузке (`text_issues`) и на фоновый перевод
+    мест (`main._pp_text_fix`), иначе отчёт кричал бы о том, чего правка
+    по правилу не тронет (критик 25.10.2026). Тем же правилом пропускает
+    имена ветка «перевести место» у PDF."""
+    s = (src or "").strip()
+    return len(s.split()) < 2 and s[:1].isupper()
+
+
 def text_issues(texts: dict, sources: dict, keep: set, tgt_script: "str | None" = None,
                 script_of=None, cues_a: "list | None" = None, cues_b: "list | None" = None,
                 read_cps: "float | None" = None) -> list:
@@ -238,7 +248,7 @@ def text_issues(texts: dict, sources: dict, keep: set, tgt_script: "str | None" 
     out = []
     for idx, src in (sources or {}).items():
         key = "p%d" % int(idx)
-        if key in keep or len(_LETTERS.findall(src or "")) < 4:
+        if key in keep or len(_LETTERS.findall(src or "")) < 4 or proper_name(src):
             continue
         t = (texts or {}).get(idx)
         if t is None:

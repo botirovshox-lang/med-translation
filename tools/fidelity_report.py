@@ -30,6 +30,11 @@ def main():
             if out is None:
                 rows["%s-%s" % (slide, lang)] = {"warn": ["not_painted"]}
                 warned += 1
+                if not as_json:
+                    # Строка обязательна: выкат сверяет число предупреждений
+                    # (`tools/auto_rules/guard.py fid`), и молча пропавший эталон
+                    # иначе выглядел бы как «стало лучше».
+                    print("%-10s %4s - outside=- warn=['not_painted']" % (slide, lang))
                 continue
             r = fidelity.compare(orig, out, items)
             rows["%s-%s" % (slide, lang)] = {"pid": pid, "summary": r["summary"],

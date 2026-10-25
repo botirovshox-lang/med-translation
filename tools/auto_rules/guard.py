@@ -50,7 +50,8 @@ MAX_DEPLOYS_DAY = int(os.environ.get("AUTO_RULES_MAX_DEPLOYS_DAY", "2"))
 # Строки main.py, которые трогать нельзя без человека: деньги, права, входы.
 _HOT = re.compile(r"_PAID|_OWNER_ONLY|PUBLIC_API_PATHS|_hide_cost|_hide_models|limitUsd|pagesCredit|"
                   r"_pages_topup|_pages_debit|require_token|_llm_limit_gate|password|_SUPER")
-_ROUTE = re.compile(r"@app\.(get|post|put|delete|patch|api_route)\(|PUBLIC_API_PATHS|add_middleware")
+_ROUTE = re.compile(r"@(app|router|\w+_router)\.(get|post|put|delete|patch|api_route|websocket)\(|"
+                    r"PUBLIC_API_PATHS|add_middleware|include_router|add_api_route|APIRouter\(|\.mount\(")
 _CHECK = re.compile(r"\bcheck\(|\bassert\b|assertEqual|expect\(")
 
 
@@ -84,7 +85,8 @@ def cmd_diff(base: str, head: str) -> None:
     if total > MAX_LINES:
         fail("слишком большой дифф: %d строк > %d" % (total, MAX_LINES))
     # Горячие места main.py: изменённые строки не должны касаться денег и прав.
-    patch = git("diff", "-U0", base, head, "--", "backend/main.py")
+    # Весь бэкенд, а не только main.py: дверь можно завести и APIRouter-ом в модуле.
+    patch = git("diff", "--no-renames", "-U0", base, head, "--", "backend/")
     for ln in patch.splitlines():
         if (ln.startswith("+") or ln.startswith("-")) and not ln.startswith(("+++", "---")):
             if _HOT.search(ln):

@@ -132,7 +132,6 @@ window.I18N.register("uz", {
  "На проверке": "Tekshiruvda",
  "Нажимая «Перевести бесплатно», вы принимаете ": "«Bepul tarjima qilish» tugmasini bosib, siz qabul qilasiz: ",
  "Название организации": "Tashkilot nomi",
- "Настройки": "Sozlamalar",
  "Не переведено строк: ": "Tarjima qilinmagan qatorlar: ",
  "Не получилось": "Bo'lmadi",
  "Не посчитано": "Hisoblanmadi",

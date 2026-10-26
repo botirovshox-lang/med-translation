@@ -1,4 +1,5 @@
-/* Вкладка «Обучение»: пять шагов, частые вопросы и три действия.
+/* Вкладка «Обучение»: два пути (документы и видео) — у каждого короткий
+ * ролик и шаги с рисунком экрана, — частые вопросы и три действия.
  *
  * СОДЕРЖАНИЕ ПРИХОДИТ С СЕРВЕРА (`GET /api/tutorial`), и это несущее
  * решение: те же тексты и те же рисунки рисует публичная страница
@@ -42,6 +43,19 @@ function LearnStep({ n, word, step }) {
       step.svg && React.createElement("div", {
         className: "learn-shot", dangerouslySetInnerHTML: { __html: step.svg },
       })));
+}
+
+/* Ролик пути. Файлы лежат у лендинга (`/media/…` того же адреса), подписи —
+   дорожками на трёх языках, по умолчанию — язык читателя (решает сервер).
+   preload="none": ролик не качается, пока его не включили. */
+function LearnVideo({ v }) {
+  if (!v || !v.src) return null;
+  return React.createElement("figure", { className: "card learn-video" },
+    React.createElement("video", { controls: true, muted: true, playsInline: true, preload: "none", poster: v.poster },
+      React.createElement("source", { src: v.src, type: "video/mp4" }),
+      (v.tracks || []).map(t => React.createElement("track", { key: t.lang, kind: "captions",
+        srcLang: t.lang, label: t.label, src: t.src, default: !!t.default }))),
+    v.note ? React.createElement("figcaption", { className: "dim" }, v.note) : null);
 }
 
 function LearnFaq({ head, items }) {
@@ -91,6 +105,8 @@ function LearnActions({ a }) {
 function TabLearn({ store, toast }) {
   const [data, setData] = useState(null);
   const [failed, setFailed] = useState(false);
+  /* Хук последним: рендер-тесты адресуют хуки по порядку. */
+  const [track, setTrack] = useState("doc");
 
   useEffect(() => {
     let dead = false;
@@ -114,6 +130,8 @@ function TabLearn({ store, toast }) {
   }
   if (!data) return React.createElement("div", { className: "page" },
     React.createElement("p", { className: "dim" }, TR("Загружаем инструкцию…")));
+  const tracks = (data.tracks && data.tracks.length) ? data.tracks : [{ key: "doc", steps: data.steps || [] }];
+  const cur = tracks.find(t => t.key === track) || tracks[0];
 
   return React.createElement("div", { className: "page" },
     React.createElement("div", { className: "page-head" },
@@ -122,9 +140,16 @@ function TabLearn({ store, toast }) {
     data.facts && data.facts.length > 0 && React.createElement("ul", { className: "learn-facts" },
       data.facts.map((f, i) => React.createElement("li", { key: i }, f))),
     React.createElement(LearnActions, { a: data.actions }),
+    /* Два пути переключателем, а не подряд: принёсшему договор шаги про
+       субтитры только мешают. Нет `tracks` (старый сервер) — один путь. */
+    tracks.length > 1 && React.createElement("div", { className: "seg learn-tracks", role: "tablist" },
+      tracks.map(tr => React.createElement("button", { key: tr.key, role: "tab",
+        "aria-pressed": tr.key === cur.key, "aria-selected": tr.key === cur.key,
+        onClick: () => setTrack(tr.key) }, tr.label))),
+    React.createElement(LearnVideo, { v: cur.video }),
     React.createElement("div", { className: "col learn-steps", style: { gap: 12 } },
-      (data.steps || []).map((s, i) => React.createElement(LearnStep, {
-        key: s.key || i, n: i + 1, word: data.stepWord, step: s }))),
+      (cur.steps || []).map((s, i) => React.createElement(LearnStep, {
+        key: (cur.key || "") + (s.key || i), n: i + 1, word: data.stepWord, step: s }))),
     React.createElement(LearnFaq, { head: data.faqHead, items: data.faq }));
 }
 

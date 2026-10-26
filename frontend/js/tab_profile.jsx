@@ -19,19 +19,25 @@
 /* Имя с префиксом экрана: сборки нет, .jsx живут в ОДНОЙ глобальной области,
    и функция верхнего уровня из позднего файла молча затирает одноимённую
    из раннего (так «SegRow» редактора уже был затёрт). */
-function ProfileCard({ title, icon, children, right, bare }) {
-  /* bare — раздел ВНУТРИ другой карточки (блок команды): рамка в рамке —
-     лишний слой, который глаз должен разобрать. */
+function ProfileCard({ title, icon, children, right, bare, sub }) {
+  /* bare — раздел ВНУТРИ другой карточки (блок команды): своя подложка,
+     а не рамка в рамке, — но граница видна, иначе разделы сливались. */
   if (bare) return React.createElement("div", { className: "pf-sub" },
     React.createElement("div", { className: "row between", style: { alignItems: "center", gap: 8 } },
       React.createElement("h3", { className: "pf-sub-title" }, title), right || null),
     children);
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 14 } },
-    React.createElement("div", { className: "row between", style: { alignItems: "center" } },
-      React.createElement("div", { className: "eyebrow", style: { margin: 0, display: "flex", alignItems: "center", gap: 8 } },
-        icon && React.createElement(Icon, { name: icon, size: 16 }), title),
+  /* Каждый блок профиля — своя карточка с ШАПКОЙ на подложке: значок,
+     заголовок, одна строка «зачем». Без шапки пять белых карточек на белом
+     читались одним сплошным листом. */
+  const kids = [].concat(children).filter(x => x !== null && x !== undefined && x !== false);
+  return React.createElement("section", { className: "card pf-card" },
+    React.createElement("div", { className: "pf-head" },
+      icon && React.createElement("span", { className: "pf-ic" }, React.createElement(Icon, { name: icon, size: 18 })),
+      React.createElement("div", { className: "pf-head-t" },
+        React.createElement("h2", { className: "pf-title" }, title),
+        sub ? React.createElement("p", { className: "pf-hsub" }, sub) : null),
       right || null),
-    children);
+    kids.length ? React.createElement("div", { className: "pf-body" }, ...kids) : null);
 }
 
 /* ---------- Кто я, язык, тема ---------- */
@@ -112,10 +118,8 @@ function ProfilePassword({ toast }) {
   /* Свёрнут за кнопкой: пароль меняют редко, а три пустых поля посреди
      профиля читаются как «заполните меня». Хук последним. */
   const [open, setOpen] = useState(false);
-  if (!open) return React.createElement("div", { className: "card card-pad pf-row" },
-    React.createElement(Icon, { name: "lock", size: 18, style: { color: "var(--text-3)" } }),
-    React.createElement("div", { style: { flex: 1, fontWeight: 600 } }, TR("Пароль")),
-    React.createElement(Btn, { variant: "secondary", onClick: () => setOpen(true) }, TR("Сменить пароль")));
+  if (!open) return React.createElement(ProfileCard, { title: TR("Пароль"), icon: "lock",
+    right: React.createElement(Btn, { variant: "secondary", onClick: () => setOpen(true) }, TR("Сменить пароль")) });
   return React.createElement(ProfileCard, { title: TR("Пароль"), icon: "lock",
       right: React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setOpen(false) }, TR("Отмена")) },
     React.createElement("div", { className: "grid grid-3", style: { gap: 10 } },
@@ -312,12 +316,8 @@ function ProfileMembers({ data, toast, bare, hideHome }) {
 function ProfileTeamBlock({ data, onChange, toast, store }) {
   const active = (data.teams || []).find(t => t.id === data.activeTeam) || {};
   const homeOwner = !!(active.home && active.role === "owner" && store && store.can && store.can.owner);
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 18 } },
-    React.createElement("div", null,
-      React.createElement("h2", { className: "section-title", style: { margin: 0, display: "flex", alignItems: "center", gap: 8 } },
-        React.createElement(Icon, { name: "user", size: 18 }), TR("Создайте свою команду")),
-      React.createElement("p", { className: "dim", style: { margin: "6px 0 0", fontSize: 14 } },
-        TR("Позовите коллег работать над переводами вместе. У команды общие проекты и словари."))),
+  return React.createElement(ProfileCard, { title: TR("Создайте свою команду"), icon: "user",
+      sub: TR("Позовите коллег работать над переводами вместе. У команды общие проекты и словари.") },
     homeOwner && React.createElement(ProfileCard, { title: TR("Люди в вашей команде"), bare: true },
       typeof OrgUsers === "function" ? React.createElement(OrgUsers, { toast }) : null),
     React.createElement(ProfileMembers, { data, toast, bare: true, hideHome: homeOwner }),
@@ -327,7 +327,7 @@ function ProfileTeamBlock({ data, onChange, toast, store }) {
 /* ---------- Экран ----------
    Одна колонка — одинаково на мониторе и на телефоне: сверху то, что ждёт
    ответа (приглашения), потом про себя (кто я, язык, пароль), потом команда,
-   а в самом низу — приглашения коллег за страницы. */
+   приглашения коллег за страницы и в самом низу — настройки организации. */
 function TabProfile({ store, toast, theme, onToggleTheme }) {
   const [data, setData] = useState(null);
   const load = () => window.API.safeCall(() => window.API.profile()).then(r => { if (r) setData(r); return r; });
@@ -340,13 +340,28 @@ function TabProfile({ store, toast, theme, onToggleTheme }) {
     React.createElement("div", { className: "page-head" },
       React.createElement("h1", null, TR("Профиль")),
       React.createElement("p", { className: "lead" }, TR("Ваши данные, язык, пароль и команда."))),
-    React.createElement("div", { className: "col profile-one", style: { gap: 16 } },
+    React.createElement("div", { className: "col profile-one", style: { gap: 22 } },
       React.createElement(ProfileInvites, { data, onChange: load, toast }),
       React.createElement(ProfileIdentity, { data, onSaved, toast, theme, onToggleTheme }),
       React.createElement(ProfilePassword, { toast }),
       React.createElement(ProfileTeamBlock, { data, onChange: load, toast, store }),
       store && store.can && store.can.owner && typeof OrgReferral === "function"
-        ? React.createElement(OrgReferral, { toast }) : null));
+        ? React.createElement(OrgReferral, { toast }) : null,
+      store && store.can && store.can.owner ? React.createElement(ProfileOrgBlock, { toast }) : null));
+}
+
+/* ---------- Организация (владельцу) ----------
+   Всё, что осталось от прежней вкладки «Настройки»: прайс (его видит
+   администратор сервиса — остальным сервер отдаёт null, и блока нет)
+   и свои предметные области — настройка для опытных, поэтому свёрнута. */
+function ProfileOrgBlock({ toast }) {
+  return React.createElement(ProfileCard, { title: TR("Организация"), icon: "settings",
+      sub: TR("Тематики переводов вашей организации.") },
+    typeof OrgPricing === "function" ? React.createElement(OrgPricing, { toast, bare: true }) : null,
+    typeof OrgDomains === "function"
+      ? React.createElement(Expander, { title: TR("Свои предметные области (для опытных)"), icon: "book" },
+          React.createElement(OrgDomains, { toast, bare: true }))
+      : null);
 }
 
 window.TabProfile = TabProfile;

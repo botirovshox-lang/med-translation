@@ -112,7 +112,8 @@ check(t.indexOf("публичной оферты") !== -1, "согласие с 
 }
 for (const brand of ["Uzcard", "Humo", "Visa", "Mastercard", "Click", "Payme", "Kaspi"])
   check(t.indexOf("[" + brand + "]") !== -1, "знак " + brand + " на экране");
-check(t.indexOf("К оплате: 101 600 сум") !== -1, "сумма к оплате с разрядами и валютой");
+check(t.indexOf("К оплате") !== -1 && t.indexOf("101 600 сум") !== -1, "сумма к оплате с разрядами и валютой");
+check(t.indexOf("10 стр. + 5 мин") !== -1, "под суммой — что покупается");
 check(t.indexOf("6 350 сум") === -1 && t.indexOf("за стр.") === -1, "цены за страницу у способа нет — только итог к оплате");
 check(t.indexOf("по счёту") !== -1, "способ «по счёту» назван честно, что это не мгновенно");
 check(t.indexOf("Мои заказы") === -1, "заказы — не в карточке пополнения, а своим блоком вкладки «Оплата»");
@@ -252,6 +253,16 @@ check(spendPreset("lastmonth", "2026-01-15").join("..") === "2025-12-01..2025-12
 console.log("=== 5. Цен в браузере нет ===");
 const src = fs.readFileSync(path.join(root, "pay.jsx"), "utf8");
 check(!/12700|0\.5\b|priceMinute|pricePage/.test(src), "в карточке оплаты нет своих цен и курса — только с сервера");
+
+console.log("=== 6. История — своей зоной, отдельно от формы ===");
+{
+  const tab = src.slice(src.indexOf("function TabPay"));
+  const zone = tab.slice(tab.indexOf('className: "pay-archive"'));
+  check(tab.indexOf('className: "pay-archive"') > tab.indexOf("PayCard"), "зона «История» идёт после формы пополнения");
+  check(zone.indexOf("PayOrders") > 0 && zone.indexOf("PayHistory") > 0,
+    "«Мои заказы» и «Куда ушли страницы» — внутри зоны «История»");
+  check(src.indexOf('"pay-total"') > 0, "итог «К оплате» — своей плашкой рядом с кнопкой");
+}
 
 console.log("");
 if (fail.length) { console.log("ПРОВАЛЕНО " + fail.length + ":"); fail.forEach(f => console.log("  - " + f)); process.exit(1); }

@@ -175,7 +175,7 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
         React.createElement("b", { style: { fontSize: 18 } },
           res.total == null ? TR("цена не задана") : res.total.toLocaleString("ru-RU") + " " + res.currency)),
       !res.costHidden && res.rate.price == null && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-        TR("Задайте цену за страницу во вкладке «Настройки» — до этого сумму показать нечем.")),
+        TR("Задайте цену за страницу в «Профиле», блок «Организация», — до этого сумму показать нечем.")),
       /* Молчание объясняется: пропавшая строка неотличима от поломки. */
       res.costHidden && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
         TR("Стоимость видит администратор сервиса.")),

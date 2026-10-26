@@ -132,7 +132,6 @@ window.I18N.register("en", {
  "На проверке": "Under review",
  "Нажимая «Перевести бесплатно», вы принимаете ": "By clicking “Translate for free” you accept the ",
  "Название организации": "Organization name",
- "Настройки": "Settings",
  "Не переведено строк: ": "Lines not translated: ",
  "Не получилось": "Did not work",
  "Не посчитано": "Not counted",

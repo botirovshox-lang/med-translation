@@ -1471,6 +1471,21 @@ body { overflow-wrap: break-word; }
 .side-foot-btn .sf-row { font-size: 13px; }
 .sf-low { font-size: 12.5px; color: var(--c-warning); font-weight: 600; }
 .pay-step { font-weight: 600; font-size: 15px; margin-top: 4px; }
+/* Итог пополнения: сумма крупно и кнопка рядом — главное на экране. */
+.pay-total { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 16px 18px; border-radius: var(--r-lg); border: 1px solid var(--border); background: var(--bg-sunken); }
+.pay-total.is-ready { border-color: var(--c-primary); background: var(--c-primary-soft); }
+.pay-total-l { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.pay-total-k { font-size: 14px; font-weight: 600; color: var(--text-2); }
+.pay-total-v { font-size: 34px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.pay-total.is-ready .pay-total-v { color: var(--c-primary); }
+.pay-total-hint { font-size: 13.5px; color: var(--text-2); }
+.pay-total .btn { min-width: 180px; justify-content: center; }
+/* История (заказы, списания) — своей зоной на подложке, отдельно от формы. */
+.pay-archive { display: flex; flex-direction: column; gap: 14px; margin-top: 10px; padding: 18px;
+  border-radius: var(--r-lg); background: var(--bg-sunken); border: 1px solid var(--border); }
+.pay-archive-head { display: flex; align-items: flex-start; gap: 10px; color: var(--text-2); }
+.pay-archive-head .section-title { color: var(--text); }
 .pay-sum { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
 .pay-sum > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: var(--r-md); background: var(--bg-sunken); }
 .pay-sum span { font-size: 13px; color: var(--text-2); }
@@ -1488,14 +1503,27 @@ body { overflow-wrap: break-word; }
 .pf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 18px; }
 .pf-label { font-size: 14px; font-weight: 600; color: var(--text-2); }
 .pf-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.pf-sub { display: flex; flex-direction: column; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
+/* Каждый блок — карточка с шапкой на подложке: на белом фоне белые карточки
+   с волосяной рамкой сливались в один лист. Шапка (значок, заголовок, строка
+   «зачем») делит экран на разделы с первого взгляда; между карточками — воздух. */
+.pf-card { overflow: hidden; }
+.pf-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 14px 18px;
+  background: var(--bg-sunken); border-bottom: 1px solid var(--border); }
+.pf-card > .pf-head:last-child { border-bottom: 0; }
+.pf-ic { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 34px; height: 34px;
+  border-radius: 10px; background: var(--c-primary-soft); color: var(--c-primary); }
+.pf-head-t { flex: 1 1 200px; min-width: 0; }
+.pf-title { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.3; }
+.pf-hsub { margin: 2px 0 0; font-size: 13.5px; color: var(--text-2); }
+.pf-body { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 18px; }
+/* Раздел внутри блока (команда: люди, приглашения, мои команды) — своей
+   подложкой с рамкой, а не чертой: черта читалась продолжением соседнего. */
+.pf-sub, .pf-subbox { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px;
+  border: 1px solid var(--border); border-radius: var(--r-md); background: var(--card); }
 .pf-sub-title { margin: 0; font-size: 15px; font-weight: 600; }
 
-/* Настройки: куда переехало — карточками-ссылками. */
-.set-link { position: relative; display: flex; flex-direction: column; gap: 4px; text-align: left; font: inherit; color: inherit;
-  cursor: pointer; padding-right: 36px; border: 1px solid var(--border); background: var(--bg-raised, var(--bg)); }
-.set-link-ic { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--text-3); }
-@media (max-width: 640px) { .pay-sum { grid-template-columns: minmax(0, 1fr); } .bal-big { font-size: 26px; } }
+@media (max-width: 640px) { .pay-sum { grid-template-columns: minmax(0, 1fr); } .bal-big { font-size: 26px; }
+  .pay-total .btn { width: 100%; } .pay-total-v { font-size: 28px; } .pay-archive { padding: 12px; } }
 
 @media (pointer: coarse) and (hover: none) {
   .btn { height: 40px; padding: 0 16px; }
@@ -1846,6 +1874,12 @@ body { overflow-wrap: break-word; }
 .learn-shot svg .big { font-size: 16px; font-weight: 700; }
 .learn-shot svg .btn-t { font-size: 12px; font-weight: 600; }
 
+/* Два пути — документы и видео — переключателем; ролик пути над шагами. */
+.learn-tracks { margin: 4px 0 14px; }
+.learn-tracks button { padding: 8px 16px; font-size: 14px; }
+.learn-video { margin: 0 0 14px; padding: 10px; display: flex; flex-direction: column; gap: 8px; max-width: 760px; }
+.learn-video video { display: block; width: 100%; height: auto; border-radius: var(--r-md); background: #000; }
+.learn-video figcaption { font-size: 13px; }
 .learn-h2 { margin: 26px 0 10px; font-size: 17px; font-weight: 600; }
 .learn-a { margin: 0; font-size: 13.5px; line-height: 1.55; color: var(--text-2); max-width: 70ch; }
 

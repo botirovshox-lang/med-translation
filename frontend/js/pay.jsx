@@ -140,11 +140,17 @@ function PayCard({ toast, onPaid, onState }) {
       React.createElement("span", null, TR("Я ознакомлен(а) и принимаю условия "),
         React.createElement("a", { href: "/terms", target: "_blank", rel: "noopener" }, TR("публичной оферты")),
         TR(", включая порядок оплаты и возврата средств"))),
-    React.createElement("div", { className: "row between row-wrap", style: { gap: 10, alignItems: "center" } },
-      React.createElement("div", { style: { fontSize: 16, fontWeight: 700 } },
-        quote ? TR("К оплате: ") + payFmt(quote.amount, quote.currency)
-          : React.createElement("span", { className: "dim", style: { fontWeight: 400, fontSize: 13 } },
-              qErr || TR("Выберите, сколько страниц или минут покупаете"))),
+    /* Итог — отдельной плашкой, крупно, и кнопка рядом с суммой: это
+       то, ради чего человек пришёл на экран, и найти его глазами надо
+       сразу, а не строкой среди подсказок. */
+    React.createElement("div", { className: "pay-total" + (quote ? " is-ready" : "") },
+      React.createElement("div", { className: "pay-total-l" },
+        React.createElement("span", { className: "pay-total-k" }, TR("К оплате")),
+        React.createElement("span", { className: "pay-total-v" }, quote ? payFmt(quote.amount, quote.currency) : "—"),
+        React.createElement("span", { className: "pay-total-hint" },
+          quote ? [pages ? pages + TR(" стр.") : "", minutes ? minutes + TR(" мин") : ""].filter(Boolean).join(" + ")
+                  + (meth.id ? " · " + (PAY_METHOD_LABEL[meth.id] || (() => meth.id))() : "")
+                : (qErr || TR("Выберите, сколько страниц или минут покупаете")))),
       React.createElement(Btn, { variant: "primary", size: "lg", disabled: !quote || busy || !agree, onClick: pay },
         busy ? TR("Создаём заказ…") : TR("Оплатить"))),
     quote && !agree ? React.createElement("div", { className: "dim", style: { textAlign: "right" } },
@@ -410,7 +416,7 @@ function PayHistory({ store }) {
       (payLogPlus(e) ? "+" : "−") + Math.abs(Number(e.pages != null ? e.pages : e.minutes || 0)) + " " + unit));
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "row between row-wrap", style: { gap: 8, alignItems: "center" } },
-      React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Куда ушли страницы")),
+      React.createElement("h3", { className: "pf-sub-title" }, TR("Куда ушли страницы")),
       (log.length || mlog.length) ? React.createElement(Btn, { variant: "secondary", size: "sm", icon: open ? "chevD" : "chevR",
         "aria-expanded": open, onClick: () => setOpen(!open) }, open ? TR("Свернуть") : TR("Показать историю")) : null),
     b.limited && React.createElement("div", { className: "pay-sum" },
@@ -448,10 +454,20 @@ function TabPay({ store, toast }) {
       React.createElement(PaySpendNote, { store }),
       React.createElement(PayBalanceTiles, { store }),
       React.createElement(PayCard, { key, toast, onState: setSt, onPaid: changed }),
-      React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-        React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Мои заказы")),
-        React.createElement(PayOrders, { orders: st && st.orders, toast, onChanged: changed })),
-      React.createElement(PayHistory, { store })));
+      /* Заказы и списания — СПРАВКА, а не часть формы: своей зоной на
+         подложке и с заголовком, иначе таблицы читались продолжением
+         пополнения и спорили с кнопкой «Оплатить». */
+      React.createElement("section", { className: "pay-archive", "aria-label": TR("История") },
+        React.createElement("div", { className: "pay-archive-head" },
+          React.createElement(Icon, { name: "clock", size: 18 }),
+          React.createElement("div", null,
+            React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("История")),
+            React.createElement("p", { className: "dim", style: { margin: "2px 0 0", fontSize: 13.5 } },
+              TR("Ваши заказы и куда ушли страницы — для справки.")))),
+        React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+          React.createElement("h3", { className: "pf-sub-title" }, TR("Мои заказы")),
+          React.createElement(PayOrders, { orders: st && st.orders, toast, onChanged: changed })),
+        React.createElement(PayHistory, { store }))));
 }
 
 /* На window, а не только объявлением: `const` верхнего уровня одного файла

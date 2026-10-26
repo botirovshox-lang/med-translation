@@ -327,16 +327,21 @@ for lang in ("ru", "uz", "en"):
     r = c.get("/tutorial?lang=" + lang)
     check(r.status_code == 200 and ('<html lang="%s"' % lang) in r.text,
           "/tutorial?lang=%s открывается и объявляет свой язык" % lang)
-    check(r.text.count('<section class="step"') == len(main.tutorial_mod.STEPS),
-          "на %s нарисованы все шаги" % lang)
+    check(r.text.count('<section class="step"') ==
+          len(main.tutorial_mod.STEPS) + len(main.tutorial_mod.VIDEO_STEPS),
+          "на %s нарисованы все шаги обоих путей (документы и видео)" % lang)
+    check(r.text.count("<video") == 2, "на %s у каждого пути свой ролик" % lang)
     check("<svg" in r.text, "на %s есть рисунки экранов" % lang)
 r = c.get("/tutorial")
 check(r.status_code == 200, "без языка — открывается умолчанием, а не 400")
 check(c.get("/tutorial?lang=zz").status_code == 200, "мусорный язык не роняет страницу")
 
 print("=== 14б. Забытый перевод виден, а не молча русский ===")
-missing = [(i, lang) for i, (_k, byl) in enumerate(main.tutorial_mod.STEPS)
+missing = [(i, lang) for i, (_k, byl) in enumerate(main.tutorial_mod.STEPS
+                                                    + main.tutorial_mod.VIDEO_STEPS)
            for lang in main.tutorial_mod.LANGS if lang not in byl]
+check(all(k in main.tutorial_mod.SHOTS for k, _ in main.tutorial_mod.STEPS
+          + main.tutorial_mod.VIDEO_STEPS), "у каждого шага есть рисунок")
 check(not missing, "у каждого шага есть все три языка: %s" % (missing or "—"))
 keys = {lang: set(main.tutorial_mod.UI[lang]) for lang in main.tutorial_mod.LANGS}
 check(keys["ru"] == keys["uz"] == keys["en"],
@@ -355,6 +360,16 @@ check(all(s.get("svg") for s in j["steps"]), "у каждого шага при�
 check(all("var(--" in s["svg"] for s in j["steps"]),
       "цвета в рисунке — переменными (иначе тёмная тема его не переживёт)")
 check(len(j["faq"]) >= 5, "частые вопросы есть")
+check([t["key"] for t in j.get("tracks") or []] == ["doc", "video"],
+      "два пути: документы и видео")
+check(all(t["video"]["src"].startswith("/media/") and len(t["video"]["tracks"]) == 3
+          and sum(1 for x in t["video"]["tracks"] if x["default"]) == 1 for t in j["tracks"]),
+      "у каждого пути ролик с подписями на трёх языках, по умолчанию — один")
+check(len(j["tracks"][1]["steps"]) == len(main.tutorial_mod.VIDEO_STEPS)
+      and all(s.get("svg") for s in j["tracks"][1]["steps"]), "шаги видео с рисунками")
+import os as _os
+check(all(_os.path.exists(_os.path.join("landing", t["src"].split("?")[0].lstrip("/")))
+          for tr in j["tracks"] for t in tr["video"]["tracks"]), "файлы подписей роликов лежат в landing/media")
 check(all(f.get("q") and f.get("a") for f in j["faq"]), "у каждого вопроса есть ответ")
 for k in ("tour", "support", "print"):
     check(j["actions"].get(k), "действие «%s» названо" % k)

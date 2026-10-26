@@ -780,9 +780,6 @@ function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
     React.createElement("div", { className: "h-actions" },
       React.createElement(IconBtn, { icon: "search", label: TR("Поиск"), onClick: onSearch }),
       React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme }),
-      /* Мёртвая кнопка неотличима от сломанной: у владельца она ведёт
-         на экран организации, остальным не показывается. */
-      store.can && store.can.owner && React.createElement(IconBtn, { icon: "settings", label: TR("Настройки"), onClick: () => store.go("org") }),
       React.createElement("div", { style: { width: 1, height: 26, background: "var(--border)", margin: "0 6px" } }),
       React.createElement(TeamSwitcher, { store }),
       /* Аватар — дверь в профиль, а не украшение: единственный экран, где
@@ -825,10 +822,11 @@ const TABS = [
      проходит сверху вниз. Открыт КАЖДОМУ вошедшему, как «Профиль». */
   /* «Оплата» — отдельным пунктом, а не карточкой в глубине «Организации»:
      про пополнение думают, когда кончились страницы, и искать его там,
-     где лежат настройки тем, не станет никто. Ключ «org» оставлен за
-     «Настройками»: на него ведут ссылки и сохранённое состояние. */
+     где лежат настройки тем, не станет никто. Пункта «Настройки» больше
+     нет: оплата, люди и словари разъехались по своим экранам, а остаток
+     (свои предметные области, прайс) живёт в «Профиле» блоком организации.
+     Ключ «org» ведёт туда же — на него смотрят ссылки и сохранённая вкладка. */
   { key: "pay", label: TR("Оплата"), icon: "wallet", owner: true, group: "files" },
-  { key: "org", label: TR("Настройки"), icon: "settings", owner: true, group: "files" },
   { key: "profile", label: TR("Профиль"), icon: "user", group: "files" },
   { key: "learn", label: TR("Обучение"), icon: "info", group: "files" },
   /* Админка открывается только с нестандартного адреса (window.ADMIN_ENTRY
@@ -1104,7 +1102,7 @@ function App() {
   const tabMap = {
     import: TabImport, editor: TabEditor, glossary: TabKnowledge, tm: TabKnowledge,
     export: TabExport, preflight: TabAnalysis, qa: TabAnalysis,
-    backlog: TabAnalysis, stats: TabAnalysis, org: TabOrg, admin: TabAdmin,
+    backlog: TabAnalysis, stats: TabAnalysis, org: TabProfile, admin: TabAdmin,
     profile: TabProfile, learn: TabLearn, pay: TabPay,
   };
   const Active = tabMap[store.tab] || TabEditor;

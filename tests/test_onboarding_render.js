@@ -316,6 +316,27 @@ const link = byClass(ltree, "learn-act").find(n => n.type === "a");
 check(link && link.props.href === "/tutorial", "печатная версия ведёт на /tutorial");
 check(link && link.props.rel === "noopener", "внешняя ссылка с rel=noopener");
 
+/* Два пути: документы и видео — переключателем, у каждого свой ролик.
+   hooks[2] — выбранный путь (хук последним). */
+const VSTEP = { key: "trim", title: "Обрежьте лишнее", paras: ["Окно видео."], svg: "" };
+const TRACKS = Object.assign({}, CONTENT, { tracks: [
+  { key: "doc", label: "Документы и фото", steps: CONTENT.steps,
+    video: { src: "/media/one-click-real.mp4", poster: "/p.webp", note: "Запись экрана",
+             tracks: [{ lang: "ru", label: "Русский", src: "/media/one-click-ru.vtt", default: true }] } },
+  { key: "video", label: "Видео и звук", steps: [VSTEP],
+    video: { src: "/media/vision-in-space.mp4", poster: "/v.webp", note: "Результат", tracks: [] } },
+] });
+hooks = { 0: TRACKS, 1: false }; hookIx = 0; effects = [];
+ltree = sandbox.TabLearn({ store, toast });
+const sw = byClass(ltree, "learn-tracks");
+check(sw.length === 1, "переключатель путей нарисован");
+check(byClass(ltree, "learn-video").length === 1, "ролик пути показан");
+check(byClass(ltree, "learn-step").length === CONTENT.steps.length, "по умолчанию — шаги документа");
+hooks = { 0: TRACKS, 1: false, 2: "video" }; hookIx = 0; effects = [];
+ltree = sandbox.TabLearn({ store, toast });
+check(byClass(ltree, "learn-step").length === 1 && texts(ltree).join(" ").includes("Обрежьте лишнее"),
+  "выбран путь видео — его шаги");
+
 /* Сервер не ответил — говорим об этом, а не показываем пустой экран. */
 hooks = { 0: null, 1: true }; hookIx = 0; effects = [];
 ltree = sandbox.TabLearn({ store, toast });

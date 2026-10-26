@@ -1,8 +1,10 @@
 /* ============================================================
-   Tab: Настройки (бывш. «Организация») и части, которые живут на других
-   экранах: люди дома — в «Профиле», импорт словаря — в «Словарях».
-   Виден только владельцу (store.can.owner). Право ПОКАЗАТЬ — здесь,
-   право СДЕЛАТЬ — на сервере: те же команды из консоли получают 403.
+   Части экрана организации, которые живут на других экранах.
+   Отдельной вкладки «Настройки» больше нет: оплата — «Оплата», люди,
+   приглашения и прочее про организацию (свои предметные области, прайс) —
+   «Профиль», импорт словаря — «Словари». Виден только владельцу
+   (store.can.owner). Право ПОКАЗАТЬ — здесь, право СДЕЛАТЬ — на сервере:
+   те же команды из консоли получают 403.
    ============================================================ */
 /* Люди ДОМАШНЕЙ организации: вход, который владелец выдаёт сотруднику сам
    (логин и пароль). Живёт внутри блока команды в «Профиле»: две таблицы
@@ -68,33 +70,16 @@ function OrgUsers({ toast }) {
         React.createElement(Btn, { variant: "ghost", onClick: () => setAdding(false) }, TR("Отмена")))));
 }
 
-/* Журнал действий: кто, когда, что. Пишет сервер (`_audit`), здесь показ. */
+/* Подписи действий журнала (`_audit`): читает журнал в админке. */
 const AUDIT_LABELS = { login: TR("вход"), "segment.confirm": TR("подтвердил сегмент"), "segment.edit": TR("правил перевод"),
   "glossary.save": TR("правил глоссарий"), "glossary.demote": TR("понизил запись"), "glossary.purge": TR("вынос глоссария"),
   "glossary.import": TR("импорт глоссария"), "tm.delete": TR("удалил из памяти"), "term.approve": TR("одобрил термин"),
   "term.reject": TR("отклонил термин"), "project.delete": TR("удалил проект"), "project.export": TR("экспорт"),
   "job.create": TR("запустил прогон"), "user.create": TR("завёл пользователя"), "user.update": TR("правил пользователя"),
   "tenant.create": TR("завёл организацию") };
-function OrgAudit() {
-  const [items, setItems] = useState([]);
-  useEffect(() => { window.API.safeCall(() => window.API.audit(200)).then(r => setItems((r && r.items) || [])); }, []);
-  const detail = (r) => Object.keys(r).filter(k => !["at", "tenant", "user", "login", "action"].includes(k))
-    .map(k => k + "=" + r[k]).join(" · ");
-  return React.createElement("div", { className: "card card-pad" },
-    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 10px" } }, TR("Журнал действий · последние ") + items.length),
-    items.length === 0 && React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } }, TR("Пока пусто.")),
-    items.length > 0 && React.createElement("div", { style: { maxHeight: 360, overflow: "auto" } },
-      React.createElement("table", { className: "tbl" },
-        React.createElement("tbody", null, items.map((r, i) => React.createElement("tr", { key: i },
-          React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap", fontSize: 12 } }, r.at),
-          React.createElement("td", { style: { whiteSpace: "nowrap" } }, r.login || "—"),
-          React.createElement("td", null, AUDIT_LABELS[r.action] || r.action),
-          React.createElement("td", { className: "dim", style: { fontSize: 12 } }, detail(r))))))));
-}
 
-/* Свои предметные области: копия встроенного шаблона с правками. Поля —
-   ровно те, что читают промпты перевода, проверки и извлечения терминов. */
-function OrgDomains({ toast }) {
+/* Свои предметные области — в «Профиле», блок «Организация». */
+function OrgDomains({ toast, bare }) {
   const [data, setData] = useState({ builtin: [], domains: [] });
   const [edit, setEdit] = useState(null);      // { id?, base, label, expert, terminology, extract, examples, cats, strict }
   const reload = () => window.API.safeCall(() => window.API.domains()).then(r => r && setData(r));
@@ -117,8 +102,10 @@ function OrgDomains({ toast }) {
   const F = (k, label, rows) => React.createElement(Field, { label },
     rows ? React.createElement(Textarea, { value: edit[k] || "", style: { minHeight: 60 }, onChange: (e) => setEdit({ ...edit, [k]: e.target.value }) })
          : React.createElement(Input, { value: edit[k] || "", onChange: (e) => setEdit({ ...edit, [k]: e.target.value }) }));
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Предметные области")),
+  /* bare — внутри блока «Организация» в «Профиле»: заголовок там у раскрывашки,
+     а рамка в рамке — лишний слой. */
+  return React.createElement("div", { className: bare ? "" : "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    !bare && React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Предметные области")),
     React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
       TR("Встроенные области — шаблон. Своя область задаёт, кем модель себя считает при переводе, что считать эталоном терминологии, что извлекать в глоссарий и какие категории терминов есть. «Приказ только от человека» — защита от самоодобрения глоссария в незнакомой области.")),
     data.domains.length > 0 && React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
@@ -145,53 +132,13 @@ function OrgDomains({ toast }) {
         React.createElement(Btn, { variant: "ghost", onClick: () => setEdit(null) }, TR("Отмена")))));
 }
 
-/* Суперпользователь: организации, их расход и лимиты. Лимит — решение
-   администратора сервиса, владелец сам себе его не ставит. */
-function SuperTenants({ toast }) {
-  const [tenants, setTenants] = useState([]);
-  const [form, setForm] = useState({ id: "", name: "", ownerLogin: "", ownerPassword: "" });
-  const reload = () => window.API.safeCall(() => window.API.tenants()).then(r => setTenants((r && r.tenants) || []));
-  useEffect(() => { reload(); }, []);
-  const setLimit = async (t) => {
-    const v = prompt(TR("Месячный лимит для «") + t.name + TR("», $ (пусто — снять лимит):"), t.limitUsd != null ? t.limitUsd : "");
-    if (v === null) return;
-    try {
-      await window.API.tenantUpdate(t.id, v.trim() === "" ? { clearLimit: true } : { limitUsd: Number(v) });
-      toast.success(TR("Лимит обновлён"), t.name); reload();
-    } catch (e) { toast.error(TR("Не обновлён"), e.message || String(e)); }
-  };
-  const create = async () => {
-    try { await window.API.tenantCreate(form); toast.success(TR("Организация заведена"), form.name); setForm({ id: "", name: "", ownerLogin: "", ownerPassword: "" }); reload(); }
-    catch (e) { toast.error(TR("Не заведена"), e.message || String(e)); }
-  };
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Организации (администратор сервиса)")),
-    React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
-      React.createElement("thead", null, React.createElement("tr", null,
-        [TR("Организация"), TR("Расход за месяц"), TR("Лимит"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
-      React.createElement("tbody", null, tenants.map(t => React.createElement("tr", { key: t.id },
-        React.createElement("td", null, React.createElement("b", null, t.name), " ", React.createElement("span", { className: "dim" }, t.id)),
-        React.createElement("td", { style: { color: t.spend && t.spend.over ? "var(--c-danger)" : undefined } },
-          costHidden() ? "" : "$" + Number((t.spend && t.spend.spentUsd) || 0).toFixed(2) + TR(" · вызовов ") + ((t.spend && t.spend.calls) || 0)),
-        React.createElement("td", null, costHidden() ? "" : (t.limitUsd != null ? "$" + Number(t.limitUsd).toFixed(2) : "—")),
-        React.createElement("td", { style: { textAlign: "right" } },
-          React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => setLimit(t) }, TR("Лимит")))))))),
-    React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Новая организация")),
-    React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
-      React.createElement(Field, { label: TR("Идентификатор (a-z, 0-9, дефис)") }, React.createElement(Input, { value: form.id, onChange: (e) => setForm({ ...form, id: e.target.value }) })),
-      React.createElement(Field, { label: TR("Название") }, React.createElement(Input, { value: form.name, onChange: (e) => setForm({ ...form, name: e.target.value }) })),
-      React.createElement(Field, { label: TR("Логин владельца") }, React.createElement(Input, { value: form.ownerLogin, onChange: (e) => setForm({ ...form, ownerLogin: e.target.value }) })),
-      React.createElement(Field, { label: TR("Пароль владельца (от 8)") }, React.createElement(Input, { type: "password", value: form.ownerPassword, onChange: (e) => setForm({ ...form, ownerPassword: e.target.value }) }))),
-    React.createElement("div", null, React.createElement(Btn, { variant: "primary", disabled: !form.id || !form.ownerLogin || form.ownerPassword.length < 8, onClick: create }, TR("Завести организацию"))));
-}
-
 /* ── Цены: сколько организация продаёт страницу перевода ────────────
    Прайс и нормы страницы приходят с сервера (/api/pricing) и туда же
    уходят: своих чисел этот экран не знает — иначе в системе появился бы
    второй прайс-лист рядом с настоящим, и смета считалась бы по одному,
    а счёт выставлялся по другому. Право ПОКАЗАТЬ — здесь, право СДЕЛАТЬ
    (владелец) — на сервере: та же команда из консоли получит 403. */
-function OrgPricing({ toast }) {
+function OrgPricing({ toast, bare }) {
   const [card, setCard] = useState(null);
   const [norms, setNorms] = useState(null);
   const [langs, setLangs] = useState([]);
@@ -240,7 +187,7 @@ function OrgPricing({ toast }) {
   const langOpts = (langs.length ? langs : [["RU", TR("Русский")], ["EN", TR("Английский")]])
     .map(([c, n]) => React.createElement("option", { key: c, value: c }, c + " · " + n));
 
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+  return React.createElement("div", { className: bare ? "pf-subbox" : "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
     React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Цены за страницу")),
     React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
       TR("Страница — условная переводческая: 250 слов ИСХОДНИКА, одинаково для всех языков (свою норму задайте ниже); у письма без пробелов — знаки по норме языка. ")
@@ -347,9 +294,15 @@ function OrgReferral({ toast }) {
       + d.signupPages : "",
     d.percent ? TR("Плюс процент от страниц, которые ему выдадут: ") + d.percent + "%" : "",
   ].filter(Boolean).join(". ");
-  return React.createElement("div", { className: "card card-pad", style: { fontSize: 14 } },
-    React.createElement("h2", { className: "section-title", style: { margin: "0 0 8px" } },
-      TR("Зарабатывайте на приглашениях коллег")),
+  /* Облик — как у блоков «Профиля» (там карточка и живёт): шапка
+     на подложке, тело ниже. Классы, а не ProfileCard: этот файл грузится
+     раньше и рендер-тесты собирают его без профиля. */
+  return React.createElement("section", { className: "card pf-card", style: { fontSize: 14 } },
+    React.createElement("div", { className: "pf-head" },
+      React.createElement("span", { className: "pf-ic" }, React.createElement(Icon, { name: "link", size: 18 })),
+      React.createElement("div", { className: "pf-head-t" },
+        React.createElement("h2", { className: "pf-title" }, TR("Зарабатывайте на приглашениях коллег")))),
+    React.createElement("div", { className: "pf-body", style: { gap: 0 } },
     rule ? React.createElement("p", { style: { margin: "0 0 8px" } }, rule) : null,
     d.welcomePages ? React.createElement("p", { className: "dim", style: { margin: "0 0 8px" } },
       TR("Приглашённый получает при регистрации страниц: ") + d.welcomePages) : null,
@@ -371,44 +324,5 @@ function OrgReferral({ toast }) {
     (d.invited || []).length ? React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 12 } },
       d.invited.slice(0, 10).map((x, i) => React.createElement("div", { key: i },
         (x.at || "—") + " · " + (x.name || x.id)
-        + (x.paid ? TR(" · принёс страниц: ") + x.paid : "")))) : null);
-}
-
-/* «Настройки» (ключ вкладки — по-прежнему «org»): только то, что правит
-   владелец про организацию целиком. Прежде здесь лежало всё подряд —
-   расход, оплата, люди, приглашения, импорт словаря и журнал, — и экран
-   отвечал на шесть вопросов сразу. Теперь у каждого свой дом:
-   деньги и страницы — «Оплата», люди и приглашения — «Профиль» (там же
-   команды: вторая таблица людей дублировала первую), импорт словаря —
-   «Словари» (там, где словари и смотрят). Журнал действий — только
-   администратору сервиса: клиенту он ничего не говорит. */
-function TabOrg({ store, toast }) {
-  const [info, setInfo] = useState(null);
-  useEffect(() => { window.API.safeCall(() => window.API.me()).then(r => r && setInfo(r)); }, []);
-  if (!(store.can && store.can.owner))
-    return React.createElement("div", { className: "page" },
-      React.createElement("p", { className: "dim" }, TR("Этот экран доступен владельцу организации.")));
-  const sup = !!(store.can && store.can.super);
-  const link = (label, tab, text) => React.createElement("button", { type: "button", className: "card card-pad card-hover set-link",
-      onClick: () => store.go(tab) },
-    React.createElement("div", { style: { fontWeight: 600 } }, label),
-    React.createElement("div", { className: "dim", style: { fontSize: 14 } }, text),
-    React.createElement(Icon, { name: "chevR", size: 18, className: "set-link-ic" }));
-  return React.createElement("div", { className: "page page-narrow" },
-    React.createElement("div", { className: "page-head" },
-      React.createElement("h1", null, TR("Настройки") + (info && info.tenant && info.tenant.name ? " · " + info.tenant.name : "")),
-      React.createElement("p", { className: "lead" }, TR("Настройки вашей организации."))),
-    info && info.adminPath && !window.ADMIN_ENTRY && React.createElement("p", { className: "dim", style: { fontSize: 13, marginTop: -8 } },
-      TR("Админка сервиса — по служебному адресу "), React.createElement("a", { href: info.adminPath }, info.adminPath)),
-    React.createElement("div", { className: "col", style: { gap: 16 } },
-      /* Куда переехало — карточками-ссылками: кто привык искать здесь,
-         найдёт дорогу, а не пустой экран. */
-      React.createElement("div", { className: "grid grid-3", style: { gap: 12 } },
-        link(TR("Оплата и баланс"), "pay", TR("Остаток страниц, пополнение, заказы")),
-        link(TR("Люди и команда"), "profile", TR("Пригласить коллег, выдать вход сотруднику")),
-        link(TR("Загрузить словарь"), "glossary", TR("Термины из файла — на экране «Словари»"))),
-      React.createElement(OrgDomains, { toast }),
-      React.createElement(OrgPricing, { toast }),
-      sup && React.createElement(SuperTenants, { toast }),
-      sup && React.createElement(OrgAudit, null)));
+        + (x.paid ? TR(" · принёс страниц: ") + x.paid : "")))) : null));
 }

@@ -1152,9 +1152,10 @@ function TabGlossary({ store, toast, onTM }) {
       expert && React.createElement(Select, { value: sort, onChange: (e) => setSort(e.target.value), style: { width: "auto" } },
         React.createElement("option", { value: "freq" }, TR("По частоте")),
         React.createElement("option", { value: "alpha" }, TR("По алфавиту"))),
-      // Импорт словаря файлом живёт на экране организации (права владельца):
-      // здесь только дверь к нему, второй копии загрузки нет.
-      owner && React.createElement(Btn, { variant: "secondary", icon: "upload", onClick: () => store.go("org") }, TR("Импорт файла")),
+      // Загрузка словаря файлом живёт ЗДЕСЬ, где словари и смотрят (прежде —
+      // на экране организации, и это была вторая дверь к тем же словарям).
+      // Подсказкой загружает любой, приказом — владелец (решает сервер).
+      React.createElement(Btn, { variant: "secondary", icon: "upload", onClick: () => setModal("import") }, TR("Загрузить из файла")),
       React.createElement(Btn, { variant: "primary", icon: "plus", onClick: () => setModal("add") }, TR("Добавить термин"))),
 
     React.createElement(TermQueue, { store, toast, version: queueVersion, simple: !expert }),
@@ -1246,7 +1247,8 @@ function TabGlossary({ store, toast, onTM }) {
         onClick: () => store.setExpertView(!store.expertView) },
         store.expertView ? TR("Простой вид") : TR("Вид эксперта"))),
 
-    modal && React.createElement(TermModal, { term: modal === "add" ? null : modal,
+    modal === "import" && React.createElement(KbImportModal, { store, toast, owner, onClose: () => setModal(null) }),
+    modal && modal !== "import" && React.createElement(TermModal, { term: modal === "add" ? null : modal,
       dicts, writeDict,
       scope: store.activeProject
         ? { lang: store.activeProject.src + "→" + store.activeProject.tgt,
@@ -1254,6 +1256,96 @@ function TabGlossary({ store, toast, onTM }) {
         : null,
       onClose: () => setModal(null), onSave: save })
   );
+}
+
+/* Загрузка словаря из файла — по шагам: файл → языки → куда положить →
+   проверить → загрузить. Пара и тема по умолчанию — у открытого проекта:
+   словарь чаще всего грузят под ту книгу, что сейчас на экране. Уровень
+   «приказ» и тема — под «Ещё настройки»: решение редкое, и задавать его
+   каждому не нужно. Сервер проверяет право сам (приказом — только владелец). */
+function KbImportModal({ store, toast, owner, onClose }) {
+  const ap = store.activeProject || {};
+  const [file, setFile] = useState(null);
+  const [langs, setLangs] = useState([["RU", TR("Русский")], ["EN", TR("Английский")]]);
+  const [domains, setDomains] = useState([["general", TR("Общая")]]);
+  const [src, setSrc] = useState(ap.src || "RU");
+  const [tgt, setTgt] = useState(ap.tgt || "EN");
+  const [domain, setDomain] = useState(ap.domain || "general");
+  const [tier, setTier] = useState("auto");
+  const [dictId, setDictId] = useState("");
+  const [newDict, setNewDict] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    window.API.safeCall(() => window.API.models()).then(r => {
+      if (!r) return;
+      if (r.languages && r.languages.length) setLangs(r.languages.map(l => [l.code, l.ru + " · " + l.native]));
+      if (r.domains && r.domains.length) {
+        setDomains(r.domains.map(d => [d.id, d.label]));
+        if (!ap.domain) setDomain(r.domainDefault || r.domains[0].id);
+      }
+    });
+  }, []);
+  const run = async (dry) => {
+    if (!file) return;
+    setBusy(true);
+    try {
+      const r = await window.API.importGlossary(file, src + "→" + tgt, domain, tier, dry,
+                                                dictId === "__new" ? "" : dictId, dictId === "__new" ? newDict : "");
+      setPreview(r);
+      if (!dry) {
+        toast.success(TR("Словарь загружен"), r.added + TR(" записей"));
+        window.API.safeCall(() => window.API.seed()).then(d => {
+          if (d && d.glossary && store.setGlossary) store.setGlossary(d.glossary);
+          if (d && d.dicts && store.setDicts) store.setDicts(d.dicts);
+        });
+        onClose();
+      }
+    } catch (e) { toast.error(TR("Словарь не загружен"), e.message || String(e)); }
+    setBusy(false);
+  };
+  const opt = (arr) => arr.map(([v, l]) => React.createElement("option", { key: v, value: v }, l));
+  const dictOpts = [["", TR("Общий словарь")], ["__new", TR("Новый словарь…")]]
+    .concat((store.dicts || []).map(d => [d.id, d.title + " · " + (d.count || 0)]));
+  const badNew = dictId === "__new" && !newDict.trim();
+  const checked = preview && preview.dryRun;
+  return React.createElement(Modal, { title: TR("Загрузить словарь из файла"), icon: "upload", onClose, width: 640,
+    footer: React.createElement(React.Fragment, null,
+      React.createElement(Btn, { variant: "ghost", onClick: onClose }, TR("Отмена")),
+      checked
+        ? React.createElement(Btn, { variant: "primary", icon: "check", disabled: busy || !preview.added || badNew, onClick: () => run(false) },
+            TR("Загрузить ") + preview.added)
+        : React.createElement(Btn, { variant: "primary", disabled: !file || busy || src === tgt || badNew, onClick: () => run(true) },
+            busy ? TR("Проверяем…") : TR("Проверить файл"))) },
+    React.createElement("div", { className: "col", style: { gap: 14 } },
+      React.createElement(Field, { label: TR("1. Файл с терминами"),
+        hint: TR("Таблица из двух колонок: слово и его перевод (.csv, .tsv или .txt).") },
+        React.createElement("input", { type: "file", accept: ".tsv,.csv,.txt",
+          onChange: (e) => { setFile(e.target.files[0] || null); setPreview(null); } })),
+      React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+        React.createElement(Field, { label: TR("2. С какого языка") }, React.createElement(Select, { value: src, onChange: (e) => { setSrc(e.target.value); setPreview(null); } }, opt(langs))),
+        React.createElement(Field, { label: TR("На какой язык") }, React.createElement(Select, { value: tgt, onChange: (e) => { setTgt(e.target.value); setPreview(null); } }, opt(langs)))),
+      src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 14 } }, TR("Язык оригинала и язык перевода совпадают.")),
+      React.createElement(Field, { label: TR("3. В какой словарь положить") },
+        React.createElement(Select, { value: dictId, onChange: (e) => { setDictId(e.target.value); setPreview(null); } }, opt(dictOpts))),
+      dictId === "__new" && React.createElement(Field, { label: TR("Название нового словаря") },
+        React.createElement(Input, { value: newDict, placeholder: TR("напр. Словарь клиента"), onChange: (e) => setNewDict(e.target.value) })),
+      React.createElement("div", null,
+        React.createElement("button", { type: "button", className: "linklike", "aria-expanded": more, onClick: () => setMore(!more) },
+          (more ? "▾ " : "▸ ") + TR("Ещё настройки"))),
+      more && React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+        React.createElement(Field, { label: TR("Тема") }, React.createElement(Select, { value: domain, onChange: (e) => { setDomain(e.target.value); setPreview(null); } }, opt(domains))),
+        React.createElement(Field, { label: TR("Насколько строго"), hint: owner ? null : TR("«Всегда так» выбирает владелец организации.") },
+          React.createElement(Select, { value: tier, disabled: !owner, onChange: (e) => { setTier(e.target.value); setPreview(null); } },
+            React.createElement("option", { value: "auto" }, TR("Подсказка — переводчик учтёт")),
+            React.createElement("option", { value: "verified" }, TR("Всегда переводить именно так"))))),
+      checked && React.createElement("div", { className: "card card-pad-sm", style: { background: "var(--bg-sunken)", fontSize: 14 } },
+        React.createElement("div", { style: { fontWeight: 600 } }, TR("Добавится записей: ") + preview.added),
+        React.createElement("div", { className: "dim" },
+          TR("Строк в файле: ") + preview.rows + TR(" · уже есть: ") + preview.skippedDup + TR(" · пустых или битых: ") + preview.skippedBad),
+        preview.sample && preview.sample.length > 0 && React.createElement("ul", { style: { margin: "6px 0 0", paddingLeft: 18 } },
+          preview.sample.map((x, i) => React.createElement("li", { key: i }, x.src + " → " + x.tgt))))));
 }
 
 // Примеры употребления прямо в карточке: без них правка термина делается вслепую.

@@ -144,9 +144,19 @@ check(find(treeH, n => cls(n) === "kb-chips").length === 1 && tH.includes("Ут�
   "фильтр — чипами с числом записей");
 check(!tH.includes("Категория") && !tH.includes("Достоверность") && tH.includes("Статус"),
   "таблица без категорий и достоверности, со статусом");
-check(tH.includes("утверждён") && tH.includes("Словари") && tH.includes("Импорт файла"),
-  "статус записи назван, шапка «Словари», импорт — владельцу");
+check(tH.includes("утверждён") && tH.includes("Словари") && tH.includes("Загрузить из файла"),
+  "статус записи назван, шапка «Словари», загрузка словаря из файла — здесь же");
 check(!tH.includes("TSV"), "мёртвой кнопки TSV нет");
+/* Окно загрузки словаря — здесь, по шагам; приказ — только владельцу. */
+hooks = []; hookIdx = 0;
+let km = null; err = null;
+try { km = KbImportModal({ store: Object.assign({}, store, { dicts: [{ id: "d1", title: "Клиент", count: 3 }] }), toast, owner: false, onClose() {} }); }
+catch (e) { err = e; }
+check(!err, "окно загрузки словаря рисуется" + (err ? ": " + err.message : ""));
+const kt = texts(km).join(" | ");
+check(kt.includes("1. Файл с терминами") && kt.includes("3. В какой словарь положить") && kt.includes("Проверить файл"),
+  "окно загрузки: шаги и кнопка «Проверить файл»");
+check(!kt.includes("use these exact translations") && !kt.includes("промпт"), "без внутренних слов про промпт");
 hooks = []; hookIdx = 0;
 const tk = TabKnowledge({ store, toast });
 check(find(tk, n => (n.props || {}).role === "tablist").length === 0,

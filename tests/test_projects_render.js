@@ -173,7 +173,14 @@ console.log("\n[3] Папка без списка словарей — чест�
 
 console.log("\n[4] Окно нового проекта");
 {
+  /* Тема и словари — под «Ещё настройки» (хук 8 — more). Свёрнуто: только
+     название и языки. */
   hooks = []; hookIdx = 0;
+  const lite = texts(ImpNewFolder({ store: makeStore(), toast, meta: { langs: [["RU", "Русский"], ["EN", "Английский"]],
+    domains: [["general", "Общая"]], domainDefault: "general" }, onClose() {} })).join(" | ");
+  check(!lite.includes("Завести свой словарь") && !lite.includes("Тема") && lite.includes("Ещё настройки"),
+        "в свёрнутом окне только название и языки, остальное — «Ещё настройки»");
+  hooks = []; hooks[8] = true; hookIdx = 0;
   const tree = ImpNewFolder({ store: makeStore(), toast, meta: { langs: [["RU", "Русский"], ["EN", "Английский"]],
     domains: [["general", "Общая"], ["legal", "Право"]], domainDefault: "general" }, onClose() {} });
   const t = texts(tree).join(" | ");
@@ -181,6 +188,26 @@ console.log("\n[4] Окно нового проекта");
   check(t.includes("Словарь договора") && t.includes("Старый словарь"), "существующие словари — на выбор");
   check(find(tree, n => n.type === "input" && n.props.type === "checkbox").length === 3, "галочки: свой + два существующих");
   check(t.includes("Тема"), "тема названа простым словом");
+}
+
+console.log("\n[4a] Хватит ли страниц на файл — до нажатия «Добавить»");
+{
+  /* pay.jsx здесь не загружен: подсказка обязана жить и без него. */
+  global.payBalance = () => ({ limited: true, pagesLeft: 3, over: false });
+  global.usePayValue = () => null;
+  hooks = []; hookIdx = 0;
+  let t = texts(ImpPayHint({ store: makeStore({ can: { owner: true }, go() {} }), pages: 12 })).join(" | ");
+  check(t.includes("Не хватает 9 стр.") && t.includes("Оплатить"), "не хватает — сказано сколько и кнопка «Оплатить»");
+  global.payBalance = () => ({ limited: true, pagesLeft: 50, over: true });
+  hooks = []; hookIdx = 0;
+  t = texts(ImpPayHint({ store: makeStore({ can: { owner: false } }), pages: 12 })).join(" | ");
+  check(t.includes("приостановлены") && t.includes("Попросите владельца") && !t.includes("лимит"),
+        "переводы приостановлены — не владельцу «попросите владельца», без слова «лимит»");
+  global.payBalance = () => ({ limited: true, pagesLeft: 50, over: false });
+  hooks = []; hookIdx = 0;
+  t = texts(ImpPayHint({ store: makeStore({ can: { owner: true } }), pages: 12 })).join(" | ");
+  check(t.includes("Хватает") && !t.includes("Оплатить"), "хватает — спокойная строка без кнопки");
+  delete global.payBalance; delete global.usePayValue;
 }
 
 console.log("\n[5] Имена верхнего уровня");

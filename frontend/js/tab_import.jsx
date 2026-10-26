@@ -75,27 +75,46 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
     setRes(null); setErr("");
     if (draft) { draft.quote = null; draft.quoteKey = null; }
   }, [qKey]);
-  const keep = (r) => { setRes(r); if (draft) { draft.quote = r; draft.quoteKey = r ? qKey : null; } };
+  /* Ответ сметы — про ТОТ файл и ту пару, с которыми её спросили: сменил
+     язык, пока шёл расчёт, — опоздавший ответ выбрасывается, иначе на экране
+     и в подсказке «хватит ли страниц» стояла бы смета чужой пары. */
+  const liveKey = useRef(qKey);
+  liveKey.current = qKey;
+  const keep = (r, k) => {
+    if (k !== undefined && k !== liveKey.current) return false;
+    setRes(r); if (draft) { draft.quote = r; draft.quoteKey = r ? (k || qKey) : null; }
+    return true;
+  };
+  /* Считается САМА, как только выбран файл и языки: «сколько это стоит» —
+     вопрос, который человек задаёт всегда, и кнопка «Посчитать» была
+     лишним шагом, который легко пропустить. Ошибка — кнопка «Ещё раз». */
+  useEffect(() => {
+    if (!file || !file.raw || (draft && draft.quoteKey === qKey)) return;
+    const t = setTimeout(() => run(), 300);
+    return () => clearTimeout(t);
+  }, [qKey]);
   const runScan = async () => {
     // Скан: платное чтение выборки страниц зрячей моделью — по отдельной кнопке,
     // после того как человек увидел, сколько страниц и почём.
+    const k = qKey;
     setBusy(true); setErr(""); setProg(null);
     try {
       const r = await window.API.quoteScan(file.raw, src, tgt, setProg);
-      keep(r);
+      if (!keep(r, k)) return;
       if (r && r.saved && onSaved) onSaved();
     } catch (e) { setErr(e.message || String(e)); }
     setBusy(false); setProg(null);
   };
   const run = async () => {
     if (!file || !file.raw) { toast.error(TR("Файл не выбран"), TR("Выберите файл, чтобы посчитать объём")); return; }
+    const k = qKey;
     setBusy(true); setErr(""); setProg(null);
     try {
       const r = await window.API.quoteFile(file.raw, src, tgt, setProg);
-      keep(r);
+      if (!keep(r, k)) return;
       if (r && r.saved && onSaved) onSaved();
     } catch (e) {
-      keep(null);
+      if (!keep(null, k)) return;
       // Причина отказа называется словами: «не посчитали» без причины —
       // это предложение гадать, что не так с файлом.
       setErr(e.message || String(e));
@@ -105,16 +124,15 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
   const row = (k, v) => React.createElement("div", { style: { display: "flex", justifyContent: "space-between", gap: 12 } },
     React.createElement("span", { className: "dim" }, k), React.createElement("b", null, v));
   return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 10 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: 0 } },
-      costHidden() ? TR("Объём файла") : TR("Объём и стоимость")),
+    React.createElement("div", { className: "imp-step-t" }, TR("3. Сколько это займёт")),
     more && React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
       costHidden()
         ? TR("Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка).")
         : TR("Страница — 250 слов исходника (у письма без пробелов — знаки по норме языка). Цену за страницу задаёт владелец организации.")),
-    React.createElement("div", null,
-      React.createElement(Btn, { variant: "ghost", disabled: !file || busy, onClick: run },
-        busy ? TR("Считаем…") : costHidden() ? TR("Посчитать объём") : TR("Посчитать объём и стоимость"))),
+    busy && React.createElement("div", { className: "dim" }, TR("Считаем объём файла…")),
     busy && React.createElement(ImpProgress, { p: prog }),
+    !busy && err && React.createElement("div", null,
+      React.createElement(Btn, { variant: "ghost", size: "sm", icon: "repeat", disabled: !file, onClick: run }, TR("Посчитать ещё раз"))),
     err && React.createElement("div", { className: "dim", style: { color: "var(--c-danger)", fontSize: 13 } }, err),
     res && res.scan && !res.counts && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
       React.createElement("div", null, TR("Это скан: ") + res.scan.pages + TR(" стр. без текстового слоя. Объём можно оценить по выборке страниц; точный счёт — после распознавания.")),
@@ -135,6 +153,7 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
         "· " + res.total.toLocaleString("ru-RU") + " " + res.currency),
       React.createElement(Btn, { variant: "ghost", size: "sm", "aria-expanded": more, onClick: () => setMore(!more) },
         more ? TR("Скрыть") : TR("Подробнее"))),
+    res && res.counts && store && React.createElement(ImpPayHint, { store, pages: res.pages.billed }),
     res && res.counts && more && React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 6, fontSize: 14 } },
       res.scan && row(TR("Оценка по выборке"), res.scan.read.length + TR(" из ") + res.scan.pages + TR(" стр.")),
       row(TR("Слов"), res.counts.words.toLocaleString("ru-RU")),
@@ -156,7 +175,7 @@ function ImpQuote({ file, src, tgt, toast, onSaved, store, draft }) {
         React.createElement("b", { style: { fontSize: 18 } },
           res.total == null ? TR("цена не задана") : res.total.toLocaleString("ru-RU") + " " + res.currency)),
       !res.costHidden && res.rate.price == null && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-        TR("Задайте цену за страницу во вкладке «Организация» — до этого сумму показать нечем.")),
+        TR("Задайте цену за страницу во вкладке «Настройки» — до этого сумму показать нечем.")),
       /* Молчание объясняется: пропавшая строка неотличима от поломки. */
       res.costHidden && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
         TR("Стоимость видит администратор сервиса.")),
@@ -312,8 +331,9 @@ function ImpFolderList({ store, toast, meta }) {
     React.createElement("div", { className: "row between row-wrap page-head", style: { alignItems: "flex-end", gap: 12 } },
       React.createElement("div", null,
         React.createElement("h1", null, TR("Проекты")),
-        React.createElement("p", { className: "lead" }, TR("Проект — это папка с файлами одного заказа: одна пара языков, одна тема и свои словари. Откройте проект, чтобы добавить файл или начать перевод."))),
-      React.createElement(Btn, { variant: "primary", icon: "plus", onClick: () => setCreating(true) }, TR("Новый проект"))),
+        React.createElement("p", { className: "lead" }, TR("Проект — папка с файлами одного заказа. Откройте его, чтобы добавить файл и перевести."))),
+      React.createElement(Btn, { variant: "primary", size: "lg", icon: "plus", onClick: () => setCreating(true) }, TR("Новый проект"))),
+    impBalance(store),
     /* Файл с лендинга — первым, даже если проекты уже есть: человек нажал
        там «Перевести» и ждёт перевода ЭТОГО файла, а не списка папок. */
     folders.length === 0 || store.handoff
@@ -464,6 +484,9 @@ function ImpNewFolder({ store, toast, meta, onClose }) {
   const [dictName, setDictName] = useState("");
   const [picked, setPicked] = useState([]);           // существующие словари, в порядке выбора
   const [busy, setBusy] = useState(false);
+  /* Тема и словари — под «Ещё настройки»: умолчания годятся почти всем,
+     а пять полей в первом же окне пугают. Хук последним. */
+  const [more, setMore] = useState(false);
   const dicts = store.dicts || [];
   const toggle = (id) => setPicked(p => p.indexOf(id) >= 0 ? p.filter(x => x !== id) : p.concat([id]));
   const pair = src + "→" + tgt;
@@ -486,16 +509,19 @@ function ImpNewFolder({ store, toast, meta, onClose }) {
   return React.createElement(Modal, { title: TR("Новый проект"), icon: "folder", onClose, width: 640,
     footer: React.createElement(React.Fragment, null,
       React.createElement(Btn, { variant: "ghost", onClick: onClose }, TR("Отмена")),
-      React.createElement(Btn, { variant: "primary", icon: "check", disabled: busy || src === tgt, onClick: create }, TR("Создать"))) },
-    React.createElement(Field, { label: TR("Название проекта") },
+      React.createElement(Btn, { variant: "primary", size: "lg", icon: "check", disabled: busy || src === tgt, onClick: create }, TR("Создать проект"))) },
+    React.createElement(Field, { label: TR("1. Как назвать проект") },
       React.createElement(Input, { value: title, autoFocus: true, placeholder: TR("напр. Договор поставки"), onChange: (e) => setTitle(e.target.value) })),
     React.createElement("div", { className: "grid grid-2" },
-      React.createElement(Field, { label: TR("Язык оригинала") }, React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) }, impLangOptions(meta.langs))),
-      React.createElement(Field, { label: TR("Язык перевода") }, React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) }, impLangOptions(meta.langs)))),
-    src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
-    React.createElement(Field, { label: TR("Тема"), hint: TR("Подсказывает переводчику-модели, о чём документ. У всех файлов проекта тема одна.") },
+      React.createElement(Field, { label: TR("2. С какого языка") }, React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) }, impLangOptions(meta.langs))),
+      React.createElement(Field, { label: TR("На какой язык") }, React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) }, impLangOptions(meta.langs)))),
+    src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 14 } }, TR("Язык оригинала и язык перевода совпадают.")),
+    React.createElement("div", null,
+      React.createElement("button", { type: "button", className: "linklike", "aria-expanded": more, onClick: () => setMore(!more) },
+        (more ? "▾ " : "▸ ") + TR("Ещё настройки (необязательно)"))),
+    more && React.createElement(Field, { label: TR("Тема"), hint: TR("Подсказывает переводчику-модели, о чём документ. У всех файлов проекта тема одна.") },
       React.createElement(Select, { value: domain, onChange: (e) => setDomain(e.target.value) }, opt(meta.domains))),
-    React.createElement(Field, { label: TR("Словари проекта"),
+    more && React.createElement(Field, { label: TR("Словари проекта"),
       hint: TR("Слова, которые надо переводить всегда одинаково. Новые слова проекта попадут в первый словарь из списка.") },
       React.createElement("div", { className: "col", style: { gap: 8 } },
         React.createElement(Checkbox, { checked: ownDict, onChange: (e) => setOwnDict(e.target.checked) }, TR("Завести свой словарь для этого проекта")),
@@ -532,7 +558,10 @@ function ImpFolderView({ folder, store, toast, meta }) {
   };
   return React.createElement("div", { className: "page" },
     React.createElement("div", { className: "page-head" },
-      React.createElement("button", { className: "linklike dim", style: { fontSize: 13, marginBottom: 6 }, onClick: () => store.setViewFolder(null) }, "← " + TR("Все проекты")),
+      /* Кнопкой с рамкой, а не серой ссылкой: «назад к списку» — главный
+         выход отсюда, и его ищут глазами первым. */
+      React.createElement("div", { style: { marginBottom: 12 } },
+        React.createElement(Btn, { variant: "secondary", icon: "arrowL", onClick: () => store.setViewFolder(null) }, TR("Все проекты"))),
       React.createElement("div", { className: "row between row-wrap", style: { alignItems: "flex-end", gap: 12 } },
         React.createElement("div", null,
           React.createElement("h1", null, folder.title || TR("Без названия"), " ",
@@ -542,6 +571,7 @@ function ImpFolderView({ folder, store, toast, meta }) {
             React.createElement(Badge, null, impDomainLabel(meta, folder.domain)),
             React.createElement(Badge, { icon: "file" }, st.files.length + " " + impPlural(st.files.length, TR("файл"), TR("файла"), TR("файлов"))),
             st.total > 0 && React.createElement(Badge, { icon: "check" }, TR("готово ") + st.pct + "%"))))),
+    impBalance(store),
 
     /* Главное — наверху и рядом: слева файлы с кнопкой «Переводить»,
        справа «Добавить файл». Сетки в три узкие колонки больше нет: в ней
@@ -723,6 +753,7 @@ function ImpFileCard({ project, store, toast }) {
         sameShape && !media && React.createElement(Badge, { icon: "checkCircle" }, TR("вернём в том же виде")),
         project.sourceDocx && project.writeback === false && React.createElement(Badge, { icon: "file" }, TR("вернём как Word")),
         project.reimport && React.createElement(Badge, { icon: "repeat" }, TR("обновлён ") + project.reimport.at)),
+      React.createElement(ImpFileCost, { project, store }),
       project.trialExcerpt && typeof TrialExcerptBar === "function"
         && React.createElement(TrialExcerptBar, { store, project, toast }),
       /* Совет стоит ДО прогресса и кнопки «Переводить»: пересобрать строки
@@ -822,6 +853,77 @@ function ImpFileCard({ project, store, toast }) {
         React.createElement("br", null),
         React.createElement("span", { className: "dim" }, total + TR(" строк · ") + done + TR(" подтверждено")))));
 }
+
+/* ---------- Баланс и цена на экране «Проекты» ----------
+   Плитки и расчёт живут в pay.jsx (он грузится позже — поэтому через
+   typeof): здесь только место показа. Человек решает «добавлять ли файл»
+   и «хватит ли», глядя на остаток, — значит остаток стоит рядом. */
+function impBalance(store) {
+  if (typeof PayBalanceTiles !== "function") return null;
+  return React.createElement("div", { className: "col", style: { gap: 12, marginBottom: 20 } },
+    typeof PaySpendNote === "function" ? React.createElement(PaySpendNote, { store }) : null,
+    React.createElement(PayBalanceTiles, { store, onPay: () => store.go("pay") }));
+}
+/* В «Оплату» — с подставленным числом страниц. */
+function impGoPay(store, pages) {
+  window._mcat_payIntent = pages ? { pages: Math.max(1, Math.ceil(Number(pages))) } : null;
+  store.go("pay");
+  try { window.dispatchEvent(new CustomEvent("mct-pay-open", { detail: window._mcat_payIntent || {} })); } catch (e) {}
+}
+
+/* Хватит ли страниц на этот файл и что делать, если нет. Говорит ДО
+   нажатия «Добавить»: красный отказ после нажатия пугает сильнее, чем
+   спокойное «не хватает — вот кнопка». */
+function ImpPayHint({ store, pages }) {
+  const b = typeof payBalance === "function" ? payBalance(store) : { limited: false };
+  const owner = !!(store.can && store.can.owner);
+  const need = Number(pages || 0);
+  const short = b.limited ? Math.max(0, Math.round((need - b.pagesLeft) * 10) / 10) : 0;
+  const cost = typeof usePayValue === "function" ? usePayValue(store, need, 0) : null;
+  const shortCost = typeof usePayValue === "function" ? usePayValue(store, short, 0) : null;
+  const money = (v) => v && typeof payFmt === "function" ? payFmt(v.amount, v.currency) : "";
+  const payBtn = (n, label) => owner
+    ? React.createElement(Btn, { variant: "primary", icon: "wallet", onClick: () => impGoPay(store, n) }, label)
+    : React.createElement("div", { className: "dim" }, TR("Попросите владельца организации пополнить баланс."));
+  if (b.limited && short > 0)
+    return React.createElement("div", { className: "imp-pay is-warn" },
+      React.createElement("div", { style: { fontWeight: 600 } },
+        TR("Не хватает ") + short + TR(" стр.") + " " + TR("На счёте: ") + b.pagesLeft + TR(" стр.")),
+      React.createElement("div", null, TR("Пополните баланс — файл добавится и переведётся сам.")
+        + (shortCost ? " " + TR("К оплате: ") + money(shortCost) : "")),
+      payBtn(short, TR("Оплатить")));
+  if (b.over)
+    return React.createElement("div", { className: "imp-pay is-warn" },
+      React.createElement("div", { style: { fontWeight: 600 } }, TR("Страниц хватает, но новые переводы сейчас приостановлены.")),
+      React.createElement("div", null, TR("Пополните баланс — работа продолжится.")
+        + (cost ? " " + TR("Этот файл стоит примерно ") + money(cost) + "." : "")),
+      payBtn(need, TR("Оплатить")));
+  return React.createElement("div", { className: "imp-pay is-ok" },
+    React.createElement(Icon, { name: "checkCircle", size: 18 }),
+    React.createElement("span", null,
+      b.limited ? TR("Хватает: на счёте ") + b.pagesLeft + TR(" стр.") : TR("Страниц хватает."),
+      cost ? " " + TR("Этот файл стоит примерно ") + money(cost) + "." : ""));
+}
+
+/* На карточке добавленного файла: сколько он стоил и — если переводы
+   приостановлены — куда нажать. */
+function ImpFileCost({ project, store }) {
+  const pages = Number(project.pages || 0);
+  const v = typeof usePayValue === "function" ? usePayValue(store, pages, 0) : null;
+  const b = typeof payBalance === "function" ? payBalance(store) : {};
+  const owner = !!(store.can && store.can.owner);
+  const todo = (project.segments || []).some(s => !(s.target || "").trim() && s.status !== "confirmed");
+  if (!pages && !(b.over && todo)) return null;
+  return React.createElement("div", { className: "col", style: { gap: 8 } },
+    pages > 0 && React.createElement("div", { className: "dim", style: { fontSize: 14 } },
+      TR("Объём: ") + (Math.round(pages * 10) / 10) + TR(" стр.")
+        + (v && typeof payFmt === "function" ? " · ≈ " + payFmt(v.amount, v.currency) : "")),
+    b.over && todo && React.createElement("div", { className: "imp-pay is-warn" },
+      React.createElement("div", null, TR("Чтобы перевести этот файл, пополните баланс: новые переводы сейчас приостановлены.")),
+      owner ? React.createElement(Btn, { variant: "primary", icon: "wallet", onClick: () => impGoPay(store, 0) }, TR("Оплатить"))
+            : React.createElement("div", { className: "dim" }, TR("Попросите владельца организации пополнить баланс."))));
+}
+
 
 /* Добавить файл в проект: тема берётся у проекта, пара языков — у файла
    (по умолчанию папочная: договор RU→EN и приложение RU→UZ живут в одном
@@ -1075,6 +1177,7 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
     /* Без карточки вокруг: у пунктирной зоны своя рамка, и рамка в рамке —
        лишний слой, который глаз должен разобрать. */
     React.createElement("div", { className: "imp-add" },
+    React.createElement("div", { className: "imp-step-t" }, TR("1. Выберите файл")),
     React.createElement("div", {
       className: "dropzone" + (dragging ? " drag" : ""), style: { padding: 22 },
       onDragOver: (e) => { e.preventDefault(); setDragging(true); }, onDragLeave: () => setDragging(false), onDrop,
@@ -1084,14 +1187,14 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
       file
         ? React.createElement("div", null,
             React.createElement(Icon, { name: "file", size: 28, className: "dz-ic", style: { color: "var(--c-success)" } }),
-            React.createElement("div", { style: { fontWeight: 500, fontSize: 14 } }, file.name),
-            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 12 } }, file.size + TR(" · нажмите, чтобы заменить")))
+            React.createElement("div", { style: { fontWeight: 600, fontSize: 15 } }, file.name),
+            React.createElement("div", { className: "dim", style: { marginTop: 2, fontSize: 14 } }, file.size + TR(" · нажмите, чтобы заменить")))
         : React.createElement("div", null,
             React.createElement(Icon, { name: "upload", size: 28, className: "dz-ic" }),
             React.createElement("div", null,
               React.createElement("span", { className: "btn btn-secondary btn-lg", "aria-hidden": "true" }, TR("Выбрать файл"))),
-            React.createElement("div", { style: { marginTop: 10, fontSize: 13.5 } }, TR("или перетащите его сюда")),
-            React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 12 } }, TR("Word, Excel, PowerPoint, PDF, HTML, текст, картинка, видео или звук")))),
+            React.createElement("div", { style: { marginTop: 10, fontSize: 15 } }, TR("или перетащите его сюда")),
+            React.createElement("div", { className: "dim", style: { marginTop: 6, fontSize: 14 } }, TR("Word, PDF, Excel, PowerPoint, картинка, видео")))),
     probing && React.createElement("div", { className: "col", style: { gap: 4 } },
       React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TR("Смотрим, что за файл…")),
       React.createElement(ImpProgress, { p: prog })),
@@ -1109,14 +1212,18 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
         React.createElement(Btn, { variant: "ghost", size: "sm", disabled: busy, onClick: () => create() }, TR("Добавить как новый файл")))),
     /* Пометка сервера о формате — русская фраза нашего кода: переводится
        подстановкой TRS() из серверной таблицы, как все detail. */
-    probe && !probe.error && probe.note && React.createElement("div", { className: "dim", style: { fontSize: 12 } }, TRS(probe.note)),
-    isMedia && React.createElement("div", { className: "dim", style: { fontSize: 12 } },
-      TR("Видео или звук: сначала обрежете лишнее и выберете вид субтитров, потом распознаем речь с таймингом и переведём. Скачать можно субтитры, видео с субтитрами в кадре или озвучку на новом языке.")),
+    probe && !probe.error && probe.note && React.createElement("details", { className: "imp-more" },
+      React.createElement("summary", null, TR("Подробнее о файле")),
+      React.createElement("div", { className: "dim" }, TRS(probe.note))),
+    isMedia && React.createElement("div", { className: "dim", style: { fontSize: 14 } },
+      TR("Видео: сначала обрежете лишнее, потом распознаем речь и переведём.")),
+    file && !exact && React.createElement("div", { className: "imp-step-t" }, TR("2. Название и языки")),
     file && !exact && React.createElement(Input, { value: title, placeholder: TR("Название файла"), onChange: (e) => setTitle(e.target.value) }),
     file && !exact && meta && React.createElement("div", { className: "grid grid-2", style: { gap: 8 } },
       React.createElement(Field, { label: TR("С какого языка") }, React.createElement(Select, { value: src, onChange: (e) => changePair(e.target.value, tgt) }, impLangOptions(meta.langs))),
       React.createElement(Field, { label: TR("На какой язык") }, React.createElement(Select, { value: tgt, onChange: (e) => changePair(src, e.target.value) }, impLangOptions(meta.langs)))),
-    file && !exact && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } }, TR("Язык оригинала и язык перевода совпадают.")),
+    file && !exact && src === tgt && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 14 } }, TR("Язык оригинала и язык перевода совпадают.")),
+    file && !exact && !similar && !isMedia && src !== tgt && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft }),
     file && !exact && asrOff && React.createElement("div", { style: { color: "var(--c-danger)", fontSize: 13 } },
       TR("Распознавать речь на этом языке пока не умеем. Выберите язык, на котором говорят в видео, или загрузите готовые субтитры (.srt) — их переведём")),
     /* Кнопка появляется, когда есть что добавлять: погашенная «Добавить»
@@ -1126,8 +1233,7 @@ function ImpAddFile({ folder, store, toast, meta, more }) {
         : isMedia ? TR("Дальше: обрезка и субтитры") : TR("Добавить в проект")),
     busy && React.createElement(ImpProgress, { p: prog }),
     vidFile && React.createElement(VideoEditor, { file: vidFile, toast, onCancel: () => setVidFile(null), onDone: mediaDone,
-      meta: { title: title || vidFile.name.replace(/[.][^.]+$/, ""), src, tgt, domain: folder.domain, folder: folder.id } }),
-    file && !exact && !isMedia && React.createElement(ImpQuote, { file, src, tgt, toast, store, draft })));
+      meta: { title: title || vidFile.name.replace(/[.][^.]+$/, ""), src, tgt, domain: folder.domain, folder: folder.id } })));
 }
 
 /* Словари проекта: какие подключены и куда пишутся новые слова.

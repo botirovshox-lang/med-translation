@@ -157,15 +157,17 @@ console.log("1. Меню: состав и права");
   const labels = items.map(n => texts(n).join(" "));
   const has = (t) => labels.some(l => l.indexOf(t) >= 0);
   check(items.length >= 7, "пунктов меню не меньше семи (сейчас " + items.length + ")");
-  ["Перевод", "Словари", "Проверка", "Скачать", "Проекты", "Профиль"].forEach(t =>
+  ["Перевод", "Словари", "Проверка", "Скачать", "Проекты", "Профиль", "Оплата"].forEach(t =>
     check(has(t), "в меню есть «" + t + "»"));
-  check(has("Организация"), "владелец видит «Организация»");
+  check(has("Настройки"), "владелец видит «Настройки» (бывш. «Организация»)");
+  check(!has("Организация"), "прежнего пункта «Организация» нет");
   check(!has("Админ"), "без служебного адреса «Админ» не показывается");
 
   const noOwner = Sidebar({ store: makeStore({ can: { owner: false, super: false, role: "translator" } }),
     theme: "light", onToggleTheme() {}, onLogout() {} });
   const noOwnerLabels = byClass(noOwner, "navi").map(n => texts(n).join(" "));
-  check(!noOwnerLabels.some(l => l.indexOf("Организация") >= 0), "переводчику «Организация» не показывается");
+  check(!noOwnerLabels.some(l => l.indexOf("Настройки") >= 0 || l.indexOf("Оплата") >= 0),
+        "переводчику «Настройки» и «Оплата» не показываются");
 }
 
 console.log("2. Активный пункт ровно один");

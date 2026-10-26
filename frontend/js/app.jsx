@@ -55,6 +55,19 @@ function useStore(authed) {
      отдаёт в /api/auth/me, браузер до сих пор выбрасывал. */
   const [caps, setCaps] = useState(null);
   const [usage, setUsage] = useState(null);
+  /* Кошельки и журнал списаний — экрану «Оплата» и балансу внизу меню.
+     Тот же ответ /auth/me: второй запрос ради тех же чисел не нужен. */
+  const [wallet, setWallet] = useState(null);
+  const takeMe = (r) => {
+    setCaps(r.caps || null); setUsage(r.usage || null);
+    setWallet({ spend: r.spend || null, minutes: r.minutes || null,
+                pagesLog: r.pagesLog || [], minutesLog: r.minutesLog || [] });
+    /* Остаток минут видео — мини-редактору видео (без своего запроса). */
+    window._mcat_minutes = r.minutes || null;
+  };
+  /* Перечитать баланс: после оплаты, загрузки файла, прогона. */
+  const refreshMe = () => window.API && window.API.safeCall(() => window.API.me())
+    .then(r => { if (r && r.me) takeMe(r); return r; });
   useEffect(() => {
     if (!authed || !window.API || !window.API.me) return;
     let cancelled = false;
@@ -62,9 +75,7 @@ function useStore(authed) {
       if (cancelled || !r || !r.me) return;
       setMe(r.me); setCan(r.can || { owner: false, super: false });
       setTeams(r.teams || []); setTenant(r.tenant || null); setInvites(r.invites || []);
-      setCaps(r.caps || null); setUsage(r.usage || null);
-      /* Остаток минут видео — мини-редактору видео (без своего запроса). */
-      window._mcat_minutes = r.minutes || null;
+      takeMe(r);
       /* Источник правды про язык — ЗАПИСЬ ПОЛЬЗОВАТЕЛЯ: он переезжает на
          другой компьютер вместе с человеком. localStorage — только кэш,
          чтобы экран ВХОДА не мигал чужим языком. Разошлись — верим серверу
@@ -361,7 +372,7 @@ function useStore(authed) {
       setSegmentFilterMeta(m);
     },
     goToSegment: (id) => { clearSegmentFilter(); setGotoSegId(id); setTab("editor"); },
-    teams, tenant, invites, caps, usage,
+    teams, tenant, invites, caps, usage, wallet, refreshMe,
     clearGotoSeg: () => setGotoSegId(null),
   };
 }
@@ -771,7 +782,7 @@ function Header({ store, theme, onToggleTheme, onLogout, onSearch }) {
       React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme }),
       /* Мёртвая кнопка неотличима от сломанной: у владельца она ведёт
          на экран организации, остальным не показывается. */
-      store.can && store.can.owner && React.createElement(IconBtn, { icon: "settings", label: TR("Организация"), onClick: () => store.go("org") }),
+      store.can && store.can.owner && React.createElement(IconBtn, { icon: "settings", label: TR("Настройки"), onClick: () => store.go("org") }),
       React.createElement("div", { style: { width: 1, height: 26, background: "var(--border)", margin: "0 6px" } }),
       React.createElement(TeamSwitcher, { store }),
       /* Аватар — дверь в профиль, а не украшение: единственный экран, где
@@ -812,14 +823,19 @@ const TABS = [
      поэтому в группе «Файлы», а не в «Работе»: там он разбил бы цепочку
      «Проекты → Перевод → Словари → Проверка → Скачать», которую человек
      проходит сверху вниз. Открыт КАЖДОМУ вошедшему, как «Профиль». */
-  { key: "learn", label: TR("Обучение"), icon: "info", group: "files" },
+  /* «Оплата» — отдельным пунктом, а не карточкой в глубине «Организации»:
+     про пополнение думают, когда кончились страницы, и искать его там,
+     где лежат настройки тем, не станет никто. Ключ «org» оставлен за
+     «Настройками»: на него ведут ссылки и сохранённое состояние. */
+  { key: "pay", label: TR("Оплата"), icon: "wallet", owner: true, group: "files" },
+  { key: "org", label: TR("Настройки"), icon: "settings", owner: true, group: "files" },
   { key: "profile", label: TR("Профиль"), icon: "user", group: "files" },
-  { key: "org", label: TR("Организация"), icon: "settings", owner: true, group: "files" },
+  { key: "learn", label: TR("Обучение"), icon: "info", group: "files" },
   /* Админка открывается только с нестандартного адреса (window.ADMIN_ENTRY
      ставит сервер на /console-…), а не с главной — и только super. */
   { key: "admin", label: TR("Админ"), icon: "settings", super: true, entry: true, group: "sys" },
 ];
-const TAB_GROUPS = [["work", TR("Шаги перевода")], ["files", TR("Файлы")], ["sys", TR("Служебное")]];
+const TAB_GROUPS = [["work", TR("Шаги перевода")], ["files", TR("Мой кабинет")], ["sys", TR("Служебное")]];
 /* Пять рабочих вкладок — это ПУТЬ, а не набор мест: номер шага вместо значка
    и галочка у пройденного отвечают на вопрос «где я и что дальше» без чтения.
    Галочка ставится только там, где браузер знает это честно (инвариант 32:
@@ -902,7 +918,10 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
                и то и другое однажды подсветило бы чужой пункт. Пункта
                нет вовсе (роль не та) — шаг встанет по центру без стрелки. */
             "data-tour": t.key,
-            role: "tab", "aria-selected": store.tab === t.key, onClick: () => store.go(t.key) },
+            role: "tab", "aria-selected": store.tab === t.key,
+            /* «Проекты» в меню ведут на СПИСОК проектов, а не в последний
+               открытый: иначе пункт меню и «← Все проекты» делали бы разное. */
+            onClick: () => { if (t.key === "import" && store.setViewFolder) store.setViewFolder(null); store.go(t.key); } },
             g === "work"
               ? React.createElement("span", { className: "step-n" + (stepDone(store, t.key) ? " done" : ""), "aria-hidden": "true" },
                   stepDone(store, t.key) ? React.createElement(Icon, { name: "check", size: 12, stroke: 3 })
@@ -922,7 +941,11 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
     React.createElement("button", { className: "side-idea", type: "button",
                                     onClick: () => window.dispatchEvent(new Event("mct-idea-open")) },
       React.createElement(Icon, { name: "message", size: 15 }), " ", TR("Чего не хватает?")),
-    limited && React.createElement("div", { className: "side-foot" },
+    /* Баланс — плиткой с деньгами (pay.jsx), владельцу она же дверь
+       в «Оплату». Без неё (файл не доехал) — прежняя полоса страниц. */
+    typeof PaySideBalance === "function"
+      ? React.createElement(PaySideBalance, { store })
+      : limited && React.createElement("div", { className: "side-foot" },
       React.createElement("div", { className: "sf-row" },
         React.createElement("span", null, TR("Страницы")),
         React.createElement("b", null, left + TR(" осталось"))),
@@ -1082,7 +1105,7 @@ function App() {
     import: TabImport, editor: TabEditor, glossary: TabKnowledge, tm: TabKnowledge,
     export: TabExport, preflight: TabAnalysis, qa: TabAnalysis,
     backlog: TabAnalysis, stats: TabAnalysis, org: TabOrg, admin: TabAdmin,
-    profile: TabProfile, learn: TabLearn,
+    profile: TabProfile, learn: TabLearn, pay: TabPay,
   };
   const Active = tabMap[store.tab] || TabEditor;
   appPath("/app");

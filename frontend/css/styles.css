@@ -1087,15 +1087,7 @@ mark.hl-att, .tbl mark.hl-att {
 .kb-card .kb-ctx { font-size: 12px; color: var(--text-3); line-height: 1.5; }
 .kb-card .kb-reach { margin-left: auto; font-size: 11.5px; color: var(--text-4); font-variant-numeric: tabular-nums; }
 
-/* «Профиль»: слева «про меня», справа команды с таблицами. Сетки полей
-   внутри узкой колонки (.grid-2 имени, .grid-3 пароля) складываются
-   в одну: их медиазапросы смотрят на окно, а не на колонку в 380px. */
-.profile-cols {
-  display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 1fr);
-  gap: 16px; align-items: start;
-}
-.profile-cols .profile-me .grid-2, .profile-cols .profile-me .grid-3 { grid-template-columns: 1fr; }
-@media (max-width: 1180px) { .profile-cols { grid-template-columns: minmax(0, 1fr); } }
+/* «Профиль» — одна колонка (.page-narrow, .profile-one): одинаково на мониторе и телефоне. */
 
 /* Поиск и переход по номеру — прямо над таблицей: от залипающей панели её
    отделяют два блока запуска высотой в экран. Маленькая строка стоит над
@@ -1460,6 +1452,50 @@ body { overflow-wrap: break-word; }
   border-radius: var(--r-md); background: var(--bg-sunken); border: 1px solid var(--c-warning); font-size: 13px; }
 .pay-bar > span { flex: 1 1 240px; }
 .pay-bar.is-ok { border-color: var(--c-success); }
+.pay-bar { font-size: 14px; }
+
+/* Баланс плитками: страницы (и минуты) и сколько это в деньгах. Крупно —
+   это число ищут глазами, решая «хватит ли». */
+.page-narrow { max-width: 880px; }
+.bal-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); gap: 12px; align-items: stretch; }
+.bal-tile { padding: 16px 18px; border-radius: var(--r-md); border: 1px solid var(--border); background: var(--bg-raised, var(--bg)); }
+.bal-tile.is-low { border-color: var(--c-warning); }
+.bal-label { font-size: 14px; color: var(--text-2); }
+.bal-big { font-size: 30px; font-weight: 700; line-height: 1.15; margin-top: 4px; font-variant-numeric: tabular-nums; }
+.bal-tile.is-low .bal-big { color: var(--c-warning); }
+.bal-sub { font-size: 15px; color: var(--text-2); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.bal-act { display: flex; align-items: center; }
+.side-foot-btn { width: 100%; text-align: left; font: inherit; color: inherit; cursor: pointer; padding: 10px 11px;
+  border: 1px solid var(--border); border-radius: var(--r-md); background: none; }
+.side-foot-btn:hover { background: var(--bg-sunken); }
+.side-foot-btn .sf-row { font-size: 13px; }
+.sf-low { font-size: 12.5px; color: var(--c-warning); font-weight: 600; }
+.pay-step { font-weight: 600; font-size: 15px; margin-top: 4px; }
+.pay-sum { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.pay-sum > div { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: var(--r-md); background: var(--bg-sunken); }
+.pay-sum span { font-size: 13px; color: var(--text-2); }
+.pay-sum b { font-size: 18px; font-variant-numeric: tabular-nums; }
+
+/* Добавление файла по шагам: номер шага — крупной подписью, не мелким серым. */
+.imp-step-t { font-weight: 600; font-size: 15px; margin-top: 4px; }
+.imp-pay { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--r-md); font-size: 14.5px; }
+.imp-pay.is-warn { background: color-mix(in srgb, var(--c-warning) 10%, transparent); border: 1px solid var(--c-warning); }
+.imp-pay.is-warn .btn { align-self: flex-start; }
+.imp-pay.is-ok { flex-direction: row; align-items: center; color: var(--c-success); background: var(--bg-sunken); }
+.imp-pay.is-ok span { color: var(--text); }
+
+/* Профиль: одна колонка, разделы внутри блока команды — без рамки в рамке. */
+.pf-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); gap: 18px; }
+.pf-label { font-size: 14px; font-weight: 600; color: var(--text-2); }
+.pf-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pf-sub { display: flex; flex-direction: column; gap: 12px; padding-top: 16px; border-top: 1px solid var(--border); }
+.pf-sub-title { margin: 0; font-size: 15px; font-weight: 600; }
+
+/* Настройки: куда переехало — карточками-ссылками. */
+.set-link { position: relative; display: flex; flex-direction: column; gap: 4px; text-align: left; font: inherit; color: inherit;
+  cursor: pointer; padding-right: 36px; border: 1px solid var(--border); background: var(--bg-raised, var(--bg)); }
+.set-link-ic { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--text-3); }
+@media (max-width: 640px) { .pay-sum { grid-template-columns: minmax(0, 1fr); } .bal-big { font-size: 26px; } }
 
 @media (pointer: coarse) and (hover: none) {
   .btn { height: 40px; padding: 0 16px; }

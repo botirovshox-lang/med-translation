@@ -237,29 +237,31 @@ check(TRS("Месячный лимит расхода исчерпан: $1.00").
       "TRS переводит фразой внутри собранного сервером сообщения, числа не трогая");
 check(TRS("Месячный лимит расхода исчерпан: $1.00").includes("$1.00"), "и число на месте");
 
-/* 7. Две колонки — сверкой ИСХОДНИКА: TabProfile ждёт данные из useEffect,
- *    и заглушка хуков его не рендерит. Учётная запись и пароль — в одной
- *    колонке (профильной), команды и состав — в другой; приглашения —
- *    НАД сеткой, иначе на узком экране вопрос уезжал бы под пароль. */
-console.log("\n[7] профиль в две колонки");
-const cols = src.split('className: "profile-cols"');
-check(cols.length === 2, "сетка profile-cols объявлена ровно один раз");
-const grid = cols[1] || "";
-const me = grid.indexOf('"col profile-me"'), teams = grid.indexOf('"col profile-teams"');
-check(me >= 0 && teams > me, "колонки «про меня» и «команды» идут в этом порядке");
-const meCol = grid.slice(me, teams);
-check(meCol.includes("ProfileIdentity") && meCol.includes("ProfilePassword"),
-  "учётная запись и пароль — в узкой колонке");
-check(!meCol.includes("ProfileTeams") && !meCol.includes("ProfileMembers"),
-  "таблицы команд и состава — не в узкой колонке");
-check(grid.includes("ProfileTeams") && grid.includes("ProfileMembers"), "команды и состав — в правой");
-check(cols[0].includes("ProfileInvites") && !grid.includes("ProfileInvites"),
-  "приглашения стоят над сеткой, а не внутри колонки");
-const css = fs.readFileSync(path.join(path.dirname(root), "css", "styles.css"), "utf8");
-check(/\.profile-cols \.profile-me \.grid-3 \{ grid-template-columns: 1fr/.test(css),
-  "три поля пароля в узкой колонке складываются в одно (grid-3 смотрит на окно, а не на колонку)");
-check(/@media \(max-width: 1180px\) \{ \.profile-cols \{ grid-template-columns: minmax\(0, 1fr\)/.test(css),
-  "ниже 1180px — одна колонка (с боковым меню 232px правой колонке иначе остаётся ~350px под две таблицы)");
+/* 7. Одна колонка — сверкой ИСХОДНИКА: TabProfile ждёт данные из useEffect,
+ *    и заглушка хуков его не рендерит. Порядок: приглашения (ждут ответа) →
+ *    учётная запись → пароль → команда → заработок на приглашениях — в самом
+ *    низу. Двух таблиц людей больше нет: «Пользователи» с экрана организации
+ *    живут внутри блока команды. */
+console.log("\n[7] профиль в одну колонку");
+const one = src.split('className: "col profile-one"');
+check(one.length === 2, "колонка profile-one объявлена ровно один раз");
+const body = one[1] || "";
+const order = ["ProfileInvites", "ProfileIdentity", "ProfilePassword", "ProfileTeamBlock", "OrgReferral"].map(n => body.indexOf(n));
+check(order.every(i => i >= 0) && order.every((v, i) => !i || v > order[i - 1]),
+  "порядок: приглашения → учётная запись → пароль → команда → приглашения коллег внизу");
+check(!src.includes('"profile-cols"'), "прежней сетки в две колонки нет");
+const teamBlock = src.slice(src.indexOf("function ProfileTeamBlock"), src.indexOf("function TabProfile"));
+check(teamBlock.includes("Создайте свою команду") && teamBlock.includes("OrgUsers")
+  && teamBlock.includes("ProfileMembers") && teamBlock.includes("ProfileTeams"),
+  "блок «Создайте свою команду» объединяет входы сотрудников, приглашения и команды");
+hooks.length = 0; hookIdx = 0;
+global.OrgUsers = () => ({ type: "div", props: {}, children: ["[входы сотрудников]"] });
+node = ProfileTeamBlock({ data: PROFILE, onChange() {}, toast, store: { can: { owner: true } } });
+t = texts(node).join(" | ");
+check(t.includes("Создайте свою команду") && t.includes("Мои команды"), "блок команды рисуется целиком");
+hooks.length = 0; hookIdx = 0;
+t = texts(ProfilePassword({ toast })).join(" | ");
+check(t.includes("Сменить пароль") && !t.includes("Нынешний пароль"), "пароль свёрнут за кнопкой «Сменить пароль»");
 
 console.log();
 if (fail.length) {

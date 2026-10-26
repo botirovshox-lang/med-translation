@@ -1,4 +1,5 @@
 {
+  "_": "Редактор: таблица сегментов, составной прогон, шаги, одобрение терминов, соответствие глоссарию, полоса прогона.",
   "\n\nВызовов по модели без цены: ": "\n\nNarxi noma'lum model chaqiruvlari: ",
   "\n\nИсключение — короткий оригинал (меньше ": "\n\nIstisno — qisqa asl matn (kamroq: ",
   " (в глоссарии «": " (lug'atda «",
@@ -128,7 +129,6 @@
   "Back-check завершён": "Teskari tarjima tugadi",
   "Back-check той же моделью, что и ревизия. На переписанных ею сегментах ": "Reviziya bilan bir xil model bo'yicha back-check. U qayta yozgan segmentlarda ",
   "QA не выполнен": "Sifat nazorati bajarilmadi",
-  "_": "Редактор: таблица сегментов, составной прогон, шаги, одобрение терминов, соответствие глоссарию, полоса прогона.",
   " Сегментов: ": " Segmentlar: ",
   "· осталось ": "· qoldi ",
   "» не найдено — ": "» topilmadi — ",

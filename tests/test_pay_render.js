@@ -115,7 +115,13 @@ for (const brand of ["Uzcard", "Humo", "Visa", "Mastercard", "Click", "Payme", "
 check(t.indexOf("К оплате: 101 600 сум") !== -1, "сумма к оплате с разрядами и валютой");
 check(t.indexOf("6 350 сум") === -1 && t.indexOf("за стр.") === -1, "цены за страницу у способа нет — только итог к оплате");
 check(t.indexOf("по счёту") !== -1, "способ «по счёту» назван честно, что это не мгновенно");
-check(t.indexOf("Мои заказы") !== -1 && /№\d+/.test(t) && t.indexOf("оплачен") !== -1, "свои заказы со статусом словами");
+check(t.indexOf("Мои заказы") === -1, "заказы — не в карточке пополнения, а своим блоком вкладки «Оплата»");
+t = draw(PayOrders, { orders: pay.orders, toast });
+check(t.indexOf("Что купили") !== -1 && t.indexOf("Состояние") !== -1 && t.indexOf("Сумма") !== -1,
+      "у таблицы заказов названы колонки");
+check(/№\d+/.test(t) && t.indexOf("оплачен") !== -1, "свои заказы со статусом словами");
+t = draw(PayCard, { toast }, { 0: pay, 1: 10, 2: 5, 3: "payme",
+  4: { amount: "101600", currency: "UZS" }, 5: "", 6: false, 7: null });
 check(t.indexOf("неполная минута — минута") !== -1, "правило минут видео сказано на экране");
 t = draw(PayCard, { toast }, { 0: Object.assign({}, pay, { payable: { pages: false, minutes: false } }) });
 check(t.indexOf("без предоплаты") !== -1 && t.indexOf("Оплатить") === -1,
@@ -134,6 +140,35 @@ check(t.indexOf("Попросите владельца") !== -1 && t.indexOf("П
 t = draw(PayNeedBar, { store: owner, toast }, { 0: null, 1: { id: 1001, status: "paid" } });
 check(t.indexOf("1001") !== -1 && t.indexOf("баланс пополнен") !== -1, "возврат с кассы: оплата прошла");
 check(draw(PayNeedBar, { store: owner, toast }, { 0: null, 1: null }) === "", "нечего сказать — полосы нет");
+
+console.log("=== 2а. Вкладка «Оплата» и баланс ===");
+{
+  /* Баланс берётся у /auth/me (store.caps/usage/wallet) — те же поля, что
+     у ответа /api/pay в фикстуре настоящей двери. Сумма остатка («≈ …»)
+     — хук usePayValue; заглушка эффектов его не исполняет, поэтому здесь
+     проверяется форма, а сумма подставляется хуком. */
+  const st = { can: { owner: true }, go() {}, tab: "pay", caps: pay.caps, usage: pay.usage,
+    wallet: { spend: { over: true, hidden: true }, minutes: pay.minutes, pagesLog: [
+      { at: "2026-10-26 06:28:49", kind: "debit", pages: 11.964, title: "Procab" },
+      { at: "2026-10-09 12:47:14", kind: "credit", pages: 200 }], minutesLog: [] } };
+  t = draw(TabPay, { store: st, toast });
+  check(clean(t), "вкладка «Оплата» без undefined и NaN");
+  check(t.indexOf("Страниц на счёте") !== -1, "плитка остатка страниц");
+  check(t.indexOf("Новые переводы сейчас приостановлены") !== -1 && t.indexOf("лимит") === -1,
+        "остановка по внутреннему ограничению названа без слова «лимит» и без сумм");
+  /* Карточку пополнения заглушка хуков здесь не наполняет (её состояние —
+     в общем массиве хуков), её проверяет раздел 1; тут — что блоки на месте. */
+  check(t.indexOf("Мои заказы") !== -1 && t.indexOf("Куда ушли страницы") !== -1
+        && t.indexOf("Мои заказы") < t.indexOf("Куда ушли страницы"),
+        "блоки: мои заказы → куда ушли страницы");
+  check(t.indexOf("Получено всего") !== -1 && t.indexOf("Потрачено") !== -1, "остатки от заказанного сведены числами");
+  t = draw(PayBalanceTiles, { store: st }, { 0: { amount: "260000", currency: "UZS" } });
+  check(t.indexOf("≈ 260 000 сум") !== -1, "в плитке — стоимость остатка в деньгах");
+  t = draw(PaySideBalance, { store: st });
+  check(clean(t) && t.indexOf("Страницы") !== -1, "баланс внизу меню");
+  check(draw(TabPay, { store: { can: { owner: false } }, toast }).indexOf("владелец") !== -1,
+        "не владельцу — словами, кто платит");
+}
 
 console.log("=== 3. Админка: оплаты ===");
 const ap = FX.adminPayments;

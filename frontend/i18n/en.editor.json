@@ -1,4 +1,5 @@
 {
+  "_": "Редактор: таблица сегментов, составной прогон, шаги, одобрение терминов, соответствие глоссарию, полоса прогона.",
   "\n\nВызовов по модели без цены: ": "\n\nCalls with a model that has no price: ",
   "\n\nИсключение — короткий оригинал (меньше ": "\n\nThe exception is a short source (fewer than ",
   " (в глоссарии «": " (in the glossary “",
@@ -128,7 +129,6 @@
   "Back-check завершён": "The back-check is finished",
   "Back-check той же моделью, что и ревизия. На переписанных ею сегментах ": "Back-check with the same model as the review. On the segments it rewrote ",
   "QA не выполнен": "The QA was not done",
-  "_": "Редактор: таблица сегментов, составной прогон, шаги, одобрение терминов, соответствие глоссарию, полоса прогона.",
   " Сегментов: ": " Segments: ",
   "· осталось ": "· left ",
   "» не найдено — ": "” was not found — ",

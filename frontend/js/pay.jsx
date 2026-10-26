@@ -30,7 +30,7 @@ function payStatusText(st) {
     : st === "expired" ? TR("срок истёк") : TR("ждёт оплаты");
 }
 
-function PayCard({ toast, onPaid }) {
+function PayCard({ toast, onPaid, onState }) {
   const [st, setSt] = useState(null);
   const [pages, setPages] = useState(0);
   const [minutes, setMinutes] = useState(0);
@@ -47,6 +47,7 @@ function PayCard({ toast, onPaid }) {
   const reload = () => window.API.safeCall(() => window.API.payState()).then(r => {
     if (!r || !r.ok) return;
     setSt(r);
+    if (onState) onState(r);
     setMethod(m => m || (((r.methods || []).find(x => x.online) || (r.methods || [])[0] || {}).id || ""));
   });
   useEffect(() => { reload(); }, []);
@@ -95,18 +96,9 @@ function PayCard({ toast, onPaid }) {
     } catch (e) { toast.error(TR("Заказ не создан"), e.message || String(e)); }
     setBusy(false);
   };
-  const cancel = async (o) => {
-    try { await window.API.payOrderCancel(o.id); reload(); }
-    catch (e) { toast.error(TR("Не отменён"), e.message || String(e)); }
-  };
   const payable = st.payable || {};
-  const u = st.usage || {}, m = st.minutes || {};
-  const bal = [
-    u.left != null ? TR("Страниц осталось: ") + u.left : null,
-    m.wallet ? TR("Минут видео осталось: ") + m.left : null,
-  ].filter(Boolean).join(" · ");
   const head = React.createElement("div", { className: "row between row-wrap", style: { gap: 8 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Пополнить баланс")),
+    React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Пополнить баланс")),
     React.createElement(PayAcceptStrip, null));
   if (!payable.pages && !payable.minutes)
     return React.createElement("div", { ref, className: "card card-pad pay-card", style: { fontSize: 13 } }, head,
@@ -124,13 +116,13 @@ function PayCard({ toast, onPaid }) {
   const meth = methods.find(x => x.id === method) || {};
   return React.createElement("div", { ref, className: "card card-pad pay-card", style: { display: "flex", flexDirection: "column", gap: 12, fontSize: 13 } },
     head,
-    bal ? React.createElement("div", { style: { fontWeight: 600 } }, bal) : null,
     React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
-      qty(TR("Страниц перевода"), pages, setPages, packs.pages, (st.limits || {}).pages || 10000, payable.pages),
-      qty(TR("Минут видео и звука"), minutes, setMinutes, packs.minutes, (st.limits || {}).minutes || 3000, payable.minutes)),
+      qty(TR("1. Сколько страниц купить"), pages, setPages, packs.pages, (st.limits || {}).pages || 10000, payable.pages),
+      qty(TR("Сколько минут видео купить"), minutes, setMinutes, packs.minutes, (st.limits || {}).minutes || 3000, payable.minutes)),
     React.createElement("div", { className: "dim", style: { fontSize: 12 } },
       TR("Страница — 250 слов исходника. Видео считается минутами распознаваемого отрезка: неполная минута — минута, озвучка входит в цену.")
       + (st.wpmMax ? TR(" Если речь быстрее ") + st.wpmMax + TR(" слов в минуту, минуты считаются по словам.") : "")),
+    React.createElement("div", { className: "pay-step" }, TR("2. Как заплатить")),
     React.createElement("div", { role: "radiogroup", "aria-label": TR("Способ оплаты"), className: "pay-methods" },
       methods.map(x => React.createElement("label", { key: x.id, className: "pay-method" + (method === x.id ? " is-on" : "") },
         React.createElement("input", { type: "radio", name: "pay-method", value: x.id, checked: method === x.id,
@@ -141,7 +133,8 @@ function PayCard({ toast, onPaid }) {
           React.createElement("span", { className: "dim" },
             x.online ? TR("онлайн, сразу") : TR("по счёту: подтвердим после поступления")))))),
     meth.note && !meth.online ? React.createElement("div", { className: "dim", style: { whiteSpace: "pre-wrap" } }, meth.note) : null,
-    React.createElement("label", { className: "row", style: { gap: 8, alignItems: "flex-start", fontSize: 13 } },
+    React.createElement("div", { className: "pay-step" }, TR("3. Подтвердите и оплатите")),
+    React.createElement("label", { className: "row", style: { gap: 8, alignItems: "flex-start", fontSize: 14 } },
       React.createElement("input", { type: "checkbox", checked: agree, style: { marginTop: 3 },
         onChange: (e) => setAgree(e.target.checked) }),
       React.createElement("span", null, TR("Я ознакомлен(а) и принимаю условия "),
@@ -152,27 +145,15 @@ function PayCard({ toast, onPaid }) {
         quote ? TR("К оплате: ") + payFmt(quote.amount, quote.currency)
           : React.createElement("span", { className: "dim", style: { fontWeight: 400, fontSize: 13 } },
               qErr || TR("Выберите, сколько страниц или минут покупаете"))),
-      React.createElement(Btn, { variant: "primary", disabled: !quote || busy || !agree, onClick: pay },
+      React.createElement(Btn, { variant: "primary", size: "lg", disabled: !quote || busy || !agree, onClick: pay },
         busy ? TR("Создаём заказ…") : TR("Оплатить"))),
+    quote && !agree ? React.createElement("div", { className: "dim", style: { textAlign: "right" } },
+      TR("Поставьте галочку согласия — кнопка «Оплатить» станет доступна.")) : null,
     done && !done.online ? React.createElement("div", { className: "pay-done" },
       TR("Заявка №") + done.id + TR(" принята: ") + payFmt(done.amount, done.currency) + ". "
       + (done.url ? TR("Ссылка на оплату открыта в новой вкладке.") : TR("Мы пришлём ссылку или реквизиты для оплаты."))
       + TR(" Баланс пополнится после поступления оплаты.")) : null,
-    (st.orders || []).length ? React.createElement("div", null,
-      React.createElement("div", { className: "eyebrow", style: { margin: "4px 0 6px" } }, TR("Мои заказы")),
-      React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
-        React.createElement("tbody", null, st.orders.map(o => React.createElement("tr", { key: o.id },
-          React.createElement("td", null, "№" + o.id),
-          React.createElement("td", { className: "dim" }, o.at),
-          React.createElement("td", null, [o.pages ? o.pages + TR(" стр.") : "", o.minutes ? o.minutes + TR(" мин") : ""].filter(Boolean).join(" + ")),
-          React.createElement("td", null, payFmt(o.amount, o.currency)),
-          React.createElement("td", null, (PAY_METHOD_LABEL[o.method] || (() => o.method))()),
-          React.createElement("td", { style: { color: o.status === "paid" ? "var(--c-ok, #1a7f37)" : undefined } }, payStatusText(o.status)),
-          React.createElement("td", { style: { textAlign: "right", whiteSpace: "nowrap" } },
-            o.status === "new" && o.url ? React.createElement("a", { href: o.url, className: "btn btn-ghost btn-sm",
-              target: o.online ? undefined : "_blank", rel: "noopener" }, TR("Оплатить")) : null,
-            o.status === "new" ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => cancel(o) }, TR("Отменить")) : null)))))))
-      : null);
+    null);
 }
 
 /* Полоса в оболочке: отказ «нечем платить» с любого экрана и возврат
@@ -215,7 +196,7 @@ function PayNeedBar({ store, toast }) {
       ? { minutes: Math.max(1, Number(need.need) - Math.max(0, Number(need.left || 0))) }
       : need && need.kind === "pages" && need.short ? { pages: need.short } : null;
     setNeed(null);
-    store.go("org");
+    store.go("pay");
     try { window.dispatchEvent(new CustomEvent("mct-pay-open", { detail: window._mcat_payIntent || {} })); } catch (e) {}
   };
   const close = (set) => React.createElement("button", { className: "btn btn-ghost btn-sm", "aria-label": TR("Закрыть"),
@@ -224,7 +205,7 @@ function PayNeedBar({ store, toast }) {
   if (need) {
     const what = need.kind === "minutes" ? TR("Минут видео не хватает")
       + (need.need != null ? ": " + TR("нужно ") + need.need + TR(" мин, осталось ") + Math.max(0, Number(need.left || 0)) : "") + "."
-      : need.kind === "spend" ? TR("Лимит работы на этот месяц исчерпан.")
+      : need.kind === "spend" ? TR("Перевод сейчас приостановлен. Пополнение баланса снимает остановку.")
       : TR("Страницы на балансе закончились.");
     bars.push(React.createElement("div", { key: "need", className: "pay-bar", role: "status" },
       React.createElement("span", null, what + " "
@@ -242,6 +223,238 @@ function PayNeedBar({ store, toast }) {
   return bars.length ? React.createElement(React.Fragment, null, bars) : null;
 }
 
+/* ---------- Сколько стоит остаток ----------
+   Денег-кошелька в системе нет: клиент покупает страницы и минуты. «Баланс
+   в деньгах» — это ОСТАТОК, пересчитанный СЕРВЕРОМ по нынешней цене
+   пополнения (/api/pay/quote, итог в валюте способа). Своей цены в .jsx нет:
+   вторая копия разошлась бы с той, по которой списывают. Спрашивать вправе
+   только владелец (`/api/pay` — его дверь), остальным сумма не рисуется. */
+const PAY_VAL = { st: null, at: 0, cache: {} };
+function payStateCached() {
+  if (PAY_VAL.st && Date.now() - PAY_VAL.at < 60000) return PAY_VAL.st;
+  PAY_VAL.at = Date.now();
+  /* Сбой не кэшируется: следующий показ спросит снова, а не через минуту. */
+  PAY_VAL.st = window.API.payState().catch(() => { PAY_VAL.st = null; return null; });
+  return PAY_VAL.st;
+}
+function payValueOf(pages, minutes) {
+  const p = Math.max(0, Math.ceil(Number(pages || 0))), m = Math.max(0, Math.ceil(Number(minutes || 0)));
+  if (!p && !m) return Promise.resolve(null);
+  const key = p + ":" + m;
+  if (PAY_VAL.cache[key]) return PAY_VAL.cache[key];
+  const pr = payStateCached().then(st => {
+    if (!st || !st.ok) return null;
+    const meth = (st.methods || []).find(x => x.online) || (st.methods || [])[0];
+    if (!meth) return null;
+    return window.API.payQuote({ pages: p, minutes: m, method: meth.id })
+      .then(r => r && r.quote ? { amount: r.quote.amount, currency: r.quote.currency } : null);
+  }).catch(() => null);
+  PAY_VAL.cache[key] = pr;
+  setTimeout(() => { delete PAY_VAL.cache[key]; }, 60000);
+  return pr;
+}
+/* Сумма за число страниц/минут: null — ещё не знаем или не владелец. */
+function usePayValue(store, pages, minutes) {
+  const [v, setV] = useState(null);
+  const owner = !!(store && store.can && store.can.owner);
+  const p = Math.ceil(Number(pages || 0)), m = Math.ceil(Number(minutes || 0));
+  useEffect(() => {
+    if (!owner || !window.API || !window.API.payState) { setV(null); return; }
+    let alive = true;
+    payValueOf(p, m).then(r => { if (alive) setV(r); });
+    return () => { alive = false; };
+  }, [owner, p, m]);
+  return v;
+}
+
+/* Остаток страниц и минут — тем, что знает /auth/me (store.caps/usage/wallet). */
+function payBalance(store) {
+  const caps = store.caps || null, usage = store.usage || null;
+  const w = store.wallet || {};
+  const limited = !!(caps && caps.pagesLimited);
+  /* Остаток считает сервер (`usage.left`): в нём учтены и страницы
+     картинок, и ручные правки. Своя разность — только запасной ход. */
+  const raw = usage && usage.left != null ? Number(usage.left) : (caps && caps.maxPages || 0) - ((usage && usage.pages) || 0);
+  const pagesLeft = limited ? Math.max(0, Math.round(raw * 10) / 10) : null;
+  const m = w.minutes || null;
+  return { limited, pagesLeft, minutes: m && m.wallet ? m : null, over: !!(w.spend && w.spend.over) };
+}
+
+/* Плитки «На вашем счёте»: страницы (и минуты) — и сколько это в деньгах.
+   Одна плитка на кошелёк: страницы и их стоимость — одно и то же число
+   в двух единицах, и разводить их по разным плиткам значило бы считать
+   их двумя разными остатками. */
+function PayBalanceTiles({ store, onPay }) {
+  const b = payBalance(store);
+  const pv = usePayValue(store, b.pagesLeft || 0, 0);
+  const mv = usePayValue(store, 0, b.minutes ? b.minutes.left : 0);
+  const owner = !!(store.can && store.can.owner);
+  const tile = (key, label, big, sub, low) => React.createElement("div", { key, className: "bal-tile" + (low ? " is-low" : "") },
+    React.createElement("div", { className: "bal-label" }, label),
+    React.createElement("div", { className: "bal-big" }, big),
+    sub ? React.createElement("div", { className: "bal-sub" }, sub) : null);
+  const tiles = [
+    tile("p", TR("Страниц на счёте"),
+      b.limited ? String(b.pagesLeft) : TR("без ограничения"),
+      pv ? "≈ " + payFmt(pv.amount, pv.currency) : null,
+      b.limited && b.pagesLeft < 5),
+  ];
+  if (b.minutes) tiles.push(tile("m", TR("Минут видео на счёте"), String(b.minutes.left),
+    mv ? "≈ " + payFmt(mv.amount, mv.currency) : null, b.minutes.left < 1));
+  return React.createElement("div", { className: "bal-tiles" }, tiles,
+    owner && onPay ? React.createElement("div", { className: "bal-act" },
+      React.createElement(Btn, { variant: "secondary", icon: "wallet", onClick: onPay }, TR("Пополнить"))) : null);
+}
+
+/* Внизу меню: тот же остаток, коротко. Владельцу — дверь в «Оплату». */
+function PaySideBalance({ store }) {
+  const b = payBalance(store);
+  const pv = usePayValue(store, b.pagesLeft || 0, 0);
+  const owner = !!(store.can && store.can.owner);
+  if (!b.limited && !b.minutes) return null;
+  const caps = store.caps || {}, used = (store.usage && store.usage.pages) || 0;
+  const body = [
+    React.createElement("div", { key: "p", className: "sf-row" },
+      React.createElement("span", null, TR("Страницы")),
+      React.createElement("b", null, b.limited ? b.pagesLeft + TR(" осталось") : TR("без ограничения"))),
+    pv ? React.createElement("div", { key: "v", className: "sf-row" },
+      React.createElement("span", null, TR("это примерно")),
+      React.createElement("b", null, payFmt(pv.amount, pv.currency))) : null,
+    b.limited && caps.maxPages > 0 ? React.createElement("div", { key: "m", className: "sf-meter" },
+      React.createElement("i", { style: { width: Math.min(100, used / caps.maxPages * 100) + "%" } })) : null,
+    b.minutes ? React.createElement("div", { key: "mn", className: "sf-row" },
+      React.createElement("span", null, TR("Минуты видео")),
+      React.createElement("b", null, b.minutes.left + TR(" осталось"))) : null,
+    b.limited && b.pagesLeft < 5 && owner ? React.createElement("div", { key: "low", className: "sf-low" }, TR("Мало — пополнить")) : null,
+  ];
+  return owner
+    ? React.createElement("button", { type: "button", className: "side-foot side-foot-btn", onClick: () => store.go("pay"),
+        title: TR("Оплата") }, body)
+    : React.createElement("div", { className: "side-foot" }, body);
+}
+
+/* Перевод остановлен внутренним ограничением (402 spend). Сумм и слова
+   «лимит» нет (22а): человеку нужно, что делать, а не устройство. */
+function PaySpendNote({ store }) {
+  const b = payBalance(store);
+  if (!b.over) return null;
+  const owner = !!(store.can && store.can.owner);
+  return React.createElement("div", { className: "pay-bar", role: "status" },
+    React.createElement("span", null,
+      React.createElement("b", null, TR("Новые переводы сейчас приостановлены.")), " ",
+      owner ? TR("Пополните баланс — работа продолжится. Если после оплаты не заработало, напишите в поддержку.")
+            : TR("Попросите владельца организации пополнить баланс.")),
+    owner && store.tab !== "pay" ? React.createElement(Btn, { variant: "primary", size: "sm", onClick: () => store.go("pay") }, TR("Оплатить")) : null,
+    React.createElement(Btn, { variant: "ghost", size: "sm",
+      onClick: () => window.dispatchEvent(new Event("mct-support-open")) }, TR("Написать в поддержку")));
+}
+
+/* Мои заказы — таблицей с названиями колонок. */
+function PayOrders({ orders, onChanged, toast }) {
+  if (!orders || !orders.length) return React.createElement("p", { className: "dim", style: { margin: 0 } },
+    TR("Заказов пока нет."));
+  const cancel = async (o) => {
+    try { await window.API.payOrderCancel(o.id); if (onChanged) onChanged(); }
+    catch (e) { toast.error(TR("Не отменён"), e.message || String(e)); }
+  };
+  return React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
+    React.createElement("thead", null, React.createElement("tr", null,
+      [TR("Заказ"), TR("Дата"), TR("Что купили"), TR("Сумма"), TR("Способ"), TR("Состояние"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+    React.createElement("tbody", null, orders.map(o => React.createElement("tr", { key: o.id },
+      React.createElement("td", null, "№" + o.id),
+      React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap" } }, o.at),
+      React.createElement("td", null, [o.pages ? o.pages + TR(" стр.") : "", o.minutes ? o.minutes + TR(" мин") : ""].filter(Boolean).join(" + ")),
+      React.createElement("td", { style: { whiteSpace: "nowrap" } }, payFmt(o.amount, o.currency)),
+      React.createElement("td", null, (PAY_METHOD_LABEL[o.method] || (() => o.method))()),
+      React.createElement("td", { style: { color: o.status === "paid" ? "var(--c-ok, #1a7f37)" : undefined } }, payStatusText(o.status)),
+      React.createElement("td", { style: { textAlign: "right", whiteSpace: "nowrap" } },
+        o.status === "new" && o.url ? React.createElement("a", { href: o.url, className: "btn btn-ghost btn-sm",
+          target: o.online ? undefined : "_blank", rel: "noopener" }, TR("Оплатить")) : null,
+        o.status === "new" ? React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => cancel(o) }, TR("Отменить")) : null))))));
+}
+
+/* Вид записи журнала страниц — код с сервера, подпись даёт браузер. */
+function payLogKind(k) {
+  return k === "credit" ? TR("пополнение") : k === "repeat" ? TR("повтор файла, без списания")
+    : k === "init" ? TR("стартовый объём по проектам")
+    : k === "reimport" ? TR("новая версия файла, за добавленные строки")
+    : k === "excerpt" ? TR("пробный фрагмент")
+    : k === "images" ? TR("текст с картинок")
+    : k === "media" ? TR("речь из видео")
+    : k === "edit" ? TR("дописано руками сверх файла")
+    : k === "refund" ? TR("возврат") : TR("списание за файл");
+}
+function payLogNote(n) {
+  return n === "env" ? TR("стартовый объём") : n === "signup" ? TR("подарок при регистрации") : n;
+}
+function payLogPlus(e) {
+  const v = Number(e.pages != null ? e.pages : e.minutes || 0);
+  return (e.kind === "credit" || e.kind === "refund") && v >= 0;
+}
+
+/* История: сколько получено, потрачено и осталось — и сам журнал, свёрнутым. */
+function PayHistory({ store }) {
+  const [open, setOpen] = useState(false);
+  const w = store.wallet || {};
+  const log = (w.pagesLog || []).slice().reverse();
+  const mlog = (w.minutesLog || []).slice().reverse();
+  const b = payBalance(store);
+  const caps = store.caps || {}, usage = store.usage || {};
+  if (!log.length && !mlog.length && !b.limited) return null;
+  const row = (e, i, unit) => React.createElement("tr", { key: unit + i },
+    React.createElement("td", { className: "dim", style: { whiteSpace: "nowrap" } }, e.at),
+    React.createElement("td", null, payLogKind(e.kind) + (e.note ? " · " + payLogNote(e.note) : "")),
+    React.createElement("td", null, e.title || "—"),
+    React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right",
+      color: payLogPlus(e) ? "var(--c-ok, #1a7f37)" : undefined } },
+      (payLogPlus(e) ? "+" : "−") + Math.abs(Number(e.pages != null ? e.pages : e.minutes || 0)) + " " + unit));
+  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+    React.createElement("div", { className: "row between row-wrap", style: { gap: 8, alignItems: "center" } },
+      React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Куда ушли страницы")),
+      (log.length || mlog.length) ? React.createElement(Btn, { variant: "secondary", size: "sm", icon: open ? "chevD" : "chevR",
+        "aria-expanded": open, onClick: () => setOpen(!open) }, open ? TR("Свернуть") : TR("Показать историю")) : null),
+    b.limited && React.createElement("div", { className: "pay-sum" },
+      React.createElement("div", null, React.createElement("span", null, TR("Получено всего")), React.createElement("b", null, (caps.maxPages || 0) + TR(" стр."))),
+      React.createElement("div", null, React.createElement("span", null, TR("Потрачено")), React.createElement("b", null, (usage.pages || 0) + TR(" стр."))),
+      React.createElement("div", null, React.createElement("span", null, TR("Осталось")), React.createElement("b", null, b.pagesLeft + TR(" стр.")))),
+    open && React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
+      React.createElement("thead", null, React.createElement("tr", null,
+        [TR("Дата"), TR("Что произошло"), TR("Файл"), TR("Сколько")].map((h, i) => React.createElement("th", { key: i, style: i === 3 ? { textAlign: "right" } : null }, h)))),
+      React.createElement("tbody", null,
+        log.map((e, i) => row(e, i, TR("стр."))),
+        mlog.map((e, i) => row(e, i, TR("мин")))))),
+    React.createElement("p", { className: "dim", style: { margin: 0, fontSize: 13 } },
+      TR("Страницы списываются, когда вы добавляете файл: 250 слов — одна страница.")));
+}
+
+/* ---------- Вкладка «Оплата» ---------- */
+function TabPay({ store, toast }) {
+  const [st, setSt] = useState(null);
+  const [key, setKey] = useState(0);
+  const changed = () => { setKey(k => k + 1); PAY_VAL.cache = {}; PAY_VAL.st = null; if (store.refreshMe) store.refreshMe(); };
+  useEffect(() => {
+    const h = () => changed();
+    window.addEventListener("mct-pay-paid", h);
+    return () => window.removeEventListener("mct-pay-paid", h);
+  }, []);
+  if (!(store.can && store.can.owner))
+    return React.createElement("div", { className: "page" },
+      React.createElement("p", { className: "dim" }, TR("Оплачивает владелец организации — попросите его пополнить баланс.")));
+  return React.createElement("div", { className: "page page-narrow" },
+    React.createElement("div", { className: "page-head" },
+      React.createElement("h1", null, TR("Оплата")),
+      React.createElement("p", { className: "lead" }, TR("Сколько у вас осталось, пополнение и ваши заказы."))),
+    React.createElement("div", { className: "col", style: { gap: 18 } },
+      React.createElement(PaySpendNote, { store }),
+      React.createElement(PayBalanceTiles, { store }),
+      React.createElement(PayCard, { key, toast, onState: setSt, onPaid: changed }),
+      React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
+        React.createElement("h2", { className: "section-title", style: { margin: 0 } }, TR("Мои заказы")),
+        React.createElement(PayOrders, { orders: st && st.orders, toast, onChanged: changed })),
+      React.createElement(PayHistory, { store })));
+}
+
 /* На window, а не только объявлением: `const` верхнего уровня одного файла
    виден другим тегам <script>, но не наборам рендер-тестов. */
-Object.assign(window, { PayCard, PayNeedBar, payFmt, PAY_METHOD_LABEL });
+Object.assign(window, { PayCard, PayNeedBar, payFmt, PAY_METHOD_LABEL, TabPay, PayBalanceTiles, PaySideBalance,
+  PaySpendNote, PayOrders, PayHistory, usePayValue, payBalance });

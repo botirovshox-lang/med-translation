@@ -1,20 +1,26 @@
 /* ============================================================
-   Tab: Организация — пользователи, импорт глоссария.
+   Tab: Настройки (бывш. «Организация») и части, которые живут на других
+   экранах: люди дома — в «Профиле», импорт словаря — в «Словарях».
    Виден только владельцу (store.can.owner). Право ПОКАЗАТЬ — здесь,
    право СДЕЛАТЬ — на сервере: те же команды из консоли получают 403.
    ============================================================ */
+/* Люди ДОМАШНЕЙ организации: вход, который владелец выдаёт сотруднику сам
+   (логин и пароль). Живёт внутри блока команды в «Профиле»: две таблицы
+   людей на двух экранах были одним вопросом, заданным дважды. */
 function OrgUsers({ toast }) {
   const [users, setUsers] = useState([]);
   const [form, setForm] = useState({ login: "", password: "", name: "", role: "translator" });
   const [busy, setBusy] = useState(false);
+  const [adding, setAdding] = useState(false);
   const reload = () => window.API.safeCall(() => window.API.users()).then(r => setUsers((r && r.users) || []));
   useEffect(() => { reload(); }, []);
   const create = async () => {
     setBusy(true);
     try {
       await window.API.userCreate(form);
-      toast.success(TR("Пользователь заведён"), form.login);
+      toast.success(TR("Вход выдан"), form.login);
       setForm({ login: "", password: "", name: "", role: "translator" });
+      setAdding(false);
       reload();
     } catch (e) { toast.error(TR("Не заведён"), e.message || String(e)); }
     setBusy(false);
@@ -27,104 +33,39 @@ function OrgUsers({ toast }) {
     const pw = prompt(TR("Новый пароль для ") + u.login + TR(" (не короче 8 символов):"));
     if (pw) patch(u, { password: pw }, TR("Пароль сменён"));
   };
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 14 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Пользователи")),
+  return React.createElement("div", { className: "col", style: { gap: 12 } },
     React.createElement("div", { className: "tbl-fit" }, React.createElement("table", { className: "tbl" },
       React.createElement("thead", null, React.createElement("tr", null,
-        [TR("Логин"), TR("Имя"), TR("Роль"), TR("Состояние"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
+        [TR("Имя"), TR("Логин"), TR("Роль"), TR("Состояние"), ""].map((h, i) => React.createElement("th", { key: i }, h)))),
       React.createElement("tbody", null, users.map(u => React.createElement("tr", { key: u.id },
+        React.createElement("td", null, u.name || "—"),
         React.createElement("td", null, u.login),
-        React.createElement("td", null, u.name),
-        React.createElement("td", null, roleLabel(u.role)),
+        React.createElement("td", null, React.createElement(RoleSelect, { value: u.role, style: { width: 140 },
+          onChange: (r) => r !== u.role && patch(u, { role: r }, TR("Роль изменена")) })),
         React.createElement("td", null, u.active ? TR("активен") : TR("отключён")),
-        React.createElement("td", { style: { whiteSpace: "nowrap" } },
+        React.createElement("td", { style: { whiteSpace: "nowrap", textAlign: "right" } },
           React.createElement(Btn, { variant: "ghost", size: "sm", onClick: () => resetPw(u) }, TR("Пароль")),
-          React.createElement(RoleSelect, { value: u.role, style: { width: 130, display: "inline-block", marginRight: 6 },
-            onChange: (r) => r !== u.role && patch(u, { role: r }, TR("Роль изменена")) }),
           React.createElement(Btn, { variant: "ghost", size: "sm",
             onClick: () => patch(u, { active: !u.active }, u.active ? TR("Отключён") : TR("Включён")) },
             u.active ? TR("Отключить") : TR("Включить")))))))),
-    React.createElement("div", { className: "eyebrow", style: { margin: "6px 0 0" } }, TR("Новый пользователь")),
-    React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
-      React.createElement(Field, { label: TR("Логин") },
-        React.createElement(Input, { value: form.login, onChange: (e) => setForm({ ...form, login: e.target.value }), placeholder: TR("латиница, цифры, . _ @ -") })),
-      React.createElement(Field, { label: TR("Пароль (от 8 символов)") },
-        React.createElement(Input, { type: "password", value: form.password, onChange: (e) => setForm({ ...form, password: e.target.value }) })),
-      React.createElement(Field, { label: TR("Имя") },
-        React.createElement(Input, { value: form.name, onChange: (e) => setForm({ ...form, name: e.target.value }) })),
-      React.createElement(Field, { label: TR("Роль") },
-        React.createElement(RoleSelect, { value: form.role, onChange: (r) => setForm({ ...form, role: r }) }))),
-    React.createElement("div", null,
-      React.createElement(Btn, { variant: "primary", icon: "user", disabled: busy || !form.login || form.password.length < 8, onClick: create }, TR("Завести"))));
-}
-
-function OrgGlossaryImport({ store, toast }) {
-  const [file, setFile] = useState(null);
-  const [langs, setLangs] = useState([["RU", TR("Русский")], ["EN", TR("Английский")]]);
-  const [domains, setDomains] = useState([["medical", TR("Медицина")]]);
-  const [src, setSrc] = useState("RU");
-  const [tgt, setTgt] = useState("EN");
-  const [domain, setDomain] = useState("general");
-  const [tier, setTier] = useState("auto");
-  /* В какой словарь: «новый» (название) либо существующий. Файл клиента —
-     свой словарь, а не куча со старым импортом: потом его подключают
-     к проекту по имени. */
-  const [dictId, setDictId] = useState("");
-  const [newDict, setNewDict] = useState("");
-  const [preview, setPreview] = useState(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    window.API.safeCall(() => window.API.models()).then(r => {
-      if (!r) return;
-      if (r.languages && r.languages.length) setLangs(r.languages.map(l => [l.code, l.ru + " · " + l.native]));
-      if (r.domains && r.domains.length) { setDomains(r.domains.map(d => [d.id, d.label])); setDomain(r.domainDefault || r.domains[0].id); }
-    });
-  }, []);
-  const run = async (dry) => {
-    if (!file) return;
-    setBusy(true);
-    try {
-      const r = await window.API.importGlossary(file, src + "→" + tgt, domain, tier, dry,
-                                                dictId === "__new" ? "" : dictId, dictId === "__new" ? newDict : "");
-      setPreview(r);
-      if (!dry) {
-        toast.success(TR("Импортировано"), r.added + TR(" записей"));
-        // Список глоссария и словари в браузере — подтянуть заново.
-        window.API.safeCall(() => window.API.seed()).then(d => {
-          if (d && d.glossary && store.setGlossary) store.setGlossary(d.glossary);
-          if (d && d.dicts && store.setDicts) store.setDicts(d.dicts);
-        });
-      }
-    } catch (e) { toast.error(TR("Импорт"), e.message || String(e)); }
-    setBusy(false);
-  };
-  const opt = (arr) => arr.map(([v, l]) => React.createElement("option", { key: v, value: v }, l));
-  const dictOpts = [["", TR("Словарь по умолчанию")], ["__new", TR("Новый словарь…")]]
-    .concat((store.dicts || []).map(d => [d.id, d.title + " · " + (d.count || 0)]));
-  return React.createElement("div", { className: "card card-pad", style: { display: "flex", flexDirection: "column", gap: 12 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: 0 } }, TR("Импорт глоссария (TSV / CSV)")),
-    React.createElement("p", { className: "dim", style: { fontSize: 13, margin: 0 } },
-      TR("Колонки по заголовку (src, tgt, cat, note) или первые две. Повторы в пределах области пропускаются. Уровень «подсказка» модель вправе игнорировать; «приказ» уходит в промпт как «use these exact translations» — только для выверенного словаря.")),
-    React.createElement("input", { type: "file", accept: ".tsv,.csv,.txt", onChange: (e) => { setFile(e.target.files[0] || null); setPreview(null); } }),
-    React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
-      React.createElement(Field, { label: TR("Язык оригинала") }, React.createElement(Select, { value: src, onChange: (e) => setSrc(e.target.value) }, opt(langs))),
-      React.createElement(Field, { label: TR("Язык перевода") }, React.createElement(Select, { value: tgt, onChange: (e) => setTgt(e.target.value) }, opt(langs))),
-      React.createElement(Field, { label: TR("Предметная область") }, React.createElement(Select, { value: domain, onChange: (e) => setDomain(e.target.value) }, opt(domains))),
-      React.createElement(Field, { label: TR("Уровень") }, React.createElement(Select, { value: tier, onChange: (e) => setTier(e.target.value) },
-        React.createElement("option", { value: "auto" }, TR("Подсказка (модель вправе игнорировать)")),
-        React.createElement("option", { value: "verified" }, TR("Приказ (выверенный словарь)")))),
-      React.createElement(Field, { label: TR("В какой словарь") },
-        React.createElement(Select, { value: dictId, onChange: (e) => setDictId(e.target.value) }, opt(dictOpts))),
-      dictId === "__new" && React.createElement(Field, { label: TR("Название нового словаря") },
-        React.createElement(Input, { value: newDict, placeholder: TR("напр. Словарь клиента"), onChange: (e) => setNewDict(e.target.value) }))),
-    React.createElement("div", { className: "row", style: { gap: 8 } },
-      React.createElement(Btn, { variant: "secondary", disabled: !file || busy || src === tgt || (dictId === "__new" && !newDict.trim()), onClick: () => run(true) }, TR("Проверить")),
-      React.createElement(Btn, { variant: "primary", disabled: !file || busy || !preview || !preview.dryRun || !preview.added || (dictId === "__new" && !newDict.trim()), onClick: () => run(false) },
-        preview && preview.dryRun ? TR("Импортировать ") + preview.added : TR("Импортировать"))),
-    preview && React.createElement("div", { style: { fontSize: 13 } },
-      React.createElement("div", null, TR("Строк: ") + preview.rows + TR(" · добавится: ") + preview.added + TR(" · повторов: ") + preview.skippedDup + TR(" · пустых/битых: ") + preview.skippedBad + (preview.header ? TR(" · заголовок распознан") : TR(" · без заголовка: первые две колонки"))),
-      preview.sample && preview.sample.length > 0 && React.createElement("ul", { style: { margin: "6px 0 0", paddingLeft: 18 } },
-        preview.sample.map((x, i) => React.createElement("li", { key: i }, x.src + " → " + x.tgt)))));
+    !adding && React.createElement("div", null,
+      React.createElement(Btn, { variant: "secondary", icon: "user", onClick: () => setAdding(true) }, TR("Выдать вход сотруднику"))),
+    adding && React.createElement("div", { className: "card card-pad-sm", style: { background: "var(--bg-sunken)", display: "flex", flexDirection: "column", gap: 10 } },
+      React.createElement("div", { style: { fontWeight: 600 } }, TR("Вход для сотрудника")),
+      React.createElement("div", { className: "dim", style: { fontSize: 14 } },
+        TR("Придумайте логин и пароль и передайте их сотруднику — он войдёт под ними.")),
+      React.createElement("div", { className: "grid grid-2", style: { gap: 10 } },
+        React.createElement(Field, { label: TR("Имя") },
+          React.createElement(Input, { value: form.name, onChange: (e) => setForm({ ...form, name: e.target.value }) })),
+        React.createElement(Field, { label: TR("Роль") },
+          React.createElement(RoleSelect, { value: form.role, onChange: (r) => setForm({ ...form, role: r }) })),
+        React.createElement(Field, { label: TR("Логин") },
+          React.createElement(Input, { value: form.login, onChange: (e) => setForm({ ...form, login: e.target.value }), placeholder: TR("латиница, цифры, . _ @ -") })),
+        React.createElement(Field, { label: TR("Пароль (от 8 символов)") },
+          React.createElement(Input, { type: "password", value: form.password, onChange: (e) => setForm({ ...form, password: e.target.value }) }))),
+      React.createElement("div", { className: "row", style: { gap: 8 } },
+        React.createElement(Btn, { variant: "primary", icon: "check", disabled: busy || !form.login || form.password.length < 8, onClick: create }, TR("Выдать вход")),
+        React.createElement(Btn, { variant: "ghost", onClick: () => setAdding(false) }, TR("Отмена")))));
 }
 
 /* Журнал действий: кто, когда, что. Пишет сервер (`_audit`), здесь показ. */
@@ -203,16 +144,6 @@ function OrgDomains({ toast }) {
         React.createElement(Btn, { variant: "primary", disabled: !edit.label, onClick: save }, TR("Сохранить")),
         React.createElement(Btn, { variant: "ghost", onClick: () => setEdit(null) }, TR("Отмена")))));
 }
-
-/* Вид записи журнала страниц — код с сервера, подпись даёт браузер. */
-function orgPagesKind(k) {
-  return k === "credit" ? TR("пополнение") : k === "repeat" ? TR("повтор файла, без списания")
-    : k === "init" ? TR("стартовый объём по проектам")
-    : k === "reimport" ? TR("новая версия файла, за добавленные строки")
-    : k === "excerpt" ? TR("пробный фрагмент: списан он, объём файла — отдельно")
-    : k === "edit" ? TR("дописано руками сверх файла") : TR("списание");
-}
-function orgPagesNote(n) { return n === "env" ? TR("стартовый лимит из окружения") : n === "signup" ? TR("пробные страницы при регистрации") : n; }
 
 /* Суперпользователь: организации, их расход и лимиты. Лимит — решение
    администратора сервиса, владелец сам себе его не ставит. */
@@ -416,9 +347,9 @@ function OrgReferral({ toast }) {
       + d.signupPages : "",
     d.percent ? TR("Плюс процент от страниц, которые ему выдадут: ") + d.percent + "%" : "",
   ].filter(Boolean).join(". ");
-  return React.createElement("div", { className: "card card-pad", style: { fontSize: 13 } },
-    React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } },
-      TR("Приглашайте коллег")),
+  return React.createElement("div", { className: "card card-pad", style: { fontSize: 14 } },
+    React.createElement("h2", { className: "section-title", style: { margin: "0 0 8px" } },
+      TR("Зарабатывайте на приглашениях коллег")),
     rule ? React.createElement("p", { style: { margin: "0 0 8px" } }, rule) : null,
     d.welcomePages ? React.createElement("p", { className: "dim", style: { margin: "0 0 8px" } },
       TR("Приглашённый получает при регистрации страниц: ") + d.welcomePages) : null,
@@ -443,57 +374,41 @@ function OrgReferral({ toast }) {
         + (x.paid ? TR(" · принёс страниц: ") + x.paid : "")))) : null);
 }
 
+/* «Настройки» (ключ вкладки — по-прежнему «org»): только то, что правит
+   владелец про организацию целиком. Прежде здесь лежало всё подряд —
+   расход, оплата, люди, приглашения, импорт словаря и журнал, — и экран
+   отвечал на шесть вопросов сразу. Теперь у каждого свой дом:
+   деньги и страницы — «Оплата», люди и приглашения — «Профиль» (там же
+   команды: вторая таблица людей дублировала первую), импорт словаря —
+   «Словари» (там, где словари и смотрят). Журнал действий — только
+   администратору сервиса: клиенту он ничего не говорит. */
 function TabOrg({ store, toast }) {
   const [info, setInfo] = useState(null);
   useEffect(() => { window.API.safeCall(() => window.API.me()).then(r => r && setInfo(r)); }, []);
   if (!(store.can && store.can.owner))
     return React.createElement("div", { className: "page" },
       React.createElement("p", { className: "dim" }, TR("Этот экран доступен владельцу организации.")));
-  return React.createElement("div", { className: "page" },
+  const sup = !!(store.can && store.can.super);
+  const link = (label, tab, text) => React.createElement("button", { type: "button", className: "card card-pad card-hover set-link",
+      onClick: () => store.go(tab) },
+    React.createElement("div", { style: { fontWeight: 600 } }, label),
+    React.createElement("div", { className: "dim", style: { fontSize: 14 } }, text),
+    React.createElement(Icon, { name: "chevR", size: 18, className: "set-link-ic" }));
+  return React.createElement("div", { className: "page page-narrow" },
     React.createElement("div", { className: "page-head" },
-      React.createElement("h1", null, TR("Организация") + (info && info.tenant && info.tenant.name ? " · " + info.tenant.name : "")),
-      React.createElement("p", { className: "lead" }, TR("Пользователи и словарь организации. Проекты, глоссарий и память переводов других организаций отсюда не видны."))),
+      React.createElement("h1", null, TR("Настройки") + (info && info.tenant && info.tenant.name ? " · " + info.tenant.name : "")),
+      React.createElement("p", { className: "lead" }, TR("Настройки вашей организации."))),
     info && info.adminPath && !window.ADMIN_ENTRY && React.createElement("p", { className: "dim", style: { fontSize: 13, marginTop: -8 } },
       TR("Админка сервиса — по служебному адресу "), React.createElement("a", { href: info.adminPath }, info.adminPath)),
-    info && info.spend && React.createElement("div", { className: "card card-pad", style: { marginBottom: 16, fontSize: 13 } },
-      React.createElement("div", { className: "eyebrow", style: { margin: "0 0 6px" } }, TR("Расход за ") + info.spend.month),
-      React.createElement("div", { style: { fontWeight: 600, color: info.spend.over ? "var(--c-danger)" : undefined } },
-        costHidden() ? "" : "$" + Number(info.spend.spentUsd || 0).toFixed(2)
-        + (info.spend.limitUsd != null ? TR(" из $") + Number(info.spend.limitUsd).toFixed(2) : TR(" · лимит не задан"))
-        + TR(" · вызовов: ") + info.spend.calls
-        + (info.spend.unpriced ? TR(" · без цены: ") + info.spend.unpriced : "")),
-      info.spend.over && React.createElement("div", { className: "dim", style: { marginTop: 4 } },
-        TR("Лимит исчерпан: платные прогоны отвечают отказом, бесплатные команды и экспорт работают. Лимит ставит администратор сервиса.")),
-      // Объём в СТРАНИЦАХ — мера заказа, а не наших затрат: считается
-      // по загруженным файлам (как смета), потолок выдаёт администратор.
-      info.usage && React.createElement("div", { style: { marginTop: 6 } },
-        TR("Страниц списано: ") + info.usage.used
-        + (info.usage.imagePages ? TR(" · на картинках: ") + info.usage.imagePages : "")
-        + (info.usage.handPages ? TR(" · дописано руками: ") + info.usage.handPages : "")
-        + (info.usage.left != null ? TR(" · всего ") + info.usage.pages + TR(" из ") + info.caps.maxPages + TR(" · осталось ") + info.usage.left : "")
-        + TR(" · проектов: ") + info.usage.projects
-        + (info.caps && info.caps.maxProjects ? TR(" из ") + info.caps.maxProjects : "")),
-      /* Минуты видео (инвариант 39) — свой кошелёк, рядом со страницами. */
-      info.minutes && info.minutes.wallet && React.createElement("div", { style: { marginTop: 6 } },
-        TR("Минут видео: выдано ") + info.minutes.credit + TR(" · списано ") + info.minutes.used
-        + TR(" · осталось ") + info.minutes.left),
-      info.pagesLog && info.pagesLog.length > 0 && React.createElement("div", { className: "dim", style: { marginTop: 4, fontSize: 12 } },
-        info.pagesLog.slice().reverse().slice(0, 10).map((e, i) => React.createElement("div", { key: i },
-          e.at + " · " + orgPagesKind(e.kind) + " " + (e.kind === "credit" && e.pages > 0 ? "+" : "") + e.pages
-          + (e.title ? " · " + e.title : "") + (e.note ? " · " + orgPagesNote(e.note) : ""))))),
     React.createElement("div", { className: "col", style: { gap: 16 } },
-      // Сразу под страницами: про приглашение человек думает там же,
-      // где смотрит на остаток объёма.
-      /* Оплата — прямо под остатком: про пополнение думают, глядя на остаток. */
-      typeof PayCard === "function" && React.createElement(PayCard, { toast }),
-      React.createElement(OrgReferral, { toast }),
-      // Люди ДОМАШНЕЙ организации правятся, только когда она активна:
-      // в чужой команде сервер отвечает 403 (людей команды ведёт «Профиль»).
-      info && info.me && info.tenant && (info.me.tenant === info.tenant.id || (store.can && store.can.super))
-        && React.createElement(OrgUsers, { toast }),
-      React.createElement(OrgPricing, { toast }),
-      store.can && store.can.super && React.createElement(SuperTenants, { toast }),
+      /* Куда переехало — карточками-ссылками: кто привык искать здесь,
+         найдёт дорогу, а не пустой экран. */
+      React.createElement("div", { className: "grid grid-3", style: { gap: 12 } },
+        link(TR("Оплата и баланс"), "pay", TR("Остаток страниц, пополнение, заказы")),
+        link(TR("Люди и команда"), "profile", TR("Пригласить коллег, выдать вход сотруднику")),
+        link(TR("Загрузить словарь"), "glossary", TR("Термины из файла — на экране «Словари»"))),
       React.createElement(OrgDomains, { toast }),
-      React.createElement(OrgGlossaryImport, { store, toast }),
-      React.createElement(OrgAudit, null)));
+      React.createElement(OrgPricing, { toast }),
+      sup && React.createElement(SuperTenants, { toast }),
+      sup && React.createElement(OrgAudit, null)));
 }

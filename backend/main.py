@@ -9745,7 +9745,8 @@ LAND_PAGES = ("index", "uz", "en", "start", "other")
 # публичная) — на экране они названы «примерно», и денежных решений по ним
 # машина не принимает.
 LAND_CTAS = ("nav-open", "demo-upload", "demo-calc", "price-start", "price-pro",
-             "price-volume", "contact-upload", "login", "app", "anchor")
+             "price-volume", "price-docs", "price-video", "tg",
+             "contact-upload", "login", "app", "anchor")
 LAND_EVENTS = frozenset(
     ["view:" + p for p in LAND_PAGES]
     + ["perf:" + b for b in ("lt1", "1to3", "3to7", "gt7")]

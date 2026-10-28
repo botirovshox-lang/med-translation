@@ -37,6 +37,7 @@ const ICONS = {
   pie: "M21.2 15.9A10 10 0 1 1 8.1 2.8|M22 12A10 10 0 0 0 12 2v10z",
   plus: "M12 5v14|M5 12h14",
   close: "M18 6L6 18|M6 6l12 12",
+  menu: "M4 6h16|M4 12h16|M4 18h16",
   chevR: "M9 18l6-6-6-6",
   chevD: "M6 9l6 6 6-6",
   chevL: "M15 18l-6-6 6-6",

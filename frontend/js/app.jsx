@@ -896,10 +896,13 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
   const limited = caps && caps.pagesLimited && caps.maxPages > 0;
   const used = usage ? (usage.pages || 0) : 0;
   const left = limited ? Math.max(0, caps.maxPages - used) : null;
-  return React.createElement("aside", { className: "side" },
+  return React.createElement("aside", { className: "side", id: "side-menu" },
     React.createElement("div", { className: "side-brand" },
       React.createElement("span", { className: "side-mark" }, React.createElement(BrandMark, { size: 20 })),
-      store.brand || "CAT Translator"),
+      store.brand || "CAT Translator",
+      /* Крестик листа меню на телефоне (sideMenu); на широком экране скрыт. */
+      React.createElement(IconBtn, { icon: "close", label: TR("Закрыть"), sm: true, className: "side-close",
+                                     onClick: () => sideMenu(false) })),
     React.createElement(TeamChip, { store }),
     TAB_GROUPS.map(([g, title]) => {
       const items = tabs.filter(t => (t.group || "work") === g);
@@ -919,7 +922,7 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
             role: "tab", "aria-selected": store.tab === t.key,
             /* «Проекты» в меню ведут на СПИСОК проектов, а не в последний
                открытый: иначе пункт меню и «← Все проекты» делали бы разное. */
-            onClick: () => { if (t.key === "import" && store.setViewFolder) store.setViewFolder(null); store.go(t.key); } },
+            onClick: () => { sideMenu(false); if (t.key === "import" && store.setViewFolder) store.setViewFolder(null); store.go(t.key); } },
             g === "work"
               ? React.createElement("span", { className: "step-n" + (stepDone(store, t.key) ? " done" : ""), "aria-hidden": "true" },
                   stepDone(store, t.key) ? React.createElement(Icon, { name: "check", size: 12, stroke: 3 })
@@ -937,8 +940,17 @@ function Sidebar({ store, theme, onToggleTheme, onLogout }) {
     /* «Чего не хватает?» — всегда под рукой: идея приходит посреди работы,
        а не тогда, когда человек ищет, куда её написать. */
     React.createElement("button", { className: "side-idea", type: "button",
-                                    onClick: () => window.dispatchEvent(new Event("mct-idea-open")) },
+                                    onClick: () => { sideMenu(false); window.dispatchEvent(new Event("mct-idea-open")); } },
       React.createElement(Icon, { name: "message", size: 15 }), " ", TR("Чего не хватает?")),
+    /* Тема и выход — в листе меню на телефоне: в шапке там только поиск
+       и кнопка меню (иконки в ряд не помещались рядом с крошками). */
+    React.createElement("div", { className: "side-mob" },
+      React.createElement("button", { className: "navi", type: "button", onClick: onToggleTheme },
+        React.createElement(Icon, { name: theme === "dark" ? "sun" : "moon", size: 15 }),
+        React.createElement("span", { className: "navi-t" }, theme === "dark" ? TR("Светлая тема") : TR("Тёмная тема"))),
+      React.createElement("button", { className: "navi", type: "button", onClick: () => { sideMenu(false); onLogout(); } },
+        React.createElement(Icon, { name: "logout", size: 15 }),
+        React.createElement("span", { className: "navi-t" }, TR("Выйти")))),
     /* Баланс — плиткой с деньгами (pay.jsx), владельцу она же дверь
        в «Оплату». Без неё (файл не доехал) — прежняя полоса страниц. */
     typeof PaySideBalance === "function"
@@ -983,7 +995,7 @@ function Topbar({ store, theme, onToggleTheme, onLogout, onSearch }) {
       proj && React.createElement("b", null, proj.title)),
     React.createElement("div", { className: "tb-right" },
       React.createElement(IconBtn, { icon: "search", label: TR("Поиск"), sm: true, onClick: onSearch }),
-      React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme }),
+      React.createElement("span", { className: "tb-wide" }, React.createElement(ThemeToggle, { theme, onToggle: onToggleTheme })),
       React.createElement("button", {
         className: "iconbtn sm", title: (store.me.name || "") + (store.can && store.can.role ? " · " + roleLabel(store.can.role) : ""),
         "aria-label": TR("Профиль"), onClick: () => store.go("profile"),
@@ -993,7 +1005,17 @@ function Topbar({ store, theme, onToggleTheme, onLogout, onSearch }) {
           style: { position: "absolute", top: -2, right: -2, minWidth: 16, height: 16, borderRadius: 8,
                    background: "var(--c-danger)", color: "var(--text-on-accent)", fontSize: 10, fontWeight: 600,
                    lineHeight: "16px", textAlign: "center", padding: "0 3px" } }, store.invites.length)),
-      React.createElement(IconBtn, { icon: "logout", label: TR("Выйти"), sm: true, onClick: onLogout })));
+      React.createElement(IconBtn, { icon: "logout", label: TR("Выйти"), sm: true, className: "tb-wide", onClick: onLogout }),
+      /* Телефон: прочие пункты меню (Оплата, Профиль, Обучение…), тема и выход —
+         листом по этой кнопке в правом верхнем углу; внизу только пять шагов. */
+      React.createElement(IconBtn, { icon: "menu", label: TR("Меню"), className: "tb-menu",
+                                     "aria-controls": "side-menu", onClick: () => sideMenu(true) })));
+}
+
+/* Лист меню на телефоне — класс на <body>, а не состояние React: хук
+   в Sidebar/Topbar сдвинул бы порядок хуков, по которому их считают тесты. */
+function sideMenu(open) {
+  try { document.body.classList.toggle("side-open", !!open); } catch (e) {}
 }
 
 /* «Дальше: 3 · Словари →» внизу каждого шага пути. Одна кнопка про одно:

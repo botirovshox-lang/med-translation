@@ -1929,6 +1929,38 @@ body { overflow-wrap: break-word; }
 @media (max-width: 480px) {
   .sup-panel { bottom: calc(136px + env(safe-area-inset-bottom)); max-height: 58vh; }
 }
+/* Телефон: меню — по кнопке ☰ в правом верхнем углу шапки (Topbar → sideMenu),
+   полноэкранным листом. Прежде прочие пункты (Оплата, Профиль, Обучение…)
+   висели отдельной лентой НАД шапкой, а тема и выход — иконками в шапке:
+   два ряда кнопок сверху и ряд снизу. Теперь сверху одна шапка, снизу шаги. */
+.tb-menu, .side-close, .side-mob { display: none; }
+@media (max-width: 640px) {
+  .tb-wide { display: none !important; }
+  .tb-menu { display: inline-grid; width: 40px; height: 40px; }
+  .topbar { min-height: 56px; padding-top: max(8px, env(safe-area-inset-top)); }
+  .topbar .iconbtn.sm { width: 36px; height: 36px; }
+  body:not(.side-open) .side { padding: 0; border: 0; gap: 0; overflow: visible; }
+  body:not(.side-open) .side > :not(.grp-work) { display: none; }
+  body.side-open { overflow: hidden; }
+  body.side-open .side {
+    position: fixed; inset: 0; z-index: 60; flex-direction: column; align-items: stretch; gap: 16px;
+    overflow-y: auto; border: 0; background: var(--header-bg);
+    padding: max(12px, env(safe-area-inset-top)) 16px max(20px, env(safe-area-inset-bottom));
+  }
+  body.side-open .side > .grp-work { display: none; }
+  body.side-open .side-brand { display: flex; font-size: 16px; min-height: 44px; padding: 0 4px; }
+  body.side-open .side-close { display: inline-grid; margin-left: auto; width: 40px; height: 40px; }
+  body.side-open .org-chip { display: flex; }
+  body.side-open .side-foot { display: flex; padding: 0 4px; }
+  body.side-open .grp { flex-direction: column; gap: 2px; }
+  body.side-open .grp > h3 { display: block; padding: 0 12px 6px; font-size: 12px; }
+  body.side-open .grp .navi, body.side-open .side-mob .navi {
+    width: 100%; min-height: 48px; padding: 0 12px; font-size: 16px; gap: 12px; }
+  body.side-open .side-idea { display: flex; align-items: center; gap: 8px; margin: 0; min-height: 48px; padding: 0 12px; font-size: 15px; }
+  body.side-open .side-mob { display: flex; flex-direction: column; gap: 2px; margin-top: auto;
+    border-top: 1px solid var(--border); padding-top: 10px; }
+  body.side-open .sup { display: none; }
+}
 /* Открытая клавиатура поднимает фиксированную панель над собой, и та
    закрывает поле, в которое человек пишет. Пока фокус в поле — панели нет. */
 @media (max-width: 640px) {

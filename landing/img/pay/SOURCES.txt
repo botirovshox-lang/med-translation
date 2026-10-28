@@ -1,0 +1,9 @@
+Источники логотипов (скачаны 15.10.2026):
+click.svg      — https://click.uz/click/images/logo.svg (белая надпись перекрашена в фирменный #0065FF для светлой плашки)
+kaspi.svg      — https://kaspi.kz/img/Logo.svg
+uzcard.svg     — https://uzcard.uz (логотип в шапке сайта; белый знак перекрашен в #0e397a для светлой плашки)
+humo.png       — https://humocard.uz/bitrix/templates/main/img/logo.png
+visa.svg       — Wikimedia Commons, «Visa Inc. logo (2021–present).svg»
+mastercard.svg — Wikimedia Commons, «Mastercard-logo.svg»
+payme.png      — Wikimedia Commons, «Paymeuz logo.png» (уменьшен до 240 px)
+Знаки — товарные знаки владельцев; используются только для обозначения принимаемых способов оплаты.

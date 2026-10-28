@@ -24,7 +24,7 @@
      константы, и разойтись им нечем. llms.txt начинается с H1 и цитаты,
      длина в допуске 30–200 строк.
   8. Тела кнопок без «→» и эмодзи (правила craft floor), все якоря `#…`
-     ведут на существующие id, цена «от $0.5» есть в тексте страницы.
+     ведут на существующие id, цены $0.9 и $2 есть в тексте страницы.
  11. Форма перевода на первом экране: настоящая <form> в приложение (работает
      без скрипта), заглушки макета нет, файл уходит только в фрейм приложения
      и только его источнику.
@@ -97,10 +97,13 @@ check(len(faq_visible) >= 5, "меньше пяти вопросов в FAQ")
 for q, a in faq_visible:
     check(q.endswith("?"), f"вопрос без знака вопроса: {q}")
     n = len(a.split())
-    check(40 <= n <= 110, f"ответ на «{q}» — {n} слов, надо 40–110")
+    # Решение владельца 28.10.2026: ответы FAQ короткие и простые («как пятилетнему»),
+    # а не 40–110 слов под цитирование ИИ. Пустой и длинный ответ — по-прежнему брак.
+    check(5 <= n <= 60, f"ответ на «{q}» — {n} слов, надо 5–60")
 check(all(re.match(r"^https://", u) for u in re.findall(r'"url": "([^"]+)"', json.dumps(ld))), "в схеме есть не абсолютный url")
 for sel in types["WebPage"]["speakable"]["cssSelector"]:
-    check(f'class="{sel[1:]}' in html or f' {sel[1:]}"' in html or f' {sel[1:]} ' in html, f"speakable селектор {sel} не найден")
+    css = sel.split()[-1].lstrip(".")
+    check(f'class="{css}' in html or f' {css}"' in html or f' {css} ' in html or f'<{css}' in html, f"speakable селектор {sel} не найден")
 
 # 3. одна дата
 check(types["WebPage"]["dateModified"] == lb.UPDATED, "dateModified ≠ UPDATED")
@@ -120,8 +123,9 @@ for t in lb.TIERS:
     if t["price"]:
         check(offers.get(t["name"]) == t["price"], f"Offer {t['name']} ≠ {t['price']}")
         check(f"${t['price']}" in page_text, f"цены ${t['price']} нет в тексте страницы")
-        check(f"${t['price']} за страницу" in pricing_md, f"pricing.md без цены {t['name']}")
-check("от $0.5" in page_text, "«от $0.5» не найдено в тексте")
+        check(f"${t['price']} {lb.UNIT_RU[t['unit']]}" in pricing_md, f"pricing.md без цены {t['name']}")
+check("$0.9 за страницу" in page_text and "$2" in page_text, "цен $0.9 за страницу и $2 за минуту нет в тексте")
+check("$0.5" not in html, "старая цена $0.5 осталась на странице")
 
 # 6. определение в первых 60 словах основного текста
 main_text = text_of(re.search(r"<main.*?</main>", html, re.S).group(0))
@@ -329,6 +333,17 @@ for page_ in ("index.html", "uz/index.html", "en/index.html"):
     check(h.count('aria-label="SimpleTranslate"') >= 2, f"{page_}: у ссылки логотипа нет доступного имени")
     check(h.count('id="st-wm"') == 1 and '#st-wm' in h, f"{page_}: контур надписи на странице должен быть один (<use>)")
     check("#2EE6D0" not in h and "rgba(46,230,208" not in h, f"{page_}: неоновая бирюза вернулась")
+
+
+# ── Шапка: «Войти» и бот поддержки видны и на телефоне (28.10.2026)
+for page_ in ("index.html", "uz/index.html", "en/index.html"):
+    h = (ROOT / "landing" / page_).read_text(encoding="utf-8")
+    head = h.split('<header class="top"', 1)[-1].split("</header>", 1)[0]
+    check('id="login"' in head, f"{page_}: в шапке нет кнопки «Войти»")
+    check('href="https://t.me/simpletranslateme_bot?start=support_' in head, f"{page_}: в шапке нет ссылки на Telegram-бота")
+    check(h.count("t.me/simpletranslateme_bot") >= 3, f"{page_}: бот должен быть в шапке, в контактах и в подвале")
+    check("hello@simpletranslate.me" not in h, f"{page_}: почта без MX вернулась на страницу")
+    check("#login { display: none" not in h.replace("\n", " "), f"{page_}: «Войти» снова спрятана на телефоне")
 
 if FAILS:
     for f in FAILS:

@@ -44,9 +44,11 @@ LANG_DIRS = {"ru": "", "uz": "uz/", "en": "en/"}
 SITE = "https://simpletranslate.me"
 APP = "https://simpletranslate.me"
 BRAND = "SimpleTranslate"
-UPDATED = "2026-10-21"            # ISO; меняется вместе с правкой текста
+UPDATED = "2026-10-28"            # ISO; меняется вместе с правкой текста
 PUBLISHED = "2026-09-17"
-EMAIL = "hello@simpletranslate.me"
+# Почты на домене нет (MX не заведён) — связь через бота поддержки.
+TELEGRAM = "https://t.me/simpletranslateme_bot"
+TG_HANDLE = "@simpletranslateme_bot"
 
 # ─── Индексация, счётчик, подтверждение прав ─────────────────────────
 # INDEXABLE — ОДНО место решения «видна ли страница поисковикам и ИИ».
@@ -84,19 +86,24 @@ MONTHS_RU = ["января", "февраля", "марта", "апреля", "м
 
 # Тарифы — источник правды для страницы, схемы, pricing.md и llms.txt.
 TIERS = [
-    {"name": "Старт", "price": "0.5", "for": "Разовые документы: статья, справка, договор",
+    {"name": "Документы", "price": "0.9", "unit": "page", "recommended": True,
+     "for": "Статьи, книги, договоры, сканы — любой объём",
      "includes": ["Перевод и полный набор автопроверок (обратный перевод, числа и единицы, глоссарий)",
-                  "Выгрузка в исходном формате 1 в 1", "Оплата только за объём, без подписки",
-                  "Один пользователь"]},
-    {"name": "Профи", "price": "0.9", "for": "Авторы, кафедры, бюро переводов", "recommended": True,
-     "includes": ["Всё из «Старта»", "Ревизия второй моделью: читает пару целиком",
-                  "Свой глоссарий и память переводов", "Команда до 5 человек с ролями",
-                  "Приоритетная очередь"]},
-    {"name": "Издательство", "price": None, "for": "Книги, серии, учебники, регулярные объёмы",
-     "includes": ["Всё из «Профи»", "Отдельные словари на каждый проект",
+                  "Ревизия второй моделью: читает пару целиком",
+                  "Выгрузка в исходном формате 1 в 1",
                   "Чтение и перевод текста на картинках и сканах",
+                  "Свой глоссарий и память переводов", "Команда до 5 человек с ролями",
+                  "Оплата только за объём, без подписки; первые 5 страниц бесплатно"]},
+    {"name": "Видео", "price": "2", "unit": "minute",
+     "for": "Ролики, лекции, интервью — с субтитрами",
+     "includes": ["Распознавание речи и субтитры с таймингом", "Перевод субтитров с теми же проверками",
+                  "Субтитры в кадре или файлом .srt / .vtt", "Перевод надписей и титров в кадре",
+                  "Неполная минута считается минутой"]},
+    {"name": "Издательство", "price": None, "for": "Книги, серии, учебники, регулярные объёмы",
+     "includes": ["Всё из «Документов» и «Видео»", "Отдельные словари на каждый проект",
                   "Счёт на организацию, закрывающие документы", "Персональный менеджер"]},
 ]
+UNIT_RU = {"page": "за страницу", "minute": "за минуту"}
 
 # ─── Мета страницы по языкам ─────────────────────────────────────────
 # Title и description НЕ переводятся автоматически из тела: у них жёсткие
@@ -107,7 +114,7 @@ META = {
     "ru": {
         "title": "Перевод документов онлайн: Word, PDF | SimpleTranslate",
         "desc": "Переведите Word, PDF, Excel и PowerPoint онлайн с сохранением форматирования. "
-                "Первые 5 страниц бесплатно, дальше от $0.5. Обратный перевод и сверка чисел.",
+                "Первые 5 страниц бесплатно, дальше $0.9 за страницу. Сверка каждой строки.",
         "keywords": "перевод документов онлайн, перевести документ, перевод pdf, перевод word, "
                     "перевод с сохранением форматирования, перевод excel, перевод презентации, "
                     "перевод научной статьи, перевод медицинских документов, перевод на узбекский",
@@ -116,18 +123,18 @@ META = {
         "ogDesc": "Word, PDF, Excel и PowerPoint в том же оформлении: обратный перевод, "
                   "сверка чисел и глоссарий. Первые 5 страниц бесплатно.",
         "ogAlt": "SimpleTranslate: перевод документов онлайн в один клик, "
-                 "от $0.5 за страницу",
+                 "$0.9 за страницу",
         "ldDesc": "Перевод документов языковой моделью с проверкой каждой строки: обратный перевод, "
                   "сверка чисел и единиц, глоссарий. Word, PDF, Excel, PowerPoint и сканы "
-                  "возвращаются в исходном оформлении. От $0.5 за страницу в 250 слов.",
+                  "возвращаются в исходном оформлении. $0.9 за страницу в 250 слов, видео — $2 за минуту.",
         "orgDesc": "Сервис перевода документов с автоматическими проверками: обратный перевод, "
                    "сверка чисел и единиц, глоссарий. Файл возвращается в исходном оформлении.",
-        "unit": "страница (250 слов исходника)",
+        "unit": "страница (250 слов исходника)", "unitMin": "минута видео",
     },
     "uz": {
         "title": "Hujjatlarni onlayn tarjima qilish | SimpleTranslate",
         "desc": "Word, PDF, Excel va PowerPoint fayllarini formatini saqlagan holda onlayn tarjima "
-                "qiling. Birinchi 5 bet bepul, keyin $0.5 dan. Sonlar va lugʻat tekshiruvi.",
+                "qiling. Birinchi 5 bet bepul, keyin bet uchun $0.9. Har bir satr tekshiriladi.",
         "keywords": "hujjat tarjimasi, hujjatlarni tarjima qilish, onlayn tarjima, pdf tarjima, "
                     "word faylni tarjima qilish, rus tilidan oʻzbek tiliga tarjima, "
                     "ingliz tiliga tarjima, ilmiy maqola tarjimasi",
@@ -136,18 +143,18 @@ META = {
         "ogDesc": "Word, PDF, Excel va PowerPoint oʻsha koʻrinishda: teskari tarjima, "
                   "sonlarni solishtirish va lugʻat. Birinchi 5 bet bepul.",
         "ogAlt": "SimpleTranslate: hujjatlarni bir bosishda onlayn tarjima qilish, "
-                 "bet uchun $0.5 dan",
+                 "bet uchun $0.9",
         "ldDesc": "Hujjatlarni til modeli bilan tarjima qilish va har bir satrni tekshirish: "
                   "teskari tarjima, son va birliklarni solishtirish, lugʻat. Word, PDF, Excel, "
-                  "PowerPoint va skanlar asl koʻrinishida qaytariladi. 250 soʻzlik bet $0.5 dan.",
+                  "PowerPoint va skanlar asl koʻrinishida qaytariladi. 250 soʻzlik bet $0.9, video daqiqasiga $2.",
         "orgDesc": "Avtomatik tekshiruvli hujjat tarjimasi xizmati: teskari tarjima, son va "
                    "birliklarni solishtirish, lugʻat. Fayl asl koʻrinishida qaytariladi.",
-        "unit": "bet (asl matnning 250 soʻzi)",
+        "unit": "bet (asl matnning 250 soʻzi)", "unitMin": "video daqiqasi",
     },
     "en": {
         "title": "Document Translation Online, Same Layout | SimpleTranslate",
         "desc": "Translate Word, PDF, Excel and PowerPoint files online and keep the formatting. "
-                "First 5 pages free, then from $0.5. Number checks and a glossary on every line.",
+                "First 5 pages free, then $0.9 per page. Every line is checked.",
         "keywords": "document translation online, translate pdf keep formatting, translate word document, "
                     "translate docx, translate excel file, russian to uzbek translation, "
                     "scientific paper translation",
@@ -156,13 +163,13 @@ META = {
         "ogDesc": "Word, PDF, Excel and PowerPoint in the same layout: back-translation, "
                   "number checks and a glossary. The first 5 pages are free.",
         "ogAlt": "SimpleTranslate: one-click document translation online, "
-                 "from $0.5 per page",
+                 "$0.9 per page",
         "ldDesc": "Document translation by a language model with every line checked: back-translation, "
                   "comparison of numbers and units, a glossary. Word, PDF, Excel, PowerPoint and scans "
-                  "come back in their original layout. From $0.5 per 250-word page.",
+                  "come back in their original layout. $0.9 per 250-word page, video $2 per minute.",
         "orgDesc": "A document translation service with automatic checks: back-translation, "
                    "comparison of numbers and units, a glossary. The file comes back in its original layout.",
-        "unit": "page (250 words of the source)",
+        "unit": "page (250 words of the source)", "unitMin": "minute of video",
     },
 }
 
@@ -310,7 +317,7 @@ def jsonld(body, lang=KEY_LANG):
             "price": t["price"], "priceCurrency": "USD", "availability": "https://schema.org/InStock",
             "description": t["for"],
             "priceSpecification": {"@type": "UnitPriceSpecification", "price": t["price"],
-                                   "priceCurrency": "USD", "unitText": m["unit"]},
+                                   "priceCurrency": "USD", "unitText": m["unitMin"] if t.get("unit") == "minute" else m["unit"]},
         })
     graph = [
         {
@@ -322,7 +329,7 @@ def jsonld(body, lang=KEY_LANG):
                            "Медицинский перевод", "Контроль качества перевода",
                            "Терминологические глоссарии и память переводов"],
             "contactPoint": {"@type": "ContactPoint", "contactType": "customer service",
-                             "email": EMAIL, "availableLanguage": ["ru", "uz", "en"]},
+                             "url": TELEGRAM, "availableLanguage": ["ru", "uz", "en"]},
         },
         {
             "@type": "WebSite", "@id": site_id, "url": SITE + "/", "name": BRAND,
@@ -335,7 +342,7 @@ def jsonld(body, lang=KEY_LANG):
             "isPartOf": {"@id": site_id}, "about": {"@id": app_id},
             "datePublished": PUBLISHED, "dateModified": UPDATED,
             "primaryImageOfPage": {"@type": "ImageObject", "url": SITE + "/og.png", "width": 1200, "height": 630},
-            "speakable": {"@type": "SpeakableSpecification", "cssSelector": [".hero-answer", ".key-answer"]},
+            "speakable": {"@type": "SpeakableSpecification", "cssSelector": [".hero-answer", ".faq p"]},
         },
         {
             "@type": "SoftwareApplication", "@id": app_id, "name": BRAND, "url": APP,
@@ -433,7 +440,7 @@ def build_index(lang=KEY_LANG):
     body = prerender(html, lang)
     body = (body.replace("__LANG__", lang)
                 .replace("__DATE_ISO__", UPDATED)
-                .replace("__DATE_LOC__", _date_of(UPDATED, lang))
+                .replace("__DATE_YEAR__", UPDATED[:4])
                 .replace("__METRIKA__", metrika()))
     m = META[lang]
     head = (HEAD_SEO.replace("__TITLE__", m["title"]).replace("__DESC__", m["desc"])
@@ -484,34 +491,36 @@ def build_pricing_md():
              "загрузки и фиксируется. Подписки нет: оплата за объём. Повторная загрузка того же файла на ту же "
              "пару языков не списывается.", ""]
     for t in TIERS:
-        price = f"${t['price']} за страницу" if t["price"] else "цена по договорённости"
+        price = f"${t['price']} {UNIT_RU[t.get('unit', 'page')]}" if t["price"] else "цена по договорённости"
         rec = " (рекомендуемый)" if t.get("recommended") else ""
         lines += [f"## {t['name']}{rec}", "", f"- Цена: {price}", f"- Для кого: {t['for']}", "- Включено:"]
         lines += [f"  - {x}" for x in t["includes"]]
         lines.append("")
     lines += ["## Примеры", "",
-              "- Статья на 20 страниц по тарифу «Старт»: $10",
-              "- Диссертация на 150 страниц по тарифу «Старт»: $75",
-              "- Книга на 300 страниц по тарифу «Старт»: $150", "",
-              f"Сервис: {APP} · Лендинг: {SITE}/ · Контакт: {EMAIL}", ""]
+              "- Статья на 20 страниц: $18 (первые 5 страниц бесплатно — к оплате $13.5)",
+              "- Диссертация на 150 страниц: $135",
+              "- Книга на 300 страниц: $270",
+              "- Видео на 10 минут: $20", "",
+              f"Сервис: {APP} · Лендинг: {SITE}/ · Поддержка в Telegram: {TELEGRAM}", ""]
     return "\n".join(lines)
 
 
 def build_llms():
-    starter = next(t for t in TIERS if t["price"])
+    starter = next(t for t in TIERS if t.get("unit") == "page")
+    video = next(t for t in TIERS if t.get("unit") == "minute")
     lines = [
         f"# {BRAND}", "",
-        f"> Сервис перевода документов (Word, PDF, Excel, PowerPoint, сканы) языковой моделью с проверкой каждой строки; файл возвращается в исходном оформлении, от ${starter['price']} за страницу.", "",
+        f"> Сервис перевода документов (Word, PDF, Excel, PowerPoint, сканы) языковой моделью с проверкой каждой строки; файл возвращается в исходном оформлении, ${starter['price']} за страницу и ${video['price']} за минуту видео.", "",
         "## Products", "",
         f"- [{BRAND}, лендинг]({SITE}/): что переводим (книги, статьи, видео, сканы), примеры настоящих переводов, перевод в один клик и запись экрана, тарифы, вопросы и ответы, контакты.",
-        f"- [Тарифы]({SITE}/pricing.md): три тарифа со включёнными возможностями, цена за страницу в долларах, примеры расчёта на 20, 150 и 300 страниц.",
+        f"- [Тарифы]({SITE}/pricing.md): цена за страницу документа, за минуту видео и договорная для издательств; что включено, примеры расчёта.",
         f"- [Приложение]({APP}): вход и регистрация, загрузка файла, смета по страницам, перевод, проверки, выгрузка готового документа.",
         f"- [Оферта]({APP}/terms): условия использования сервиса, редакция документа фиксируется при регистрации.",
         f"- [Персональные данные]({APP}/privacy): какие данные обрабатываются, передача текста поставщикам языковых моделей, права пользователя.", "",
         "## Key Facts", "",
-        f"- Цена: от ${starter['price']} за страницу; страница равна 250 словам исходника; подписки нет, оплата за объём.",
+        f"- Цена: ${starter['price']} за страницу документа (250 слов исходника), ${video['price']} за минуту видео; первые 5 страниц бесплатно; подписки нет, оплата за объём.",
         "- Форматы: .docx, .pdf, .xlsx, .pptx, .html, .txt/.csv/.md, картинки и сканы; любой формат проходит через .docx и возвращается в своём формате, где это возможно.",
-        "- Проверки на каждой строке: обратный перевод другой моделью, детерминированная сверка чисел, единиц, диапазонов и отрицаний, сверка с глоссарием, ревизия второй моделью на тарифе «Профи».",
+        "- Проверки на каждой строке: обратный перевод другой моделью, детерминированная сверка чисел, единиц, диапазонов и отрицаний, сверка с глоссарием, ревизия второй моделью.",
         "- Оформление сохраняется: перевод пишется в исходный файл, оглавление и номера страниц пересчитывает Word, надписи на картинках переводятся отдельно.",
         "- Проверено на учебнике из 324 страниц: 2 711 строк, 162 рисунка, глоссарий из 1 307 терминов.",
         "- Языки: любая пара из каталога сервиса, интерфейс на русском, узбекском и английском.",
@@ -519,10 +528,9 @@ def build_llms():
         "- Обработка данных: текст документов передаётся поставщикам языковых моделей (OpenAI и Anthropic, США), это названо в политике персональных данных.", "",
         "## Contact", "",
         f"- Сайт: {APP}",
-        f"- Почта: {EMAIL}",
-        "- Офис: Ташкент, Узбекистан", "",
+        f"- Поддержка в Telegram: {TELEGRAM} ({TG_HANDLE}) — отвечает человек", "",
         "## Optional", "",
-        f"- [Изображение для превью]({SITE}/og.png): заголовок «Одним кликом — перевод уровня научной публикации» и цена от ${starter['price']} за страницу.", "",
+        f"- [Изображение для превью]({SITE}/og.png): заголовок «Одним кликом — перевод уровня научной публикации» и цена ${starter['price']} за страницу.", "",
     ]
     return "\n".join(lines)
 

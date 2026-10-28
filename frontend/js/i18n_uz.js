@@ -123,6 +123,7 @@ window.I18N.register("uz", {
  "Кросс-проверка терм-листа той же моделью, что и ревизия (": "Atamalar ro'yxatini tahrir bilan bir xil model bilan tekshirish (",
  "Крутой перевод в один клик!": "Bir klikda zo'r tarjima!",
  "Логин или почта": "Login yoki pochta",
+ "Меню": "Menyu",
  "Минуту…": "Bir daqiqa…",
  "Можно и потом: на экране входа — «Забыли пароль?», код придёт на почту.": "Keyinroq ham mumkin: kirish oynasida «Parolni unutdingizmi?» — kod pochtaga keladi.",
  "Мой кабинет": "Mening kabinetim",

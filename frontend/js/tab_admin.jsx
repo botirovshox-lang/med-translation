@@ -1813,7 +1813,7 @@ function MetLanding({ m }) {
   const pct = (n) => Math.round((n || 0) / lv.total * 100) + "%";
   const ctaName = {
     "nav-open": TR("«Открыть сервис» в шапке"), "demo-upload": TR("«Загрузить свой документ»"),
-    "demo-calc": TR("«Рассчитать стоимость»"), "price-start": TR("тариф «Старт»"), "price-pro": TR("тариф «Профи»"),
+    "demo-calc": TR("«Рассчитать стоимость»"), "price-start": TR("тариф «Старт»"), "price-pro": TR("тариф «Профи»"), "price-docs": TR("тариф «Документы»"), "price-video": TR("тариф «Видео»"), "tg": TR("Telegram-бот поддержки"),
     "price-volume": TR("«Обсудить объём»"), "contact-upload": TR("«Загрузить первый документ»"),
     login: TR("«Войти»"), app: TR("другие ссылки в сервис"), anchor: TR("переходы по странице"),
   };

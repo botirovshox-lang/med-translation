@@ -18,6 +18,7 @@
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -90,6 +91,20 @@ T = {
         "guide": "Инструкция на одну страницу: %(guide)s",
         "unknown": "Я умею немного: выдать доступ, показать инструкцию и позвать на разбор. "
                    "Выберите кнопку ниже 🙂",
+        "home": "Я бот SimpleTranslate. Напишите вопрос прямо сюда — ответит живой человек "
+                "из поддержки. Или выберите кнопку ниже.",
+        "btnSupport": "💬 Написать в поддержку",
+        "btnContacts": "📇 Контакты",
+        "supportAsk": "Напишите вопрос одним сообщением — можно приложить файл или скриншот. "
+                      "Ответит человек из поддержки, прямо здесь, в этом чате. "
+                      "Отвечаем в рабочие часы по Ташкенту.",
+        "supportGot": "Получили ✅ Ответим здесь же. Если хотите — допишите подробности.",
+        "supportFail": "Не получилось передать сообщение 😔 Попробуйте ещё раз через минуту.",
+        "supportFast": "Сообщений много подряд — подождите немного, мы уже читаем. 🙂",
+        "supportAnswer": "💬 Поддержка SimpleTranslate:\n\n%(text)s",
+        "contacts": "📇 Контакты SimpleTranslate\n\nСайт: %(site)s\n"
+                    "Поддержка: пишите прямо в этот чат — отвечает человек.\n"
+                    "Оферта: %(terms)s\nПерсональные данные: %(privacy)s",
     },
     "uz": {
         "hello": "Assalomu alaykum! 👋\nSimpleTranslate — tarjimonlar uchun hujjat tarjimoni.\n\n"
@@ -131,12 +146,52 @@ T = {
         "guide": "Bir sahifalik yo'riqnoma: %(guide)s",
         "unknown": "Men ko'p narsani uddalamayman: kirish berish, yo'riqnomani ko'rsatish va "
                    "tahlilga chaqirish. Quyidagi tugmani tanlang 🙂",
+        "home": "Men SimpleTranslate botiman. Savolingizni shu yerga yozing — qo'llab-quvvatlash "
+                "xodimi javob beradi. Yoki quyidagi tugmani tanlang.",
+        "btnSupport": "💬 Qo'llab-quvvatlashga yozish",
+        "btnContacts": "📇 Aloqa",
+        "supportAsk": "Savolingizni bitta xabar bilan yozing — fayl yoki skrinshot qo'shsangiz ham "
+                      "bo'ladi. Qo'llab-quvvatlash xodimi shu chatning o'zida javob beradi. "
+                      "Toshkent vaqti bilan ish soatlarida javob beramiz.",
+        "supportGot": "Qabul qildik ✅ Shu yerda javob beramiz. Xohlasangiz, tafsilotlarni qo'shing.",
+        "supportFail": "Xabarni yetkazib bo'lmadi 😔 Bir daqiqadan keyin yana urinib ko'ring.",
+        "supportFast": "Ketma-ket xabarlar ko'p — biroz kuting, biz allaqachon o'qiyapmiz. 🙂",
+        "supportAnswer": "💬 SimpleTranslate qo'llab-quvvatlash:\n\n%(text)s",
+        "contacts": "📇 SimpleTranslate bilan aloqa\n\nSayt: %(site)s\n"
+                    "Qo'llab-quvvatlash: shu chatga yozing — odam javob beradi.\n"
+                    "Oferta: %(terms)s\nShaxsiy ma'lumotlar: %(privacy)s",
+    },
+    # Английский — для тех, кто пришёл с английской версии лендинга
+    # (`?start=support_en`). Тест-группа живёт на ru/uz: чего здесь нет,
+    # берётся из русского (см. `t`).
+    "en": {
+        "picked": "Great, let's talk in English. 🙂",
+        "btnGuide": "📖 How it works",
+        "btnLang": "🌐 Change language",
+        "btnTest": "🚀 I want to test the system",
+        "err": "Something broke on my side. 😔 Please try again in a minute.",
+        "home": "I'm the SimpleTranslate bot. Write your question right here — a real person "
+                "from support will answer. Or pick a button below.",
+        "btnSupport": "💬 Write to support",
+        "btnContacts": "📇 Contacts",
+        "supportAsk": "Write your question in one message — you can attach a file or a screenshot. "
+                      "A person from support will answer right here, in this chat. "
+                      "We reply during Tashkent business hours.",
+        "supportGot": "Got it ✅ We'll reply here. Feel free to add details.",
+        "supportFail": "Couldn't pass the message on 😔 Please try again in a minute.",
+        "supportFast": "That's a lot of messages in a row — give us a moment, we're reading. 🙂",
+        "supportAnswer": "💬 SimpleTranslate support:\n\n%(text)s",
+        "contacts": "📇 SimpleTranslate contacts\n\nWebsite: %(site)s\n"
+                    "Support: write right in this chat — a person answers.\n"
+                    "Terms: %(terms)s\nPrivacy: %(privacy)s",
+        "guide": "One-page guide: %(guide)s",
     },
 }
 
 
 def t(lang: str, key: str, **kw) -> str:
-    s = T.get(lang, T["uz"]).get(key, "")
+    d = T.get(lang, T["uz"])
+    s = d.get(key) or (T["ru"].get(key, "") if lang == "en" else "")
     return (s % kw) if kw else s
 
 
@@ -191,11 +246,16 @@ def api(method: str, path: str, body: dict = None) -> dict:
 # Клавиатуры
 # ─────────────────────────────────────────────────────────────────────
 LANG_KB = [[{"text": "🇺🇿 O'zbekcha", "callback_data": "lang:uz"},
-            {"text": "🇷🇺 Русский", "callback_data": "lang:ru"}]]
+            {"text": "🇷🇺 Русский", "callback_data": "lang:ru"},
+            {"text": "English", "callback_data": "lang:en"}]]
+LANGS = ("uz", "ru", "en")
 
 
 def menu_kb(lang: str) -> list:
-    return [[{"text": t(lang, "btnTest"), "callback_data": "want"}],
+    # Поддержка — первой: с лендинга сюда приходят именно спросить.
+    return [[{"text": t(lang, "btnSupport"), "callback_data": "support"},
+             {"text": t(lang, "btnContacts"), "callback_data": "contacts"}],
+            [{"text": t(lang, "btnTest"), "callback_data": "want"}],
             [{"text": t(lang, "btnGuide"), "callback_data": "guide"},
              {"text": t(lang, "btnLang"), "callback_data": "lang"}]]
 
@@ -207,6 +267,8 @@ def ask_kb(lang: str) -> list:
 
 def links(lang: str, chat_id) -> dict:
     ref = "tg%s" % chat_id
+    # Анкеты и инструкция тест-группы — только ru/uz; английскому — русская.
+    lang = lang if lang in ("ru", "uz") else "ru"
     return {"site": tg.SITE,
             "apply": tg.link("/t/apply?lang=%s&ref=%s" % (lang, ref)),
             "debrief": tg.link("/t/debrief?lang=%s&ref=%s" % (lang, ref)),
@@ -287,13 +349,18 @@ def on_callback(st: dict, chat_id, data: str, user: dict) -> None:
         if data == "lang":
             tg.send(chat_id, T["uz"]["hello"], LANG_KB)
             return
-        rec["lang"] = "ru" if data.endswith(":ru") else "uz"
+        code = data.split(":", 1)[1]
+        rec["lang"] = code if code in LANGS else "uz"
         lang = rec["lang"]
         tg.send(chat_id, t(lang, "picked"))
-        tg.send(chat_id, t(lang, "menu"), menu_kb(lang))
+        tg.send(chat_id, t(lang, "home"), menu_kb(lang))
         return
     lang = rec.get("lang") or "uz"
-    if data == "want":
+    if data == "support":
+        tg.send(chat_id, t(lang, "supportAsk"))
+    elif data == "contacts":
+        tg.send(chat_id, t(lang, "contacts", **links(lang, chat_id)), menu_kb(lang))
+    elif data == "want":
         issue_access(st, chat_id, rec)
     elif data == "guide":
         tg.send(chat_id, t(lang, "guide", **links(lang, chat_id)), menu_kb(lang), preview=True)
@@ -308,20 +375,163 @@ def on_callback(st: dict, chat_id, data: str, user: dict) -> None:
         tg.send(chat_id, t(lang, "thanksNo"))
 
 
-def on_text(st: dict, chat_id, text: str, user: dict) -> None:
+def on_text(st: dict, chat_id, text: str, user: dict, msg: dict = None) -> None:
     rec = chat_rec(st, chat_id)
-    if text.startswith("/start") or not rec.get("lang"):
+    if text.startswith("/start"):
+        # Ссылка с сайта: t.me/<бот>?start=support_ru — сразу в поддержку
+        # на языке страницы, без вопроса «какой язык» (человек пришёл спросить).
+        payload = text.split(maxsplit=1)[1].strip() if " " in text else ""
+        if payload.startswith("support"):
+            code = payload.split("_", 1)[1] if "_" in payload else ""
+            rec["lang"] = code if code in LANGS else (rec.get("lang") or "uz")
+            _remember(rec, user)
+            tg.send(chat_id, t(rec["lang"], "supportAsk"), menu_kb(rec["lang"]))
+            return
         on_start(st, chat_id, user)
         return
-    lang = rec["lang"]
+    lang = rec.get("lang") or "uz"
     if text.startswith("/guide"):
         tg.send(chat_id, t(lang, "guide", **links(lang, chat_id)), menu_kb(lang), preview=True)
         return
-    # Свободный текст пересылаем владельцу: человек пишет боту, когда что-то
-    # не получилось, и потерять это письмо — потерять смысл теста.
-    tg.notify_admin("💬 %s (%s):\n%s" % (rec.get("login") or "гость",
-                                         rec.get("username") or chat_id, text[:900]))
-    tg.send(chat_id, t(lang, "unknown"), menu_kb(lang))
+    if text.startswith("/support"):
+        tg.send(chat_id, t(lang, "supportAsk"))
+        return
+    if text.startswith("/contacts"):
+        tg.send(chat_id, t(lang, "contacts", **links(lang, chat_id)), menu_kb(lang))
+        return
+    if text.startswith("/"):
+        tg.send(chat_id, t(lang, "home"), menu_kb(lang))
+        return
+    # Любое другое сообщение — вопрос в поддержку: человек пишет боту, когда
+    # что-то не получилось, и потерять это письмо нельзя. Раньше оно молча
+    # уходило в личку владельца, и ответить человеку было нечем.
+    _remember(rec, user)
+    relay_to_support(rec, chat_id, msg or {"text": text})
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Поддержка в самом Telegram: человек пишет боту → сообщение уходит в чат
+# поддержки с меткой `#u<id чата>` в ЗАГОЛОВКЕ → владелец отвечает на него
+# реплаем → бот отправляет ответ человеку. Тот же устав, что у меток `#d`
+# диалогов приложения (`support.thread_for_reply`): метка засчитывается
+# только в нашем заголовке и только у сообщения бота, при нескольких
+# заголовках — последний (см. `_tg_target`).
+# ─────────────────────────────────────────────────────────────────────
+TG_HEAD = "📨"                       # первый знак заголовка нашего уведомления
+TG_PER_HOUR = 20                     # сообщений от одного человека в час
+
+
+def _remember(rec: dict, user: dict) -> None:
+    rec["username"] = (user or {}).get("username") or rec.get("username") or ""
+    rec["name"] = (" ".join(x for x in ((user or {}).get("first_name"),
+                                        (user or {}).get("last_name")) if x)
+                   or rec.get("name") or "")
+
+
+def _has_media(msg: dict) -> bool:
+    return any(msg.get(k) for k in ("photo", "document", "video", "voice", "audio",
+                                    "video_note", "sticker", "animation"))
+
+
+def _tg_head(rec: dict, chat_id) -> str:
+    who = rec.get("name") or "без имени"
+    if rec.get("username"):
+        who += " (@%s)" % rec["username"]
+    if rec.get("login"):
+        who += " · тестировщик %s" % rec["login"]
+    return "%s Вопрос из Telegram #u%s\n%s · %s" % (TG_HEAD, chat_id, who,
+                                                  (rec.get("lang") or "?").upper())
+
+
+def _too_fast(rec: dict) -> bool:
+    now = time.time()
+    seen = [x for x in (rec.get("sup") or []) if now - x < 3600]
+    rec["sup"] = seen
+    if len(seen) >= TG_PER_HOUR:
+        return True
+    seen.append(now)
+    return False
+
+
+def relay_to_support(rec: dict, chat_id, msg: dict) -> None:
+    lang = rec.get("lang") or "uz"
+    if _too_fast(rec):
+        tg.send(chat_id, t(lang, "supportFast"))
+        return
+    head = _tg_head(rec, chat_id)
+    text = (msg.get("text") or "").strip()
+    if text:
+        r = tg.send(SUPPORT_CHAT, head + "\n\n" + text[:3500])
+    elif _has_media(msg) and msg.get("message_id"):
+        # Файл, фото, голос — копией с подписью-заголовком: на неё владелец
+        # и отвечает (подпись читается так же, как текст, — `caption`).
+        cap = head + ("\n\n" + msg["caption"][:700] if msg.get("caption") else "")
+        body = {"chat_id": SUPPORT_CHAT, "from_chat_id": chat_id,
+                "message_id": msg["message_id"]}
+        if not msg.get("sticker") and not msg.get("video_note"):
+            body["caption"] = cap
+            r = tg._post("copyMessage", body)
+        else:
+            r = tg._post("copyMessage", body)
+            if r.get("ok"):
+                r = tg.send(SUPPORT_CHAT, head + "\n\n[стикер / кружок выше]")
+    else:
+        return
+    tg.send(chat_id, t(lang, "supportGot" if r.get("ok") else "supportFail"))
+    if not r.get("ok"):
+        print("[tgbot] вопрос из Telegram не доставлен: %s" % r.get("error"), file=sys.stderr)
+
+
+def _tg_target(quoted: str):
+    """Номер чата человека — ТОЛЬКО из первой строки цитаты.
+
+    Наш заголовок всегда первый, а всё ниже — текст человека: возьми мы
+    «последний заголовок», как у меток `#d`, и человек, вписавший в вопрос
+    строку «📨 … #u<чужой id>», получил бы ответ, предназначенный другому
+    (вернее — другой получил бы ответ на его вопрос)."""
+    first = (quoted or "").lstrip().split("\n", 1)[0]
+    m = re.match(TG_HEAD + r"[^\n]*#u(\d{1,20})\s*$", first)
+    return int(m.group(1)) if m else None
+
+
+def _quoted_ours(reply: dict, quoted: str) -> bool:
+    """Цитируемое — сообщение САМОГО бота, не пересланное и не его
+    подтверждение (см. те же правила в `on_admin_reply`)."""
+    src = reply.get("from") or {}
+    if not src.get("is_bot"):
+        return False
+    if reply.get("forward_date") or reply.get("forward_origin") or reply.get("forward_from"):
+        return False
+    return quoted.lstrip()[:1] not in ("✅", "⚠")
+
+
+def on_tg_reply(st: dict, chat_id, msg: dict) -> bool:
+    """Ответ поддержки на вопрос из Telegram. True — сообщение забрали."""
+    if not (_support_chat(chat_id) or (ADMIN_CHAT and str(chat_id) == ADMIN_CHAT)):
+        return False
+    reply = msg.get("reply_to_message") or {}
+    quoted = (reply.get("text") or reply.get("caption") or "")
+    if "#u" not in quoted or not _quoted_ours(reply, quoted):
+        return False
+    target = _tg_target(quoted)
+    if not target:
+        return False
+    text = (msg.get("text") or "").strip()
+    if not text:
+        return True
+    if not _may_answer(chat_id, msg.get("from") or {}):
+        tg.send(chat_id, "⚠️ Вы не в списке отвечающих: сообщение клиенту НЕ ушло.\n"
+                         "Добавьте свой id в TELEGRAM_SUPPORT_SENDERS.",
+                thread_id=msg.get("message_thread_id"))
+        return True
+    lang = (st.get("chats", {}).get(str(target)) or {}).get("lang") or "ru"
+    r = tg.send(target, t(lang, "supportAnswer", text=text))
+    if r.get("ok"):
+        tg.send(chat_id, "✅ Ответ ушёл человеку в Telegram.", thread_id=msg.get("message_thread_id"))
+    else:
+        tg.send(chat_id, "⚠️ Не отправилось: %s" % (r.get("error") or "неизвестная ошибка"),
+                thread_id=msg.get("message_thread_id"))
+    return True
 
 
 ADMIN_CHAT = os.environ.get("TELEGRAM_ADMIN_CHAT", "").strip()
@@ -481,12 +691,16 @@ def handle(st: dict, upd: dict) -> None:
         return
     # Ответ владельца в поддержку — ПЕРВЫМ: он приходит обычным текстом,
     # и общий разбор ответил бы на него меню вместо доставки человеку.
+    # Ответ на вопрос из Telegram — раньше ответа в приложение: у тех свой
+    # заголовок (💬 … #d), у этих — 📨 … #u, и перепутать их нельзя.
+    if not edited and on_tg_reply(st, chat_id, msg):
+        return
     if not edited and on_admin_reply(chat_id, msg):
         return
-    # Всё остальное — ветка тест-группы, и она только для лички (см. выше).
-    if not _tester_chat(chat):
+    # Всё остальное — личка: меню, поддержка, тест-группа (см. выше).
+    if not _tester_chat(chat) or edited:
         return
-    on_text(st, chat_id, (msg.get("text") or "").strip(), msg.get("from") or {})
+    on_text(st, chat_id, (msg.get("text") or "").strip(), msg.get("from") or {}, msg)
 
 
 def due_asks(st: dict, submitted: set) -> None:

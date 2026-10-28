@@ -123,6 +123,7 @@ window.I18N.register("en", {
  "Кросс-проверка терм-листа той же моделью, что и ревизия (": "Term sheet cross-check with the same model as the revision (",
  "Крутой перевод в один клик!": "Great translation in one click!",
  "Логин или почта": "Login or email",
+ "Меню": "Menu",
  "Минуту…": "One moment…",
  "Можно и потом: на экране входа — «Забыли пароль?», код придёт на почту.": "You can do it later: on the sign-in screen use “Forgot password?” and a code will be emailed.",
  "Мой кабинет": "My account",

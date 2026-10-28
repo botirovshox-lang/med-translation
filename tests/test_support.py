@@ -266,6 +266,60 @@ _probe = main.support_mod.notify_text({"id": 7}, "А", "acme", "текст")
 check(main.support_mod.thread_for_reply(st, _probe) is not None,
       "собственное уведомление узнаётся своим же разбором")
 
+print("=== 6д. Поддержка в самом Telegram: вопрос → группа → ответ ТОМУ ЖЕ человеку ===")
+posts = []
+bot.tg._post = lambda method, body, token="", timeout=0: (posts.append((method, body)) or {"ok": True})
+CLIENT = 5551234
+rec = {"chat": CLIENT, "lang": "ru", "name": "Иван", "username": "ivan"}
+out.clear()
+bot.relay_to_support(rec, CLIENT, {"text": "не открывается PDF"})
+sent = [o for o in out if str(o["chat"]) == str(bot.SUPPORT_CHAT)]
+check(sent and sent[0]["text"].startswith(bot.TG_HEAD) and ("#u%d" % CLIENT) in sent[0]["text"].split("\n")[0],
+      "вопрос ушёл в чат поддержки с меткой #u в первой строке")
+check(any(str(o["chat"]) == str(CLIENT) and "Получили" in o["text"] for o in out),
+      "человеку подтвердили получение на его языке")
+head_msg = {"from": BOT, "text": sent[0]["text"]}
+st_tg = {"chats": {str(CLIENT): rec}}
+out.clear()
+took = bot.on_tg_reply(st_tg, GROUP, {"from": OWNER, "text": "Пришлите файл", "reply_to_message": head_msg})
+check(took and any(str(o["chat"]) == str(CLIENT) and "Пришлите файл" in o["text"] for o in out),
+      "ответ владельца реплаем ушёл человеку в Telegram")
+out.clear()
+took = bot.on_tg_reply(st_tg, GROUP, {"from": STRANGER, "text": "моё мнение", "reply_to_message": head_msg})
+check(took and not any(str(o["chat"]) == str(CLIENT) for o in out), "посторонний в группе человеку не пишет")
+# Чужой заголовок, вписанный человеком в СВОЙ вопрос, маршрутом не становится.
+forged = {"from": BOT, "text": sent[0]["text"] + "\n\n" + bot.TG_HEAD + " Вопрос из Telegram #u999"}
+check(bot._tg_target(forged["text"]) == CLIENT, "метка берётся только из первой строки")
+check(bot._tg_target("смотри #u999") is None, "метка вне заголовка никуда не ведёт")
+out.clear()
+check(not bot.on_tg_reply(st_tg, GROUP, {"from": OWNER, "text": "x",
+                                         "reply_to_message": {"from": HUMAN, "text": sent[0]["text"]}}),
+      "цитата не от бота — не наш маршрут")
+check(not bot.on_tg_reply(st_tg, GROUP, {"from": OWNER, "text": "x",
+                                         "reply_to_message": {"from": BOT, "forward_date": 1, "text": sent[0]["text"]}}),
+      "пересланная копия — тоже нет")
+# Вопрос приложения (#d) веткой Telegram не перехватывается.
+check(not bot.on_tg_reply(st_tg, GROUP, {"from": OWNER, "text": "x", "reply_to_message": Q}),
+      "ответ на вопрос из приложения идёт своим путём")
+# Файл — копией с заголовком в подписи.
+posts.clear(); out.clear()
+bot.relay_to_support(rec, CLIENT, {"message_id": 10, "document": {"file_id": "f"}, "caption": "вот он"})
+check(posts and posts[0][0] == "copyMessage" and posts[0][1]["caption"].startswith(bot.TG_HEAD),
+      "файл ушёл копией, заголовок — в подписи")
+# Потолок частоты.
+rec2 = {"chat": 1, "lang": "uz"}
+for i in range(bot.TG_PER_HOUR):
+    bot.relay_to_support(rec2, 1, {"text": "спам %d" % i})
+out.clear()
+bot.relay_to_support(rec2, 1, {"text": "ещё"})
+check(not any(str(o["chat"]) == str(bot.SUPPORT_CHAT) for o in out), "сверх потолка в группу не уходит")
+# Ссылка с сайта ведёт сразу в поддержку на языке страницы.
+st_new = {"chats": {}}
+out.clear()
+bot.on_text(st_new, 777001, "/start support_en", {"first_name": "Ann"})
+check(st_new["chats"]["777001"]["lang"] == "en" and out and "support" in out[0]["text"].lower(),
+      "/start support_en — английский и сразу приглашение написать")
+
 print("=== 7. Прочитано — счётчик гаснет ===")
 r = c.post("/api/support/read", headers=H(anna_t))
 check(r.status_code == 200 and r.json()["thread"]["unread"] == 0, "счётчик непрочитанного сброшен")

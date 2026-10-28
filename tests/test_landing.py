@@ -124,7 +124,7 @@ for t in lb.TIERS:
         check(offers.get(t["name"]) == t["price"], f"Offer {t['name']} ≠ {t['price']}")
         check(f"${t['price']}" in page_text, f"цены ${t['price']} нет в тексте страницы")
         check(f"${t['price']} {lb.UNIT_RU[t['unit']]}" in pricing_md, f"pricing.md без цены {t['name']}")
-check("$0.9 за страницу" in page_text and "$2" in page_text, "цен $0.9 за страницу и $2 за минуту нет в тексте")
+check("$0.9 за страницу" in page_text and "$1 за минуту" in page_text, "цен $0.9 за страницу и $1 за минуту нет в тексте")
 check("$0.5" not in html, "старая цена $0.5 осталась на странице")
 
 # 6. определение в первых 60 словах основного текста

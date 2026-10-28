@@ -8261,6 +8261,10 @@ class TenantPatch(BaseModel):
     note: Optional[str] = None
     maxProjects: Optional[int] = None
     clearMaxProjects: bool = False
+    # Снять лимит страниц совсем: поле `pagesCredit` уходит, и организация
+    # читается по умолчанию окружения (`TENANT_MAX_PAGES`; 0 — без потолка).
+    # Счётчик списанного (`pagesUsed`) остаётся — это история, а не долг.
+    clearPages: bool = False
     # Упрощённый режим: ни сумм, ни имён моделей на экране, а модели шагов
     # назначает организация. Ставится и снимается администратором сервиса.
     simple: Optional[bool] = None
@@ -8306,6 +8310,8 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
     # (пополнение, применённое при отклонённом потолке проектов, — след).
     if req.maxProjects is not None and req.maxProjects < 0 and not req.clearMaxProjects:
         raise HTTPException(400, "Потолок проектов не может быть отрицательным")
+    if req.clearPages and req.addPages:
+        raise HTTPException(400, "Снять лимит и пополнить страницы одновременно нельзя")
     if req.addMinutes and float(rec.get("minutesCredit") or 0.0) + float(req.addMinutes) < 0:
         raise HTTPException(400, "Минут не может стать меньше нуля")
     if req.addPages:
@@ -8328,6 +8334,13 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
         _referral_on_topup(tid)
     if req.addMinutes:
         _minutes_topup(tid, float(req.addMinutes), (req.note or "").strip() or None)
+    if req.clearPages:
+        with _SAVE_LOCK:
+            rec_ = _tenant_rec(tid)
+            if rec_ is not None:
+                rec_.pop("pagesCredit", None)
+                rec_.pop("trial", None)
+        rec = _tenant_rec(tid) or rec
     if req.clearMaxProjects:
         rec.pop("maxProjects", None)
     elif req.maxProjects is not None:
@@ -8360,7 +8373,8 @@ def admin_tenant_update(tid: str, req: TenantPatch, request: Request):
     if req.retranslateBulk is not None:
         rec["retranslateBulk"] = int(req.retranslateBulk)
     _audit("tenant.update", tenant_target=tid, limitUsd=rec.get("limitUsd"),
-           addPages=req.addPages, pagesCredit=rec.get("pagesCredit"), maxProjects=rec.get("maxProjects"),
+           addPages=req.addPages, clearPages=req.clearPages or None,
+           pagesCredit=rec.get("pagesCredit"), maxProjects=rec.get("maxProjects"),
            addMinutes=req.addMinutes, minutesCredit=rec.get("minutesCredit"),
            retranslateLimit=rec.get("retranslateLimit"), retranslateBulk=rec.get("retranslateBulk"),
            budgetPerPage=rec.get("budgetPerPage"))

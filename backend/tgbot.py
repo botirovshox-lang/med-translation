@@ -97,7 +97,7 @@ T = {
         "btnContacts": "📇 Контакты",
         "supportAsk": "Напишите вопрос одним сообщением — можно приложить файл или скриншот. "
                       "Ответит человек из поддержки, прямо здесь, в этом чате. "
-                      "Отвечаем в рабочие часы по Ташкенту.",
+                      "Отвечаем 24/7.",
         "supportGot": "Получили ✅ Ответим здесь же. Если хотите — допишите подробности.",
         "supportFail": "Не получилось передать сообщение 😔 Попробуйте ещё раз через минуту.",
         "supportFast": "Сообщений много подряд — подождите немного, мы уже читаем. 🙂",
@@ -152,7 +152,7 @@ T = {
         "btnContacts": "📇 Aloqa",
         "supportAsk": "Savolingizni bitta xabar bilan yozing — fayl yoki skrinshot qo'shsangiz ham "
                       "bo'ladi. Qo'llab-quvvatlash xodimi shu chatning o'zida javob beradi. "
-                      "Toshkent vaqti bilan ish soatlarida javob beramiz.",
+                      "24/7 javob beramiz.",
         "supportGot": "Qabul qildik ✅ Shu yerda javob beramiz. Xohlasangiz, tafsilotlarni qo'shing.",
         "supportFail": "Xabarni yetkazib bo'lmadi 😔 Bir daqiqadan keyin yana urinib ko'ring.",
         "supportFast": "Ketma-ket xabarlar ko'p — biroz kuting, biz allaqachon o'qiyapmiz. 🙂",
@@ -176,7 +176,7 @@ T = {
         "btnContacts": "📇 Contacts",
         "supportAsk": "Write your question in one message — you can attach a file or a screenshot. "
                       "A person from support will answer right here, in this chat. "
-                      "We reply during Tashkent business hours.",
+                      "We reply 24/7.",
         "supportGot": "Got it ✅ We'll reply here. Feel free to add details.",
         "supportFail": "Couldn't pass the message on 😔 Please try again in a minute.",
         "supportFast": "That's a lot of messages in a row — give us a moment, we're reading. 🙂",

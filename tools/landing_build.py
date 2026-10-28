@@ -94,7 +94,7 @@ TIERS = [
                   "Чтение и перевод текста на картинках и сканах",
                   "Свой глоссарий и память переводов", "Команда до 5 человек с ролями",
                   "Оплата только за объём, без подписки; первые 5 страниц бесплатно"]},
-    {"name": "Видео", "price": "2", "unit": "minute",
+    {"name": "Видео", "price": "1", "unit": "minute",
      "for": "Ролики, лекции, интервью — с субтитрами",
      "includes": ["Распознавание речи и субтитры с таймингом", "Перевод субтитров с теми же проверками",
                   "Субтитры в кадре или файлом .srt / .vtt", "Перевод надписей и титров в кадре",
@@ -126,7 +126,7 @@ META = {
                  "$0.9 за страницу",
         "ldDesc": "Перевод документов языковой моделью с проверкой каждой строки: обратный перевод, "
                   "сверка чисел и единиц, глоссарий. Word, PDF, Excel, PowerPoint и сканы "
-                  "возвращаются в исходном оформлении. $0.9 за страницу в 250 слов, видео — $2 за минуту.",
+                  "возвращаются в исходном оформлении. $0.9 за страницу в 250 слов, видео — $1 за минуту.",
         "orgDesc": "Сервис перевода документов с автоматическими проверками: обратный перевод, "
                    "сверка чисел и единиц, глоссарий. Файл возвращается в исходном оформлении.",
         "unit": "страница (250 слов исходника)", "unitMin": "минута видео",
@@ -146,7 +146,7 @@ META = {
                  "bet uchun $0.9",
         "ldDesc": "Hujjatlarni til modeli bilan tarjima qilish va har bir satrni tekshirish: "
                   "teskari tarjima, son va birliklarni solishtirish, lugʻat. Word, PDF, Excel, "
-                  "PowerPoint va skanlar asl koʻrinishida qaytariladi. 250 soʻzlik bet $0.9, video daqiqasiga $2.",
+                  "PowerPoint va skanlar asl koʻrinishida qaytariladi. 250 soʻzlik bet $0.9, video daqiqasiga $1.",
         "orgDesc": "Avtomatik tekshiruvli hujjat tarjimasi xizmati: teskari tarjima, son va "
                    "birliklarni solishtirish, lugʻat. Fayl asl koʻrinishida qaytariladi.",
         "unit": "bet (asl matnning 250 soʻzi)", "unitMin": "video daqiqasi",
@@ -166,7 +166,7 @@ META = {
                  "$0.9 per page",
         "ldDesc": "Document translation by a language model with every line checked: back-translation, "
                   "comparison of numbers and units, a glossary. Word, PDF, Excel, PowerPoint and scans "
-                  "come back in their original layout. $0.9 per 250-word page, video $2 per minute.",
+                  "come back in their original layout. $0.9 per 250-word page, video $1 per minute.",
         "orgDesc": "A document translation service with automatic checks: back-translation, "
                    "comparison of numbers and units, a glossary. The file comes back in its original layout.",
         "unit": "page (250 words of the source)", "unitMin": "minute of video",
@@ -500,7 +500,7 @@ def build_pricing_md():
               "- Статья на 20 страниц: $18 (первые 5 страниц бесплатно — к оплате $13.5)",
               "- Диссертация на 150 страниц: $135",
               "- Книга на 300 страниц: $270",
-              "- Видео на 10 минут: $20", "",
+              "- Видео на 10 минут: $10", "",
               f"Сервис: {APP} · Лендинг: {SITE}/ · Поддержка в Telegram: {TELEGRAM}", ""]
     return "\n".join(lines)
 
@@ -524,7 +524,7 @@ def build_llms():
         "- Оформление сохраняется: перевод пишется в исходный файл, оглавление и номера страниц пересчитывает Word, надписи на картинках переводятся отдельно.",
         "- Проверено на учебнике из 324 страниц: 2 711 строк, 162 рисунка, глоссарий из 1 307 терминов.",
         "- Языки: любая пара из каталога сервиса, интерфейс на русском, узбекском и английском.",
-        "- Рынок: Узбекистан, офис в Ташкенте; работа с организациями по счёту.",
+        "- Рынок: Узбекистан и соседние страны; работа с организациями по счёту; поддержка 24/7.",
         "- Обработка данных: текст документов передаётся поставщикам языковых моделей (OpenAI и Anthropic, США), это названо в политике персональных данных.", "",
         "## Contact", "",
         f"- Сайт: {APP}",

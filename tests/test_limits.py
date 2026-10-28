@@ -353,6 +353,20 @@ if HAVE_DOCX:
         check(ok, "без потолков импорт проходит, pages записан: %s" % (r.json().get("pages") if r.status_code == 200 else r.text[:110]))
         if r.status_code == 200:
             main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != r.json()["id"]]
+        # Снять лимит страниц совсем: выдано меньше списанного — и всё равно проходит.
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": 1, "clearPages": True})
+        check(r.status_code == 400, "снять лимит и пополнить разом — 400")
+        r = c.post("/api/admin/tenants/acme", headers=H(B), json={"clearPages": True})
+        check(r.status_code == 403, "снять лимит страниц может только суперпользователь")
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"addPages": -499})
+        r = c.post("/api/admin/tenants/acme", headers=H(A), json={"clearPages": True})
+        caps_ = r.json()["caps"] if r.status_code == 200 else {}
+        check(r.status_code == 200 and caps_.get("own", {}).get("maxPages") is None and not caps_.get("pagesLimited"),
+              "clearPages снимает лимит: поле ушло, лимит не действует")
+        r = up()
+        check(r.status_code == 200, "после снятия лимита импорт проходит при списанном сверх выданного")
+        if r.status_code == 200:
+            main.STATE["projects"] = [p for p in main.STATE["projects"] if p["id"] != r.json()["id"]]
     finally:
         main.IMPORT_MAX_PAGES, main.TENANT_MAX_PAGES, main.TENANT_MAX_PROJECTS = caps
 else:
